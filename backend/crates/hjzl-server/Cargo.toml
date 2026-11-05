@@ -1,0 +1,32 @@
+[package]
+name = "hjzl-server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "hjzl-server"
+path = "src/main.rs"
+
+[lib]
+name = "hjzl_server"
+path = "src/lib.rs"
+
+[dependencies]
+hjzl-core = { path = "../hjzl-core" }
+hjzl-sqlguard = { path = "../hjzl-sqlguard" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"], default-features = false }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "io-std", "time"] }
+axum = "0.8"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "json", "uuid", "chrono", "bigdecimal"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+uuid = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+rusqlite = { version = "0.37", features = ["bundled"] }

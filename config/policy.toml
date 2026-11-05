@@ -1,0 +1,54 @@
+# 租户策略（W1.2 / W1.8）：组注册表 + 角色映射 + 预算上限。
+# 数据源只引用进程环境变量名，绝不写明文连接串（W1.8 凭证不落配置）。
+# groups_mode=intersect 须另行在租户级开启 allow_intersect=true 且必须带 degraded 标记，
+# 默认严格模式（D1）。
+# 注意：[roles] 与 tenant_* 顶层键必须在 [[groups]] 之前声明，
+# 否则 tomllib 会把它们都归到最后一个 [[groups]] 表下而被校验拒掉。
+
+tenant_budget_cap = 2000
+allow_intersect = false
+
+[roles.analyst]
+name = "analyst"
+default_groups = ["db.read.core", "db.read.analytics", "api.internal.read", "kb.search"]
+default_budget = 2000
+
+[roles.executor]
+name = "executor"
+default_groups = ["db.read.core"]
+default_budget = 1600
+
+[roles.admin]
+name = "admin"
+default_groups = ["db.read.core", "db.read.analytics", "db.read.sensitive", "db.admin.schema", "api.internal.read", "kb.search"]
+default_budget = 2500
+
+[[groups]]
+name = "db.read.core"
+priority = 10
+min_budget = 800
+
+[[groups]]
+name = "db.read.analytics"
+priority = 8
+min_budget = 800
+
+[[groups]]
+name = "db.read.sensitive"
+priority = 5
+min_budget = 800
+
+[[groups]]
+name = "db.admin.schema"
+priority = 1
+min_budget = 800
+
+[[groups]]
+name = "api.internal.read"
+priority = 6
+min_budget = 800
+
+[[groups]]
+name = "kb.search"
+priority = 6
+min_budget = 800

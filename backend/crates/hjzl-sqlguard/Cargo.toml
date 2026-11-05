@@ -1,0 +1,14 @@
+[package]
+name = "hjzl-sqlguard"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "hjzl_sqlguard"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"], default-features = false }
+sqlparser = { version = "0.63", features = ["visitor"] }
+thiserror = "2"
