@@ -80,6 +80,7 @@ pub struct ParamSpec {
     pub timezone: Option<String>,
     #[serde(default = "default_empty_string_as_null")]
     pub empty_string_as_null: bool,
+    /// 数组元素上限：字段保留以固定定义 schema，但数组参数在注册期即被拒绝，故当前不可达。
     #[serde(default)]
     pub array_max_items: Option<usize>,
 }
@@ -331,6 +332,15 @@ fn validate_param_spec(p: &ParamSpec) -> Result<(), McpError> {
         .strip_prefix("array<")
         .and_then(|rest| rest.strip_suffix('>'))
         .map(str::trim);
+    if inner.is_some() {
+        // 数组参数需要 `= ANY($n)` 展开与 T[] 绑定，本轮未启用：注册期就拒，
+        // 不留"注册放行、调用必炸"的半成品（§4.3.3 array<T> 行已标注）。
+        return Err(template_error(
+            "array_param_unsupported",
+            &format!("本轮未启用数组参数（$n::T[] 展开未实现）：{}", p.name),
+            json!({"param": p.name, "type": p.param_type}),
+        ));
+    }
     let base = inner.unwrap_or(ty.as_str());
     if !PARAM_TYPES.contains(&base) {
         return Err(template_error(
@@ -1186,19 +1196,13 @@ impl TemplateRegistry {
         Ok(compiled)
     }
 
-    pub fn submit_for_review(&self, id: &str) -> Result<(), McpError> {
-        self.store.submit_for_review(id).map(|_| ())
+    pub fn submit_for_review(&self, id: &str, submitted_by: &str) -> Result<(), McpError> {
+        self.store.submit_for_review(id, submitted_by).map(|_| ())
     }
 
-    pub fn publish(
-        &self,
-        id: &str,
-        approval_id: &str,
-        submitted_by: &str,
-        approved_by: &str,
-    ) -> Result<(), McpError> {
+    pub fn publish(&self, id: &str, approval_id: &str, approved_by: &str) -> Result<(), McpError> {
         self.store
-            .promote_to_published(id, approval_id, submitted_by, approved_by, "")
+            .promote_to_published(id, approval_id, approved_by, "")
             .map(|_| ())
     }
 
@@ -1212,9 +1216,10 @@ impl TemplateRegistry {
         discoverable: Option<bool>,
         callable: Option<bool>,
         approval_id: &str,
+        actor: &str,
     ) -> Result<(), McpError> {
         self.store
-            .set_visibility(id, discoverable, callable, approval_id)
+            .set_visibility(id, discoverable, callable, approval_id, actor)
             .map(|_| ())
     }
 
@@ -1500,6 +1505,33 @@ mod tests {
         );
         let e = TemplateDef::parse(&v).and_then(compile).unwrap_err();
         assert_eq!(e.data["rule"], json!("template_marker_unclosed"));
+    }
+
+    #[test]
+    fn array_params_rejected_at_registration() {
+        for ty in ["array<int>", "array<string>", "array<timestamp>"] {
+            let params = json!([{"name":"ids","type":ty}]);
+            let v = def_value(
+                "SELECT 1 FROM public.orders WHERE id = :ids",
+                params,
+                json!([]),
+            );
+            let e = TemplateDef::parse(&v).unwrap_err();
+            assert_eq!(e.code, "MCP_TEMPLATE_INVALID");
+            assert_eq!(e.data["rule"], json!("array_param_unsupported"));
+            assert!(
+                e.message.contains("未启用数组参数"),
+                "message 需说明未启用：{}",
+                e.message
+            );
+        }
+        // 标量模板不受影响。
+        let ok = def_value(
+            "SELECT 1 FROM public.orders WHERE id = :start_date",
+            json!([{"name":"start_date","type":"timestamp","required":true}]),
+            json!([]),
+        );
+        assert!(TemplateDef::parse(&ok).is_ok());
     }
 
     #[test]

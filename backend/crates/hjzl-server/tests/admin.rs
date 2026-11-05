@@ -7,7 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use hjzl_core::audit::{ActorRef, AuditEvent, AuditLog};
-use hjzl_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use hjzl_core::config::{AdminTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
 use hjzl_core::entry::EffectiveScope;
 use hjzl_core::registry::CapabilityStore;
 use hjzl_server::admin::{AdminState, router};
@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-const TOKEN: &str = "test-admin-token";
+const ALICE_TOKEN: &str = "tok_alice_000000000";
+const BOB_TOKEN: &str = "tok_bob_00000000000";
 
 fn settings() -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -29,7 +30,8 @@ fn settings() -> Settings {
         },
     );
     Settings {
-        admin_token: TOKEN.to_string(),
+        admin_tokens: AdminTokens::parse(&format!("alice:{ALICE_TOKEN},bob:{BOB_TOKEN}"))
+            .expect("admin tokens"),
         policy: TenantPolicy {
             groups: vec![GroupDef {
                 name: "db.read.core".into(),
@@ -74,7 +76,7 @@ fn harness_with_audit(audit: Arc<AuditLog>) -> Harness {
     let state = AdminState {
         service,
         store: store.clone(),
-        token: TOKEN.to_string(),
+        tokens: settings().admin_tokens,
     };
     Harness {
         app: router(state),
@@ -100,7 +102,7 @@ impl Req {
         Self {
             method: "GET",
             uri: uri.to_string(),
-            token: Some(TOKEN.into()),
+            token: Some(ALICE_TOKEN.into()),
             actor: None,
             body: None,
         }
@@ -109,7 +111,7 @@ impl Req {
         Self {
             method: "POST",
             uri: uri.to_string(),
-            token: Some(TOKEN.into()),
+            token: Some(ALICE_TOKEN.into()),
             actor: Some("alice".into()),
             body: None,
         }
@@ -175,9 +177,9 @@ fn seed_capability(store: &CapabilityStore, id: &str) {
 
 fn publish_capability(store: &CapabilityStore, id: &str) {
     seed_capability(store, id);
-    store.submit_for_review(id).expect("submit");
+    store.submit_for_review(id, "alice").expect("submit");
     store
-        .promote_to_published(id, "ap-1", "alice", "bob", "")
+        .promote_to_published(id, "ap-1", "bob", "")
         .expect("publish");
 }
 
@@ -266,7 +268,9 @@ async fn review_queue_lists_only_draft_and_review() {
     let h = harness();
     seed_capability(&h.store, "cap.draft");
     seed_capability(&h.store, "cap.review");
-    h.store.submit_for_review("cap.review").expect("submit");
+    h.store
+        .submit_for_review("cap.review", "alice")
+        .expect("submit");
     publish_capability(&h.store, "cap.published");
     h.store.deprecate("cap.published", "cap.next").expect("dep");
 
@@ -328,7 +332,7 @@ async fn submit_invalid_transition_is_409() {
 async fn publish_by_same_person_is_400() {
     let h = harness();
     seed_capability(&h.store, "cap.b");
-    h.store.submit_for_review("cap.b").expect("submit");
+    h.store.submit_for_review("cap.b", "alice").expect("submit");
     let (status, body) = call(
         &h.app,
         Req::post("/admin/capabilities/cap.b/publish")
@@ -349,11 +353,13 @@ async fn publish_by_same_person_is_400() {
 async fn publish_by_other_person_succeeds_with_admin_change() {
     let h = harness();
     seed_capability(&h.store, "cap.c");
-    h.store.submit_for_review("cap.c").expect("submit");
+    h.store.submit_for_review("cap.c", "alice").expect("submit");
+    // 提审人 alice（记录在案），批准人 bob（用自己的 token 调用）。
     let (status, body) = call(
         &h.app,
         Req::post("/admin/capabilities/cap.c/publish")
-            .actor("alice")
+            .with_token(BOB_TOKEN)
+            .actor("bob")
             .body(json!({"approval_id": "ap-9", "approved_by": "bob"})),
     )
     .await;
@@ -374,7 +380,6 @@ async fn visibility_updates_flags_and_writes_admin_change() {
     let (status, body) = call(
         &h.app,
         Req::post("/admin/capabilities/cap.d/visibility")
-            .actor("admin-1")
             .body(json!({"discoverable": true, "callable": true, "approval_id": "ap-vis"})),
     )
     .await;
@@ -400,14 +405,35 @@ async fn visibility_updates_flags_and_writes_admin_change() {
 }
 
 #[tokio::test]
-async fn missing_actor_header_is_400() {
+async fn mismatched_actor_header_is_400_with_both_ids() {
     let h = harness();
     seed_capability(&h.store, "cap.e");
-    let mut req = Req::post("/admin/capabilities/cap.e/submit");
-    req.actor = None;
-    let (status, body) = call(&h.app, req).await;
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.e/submit").actor("bob"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], json!("MCP_BAD_REQUEST"));
+    assert_eq!(body["error"]["data"]["derived"], json!("alice"));
+    assert_eq!(body["error"]["data"]["declared"], json!("bob"));
+}
+
+#[tokio::test]
+async fn missing_actor_header_is_allowed_and_uses_derived_id() {
+    let h = harness();
+    seed_capability(&h.store, "cap.f");
+    let mut req = Req::post("/admin/capabilities/cap.f/submit");
+    req.actor = None;
+    let (status, body) = call(&h.app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], json!("review"));
+    // 审计主体来自 token 映射，而不是请求头（缺失时也不例外）。
+    let changes = h
+        .audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .expect("query");
+    assert_eq!(changes[0].actor["id"], json!("alice"));
 }
 
 // ---------------------------- 审计查询 ----------------------------

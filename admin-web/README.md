@@ -15,9 +15,9 @@ npm run lint
 ## 后端地址与鉴权配置
 
 - `VITE_API_BASE`：后端 admin API 根地址，缺省空串（走同源相对路径）。例：`VITE_API_BASE=http://127.0.0.1:8000`
-- `VITE_ADMIN_TOKEN`：管理面 Bearer token（对应后端 `HJZL_ADMIN_TOKEN`），非空时所有请求带 `Authorization: Bearer`。
-- `VITE_ADMIN_ACTOR`：管理操作者标识（对应后端 `X-Admin-Actor`），仅写操作使用；只读请求不带该头。
-- 开发期也可用 Vite 代理：`vite.config.ts` 已把 `/admin`、`/health` 代理到 `http://127.0.0.1:8000`，此时无需设 `VITE_API_BASE`；后端需以 streamable-http 模式启动（`HJZL_MCP_TRANSPORT=streamable-http`），`/admin/*` 缺 Bearer token 返回 401。
+- 前端不读取也不发送任何管理面凭证：没有 `VITE_ADMIN_*` 变量，`Authorization` / `X-Admin-Actor` 均不由浏览器发出，操作者身份由后端按 token 派生。
+- 本地开发：Vite 代理把 `/admin`、`/health` 转发到 `http://127.0.0.1:8000` 并注入 Bearer，token 只存在于 Node 进程环境 —— `HJZL_DEV_ADMIN_TOKEN=... npm run dev`（后端 token 由 `HJZL_ADMIN_TOKENS="alice:tok1,bob:tok2"` 配置）。
+- 生产部署：静态产物与后端同源部署，由网关/BFF 在 `/admin` 路径注入 `Authorization`（或改用会话 Cookie），前端不做任何凭证处理；缺凭证时后端返回 401。
 
 ## 边界（不可放宽）
 

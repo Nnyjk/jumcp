@@ -17,7 +17,7 @@ export default function App() {
       <header className="app-header">
         <div className="app-title">
           <h1>HJZL MCP 管理台</h1>
-          <span className="badge badge-skeleton">骨架 · 未接通后端 admin API</span>
+          <span className="badge badge-skeleton">只读联调 · 写操作未接通</span>
         </div>
         <nav className="app-nav">
           {NAV_ITEMS.map((item) => (

@@ -1,7 +1,9 @@
 // 真实执行器 PgExecutor（阶段一 L1/L2/L3）。
 // 为什么只实现 PG：阶段一唯一承接的数据源是 PG 只读账号；其余方言走同一 QueryExecutor 扩展点。
 
-use crate::executor::{ExecFuture, QueryExecutor, QueryParams, check_placeholders};
+use crate::executor::{
+    ExecFuture, QueryExecutor, QueryParams, check_null_params, check_placeholders,
+};
 use base64::Engine;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use hjzl_core::budget::estimate_tokens;
@@ -117,6 +119,8 @@ impl PgExecutor {
     /// 单事务执行：SET LOCAL 级超时 + 位置参数绑定 + 解码；永远 rollback（只读面无可提交内容）。
     async fn run(&self, q: &QueryParams) -> Result<(Vec<Vec<Value>>, i64), McpError> {
         check_placeholders(&q.sql, q.params.len())?;
+        // null 参数必须有显式转换：否则 PG 只能拿 text OID 与目标列比较，报的是模糊的 operator 错误。
+        check_null_params(&q.sql, &q.params)?;
         let started = Instant::now();
         let timeout_ms = if q.statement_timeout_ms > 0 {
             q.statement_timeout_ms
@@ -349,6 +353,27 @@ mod tests {
         let mut args = PgArguments::default();
         let e = bind_json(&mut args, &json!({"a": 1})).unwrap_err();
         assert_eq!(e.code, "MCP_PARAM_STYLE_UNSUPPORTED");
+    }
+
+    #[tokio::test]
+    #[ignore = "需要真实 PG：HJZL_TEST_PG_DSN"]
+    async fn pg_real_null_param_with_cast_executes() {
+        let Ok(dsn) = std::env::var("HJZL_TEST_PG_DSN") else {
+            return;
+        };
+        let cfg = PgExecutorConfig {
+            datasource_name: "test-pg".into(),
+            dsn,
+            statement_timeout_ms: 5000,
+            allowed_schemas: vec![],
+            max_connections: 1,
+        };
+        let executor = PgExecutor::connect(cfg).await.expect("connect");
+        // 招牌可空过滤写法：显式 ::int 后 PG 能确定类型，NULL 也能执行。
+        executor
+            .explain("SELECT 1 WHERE $1::int IS NULL OR 1 = $1::int", 1)
+            .await
+            .expect("explain with null + cast");
     }
 
     #[tokio::test]

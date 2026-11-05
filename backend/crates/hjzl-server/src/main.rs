@@ -130,15 +130,17 @@ async fn run_http(
     settings: Settings,
 ) -> anyhow::Result<()> {
     // fail-closed：没有 token 就不开管理面，也不提供"半开放"降级。
-    if settings.admin_token.trim().is_empty() {
-        anyhow::bail!("HTTP 模式下 HJZL_ADMIN_TOKEN 未配置：管理面不允许无鉴权启动");
+    if settings.admin_tokens.is_empty() {
+        anyhow::bail!(
+            "HTTP 模式下 HJZL_ADMIN_TOKENS 未配置：管理面不允许无鉴权启动（格式 id:token,id:token）"
+        );
     }
     let listener =
         tokio::net::TcpListener::bind(format!("{}:{}", settings.host, settings.port)).await?;
     let admin = hjzl_server::admin::AdminState {
         service,
         store,
-        token: settings.admin_token.clone(),
+        tokens: settings.admin_tokens.clone(),
     };
     let admin_app = hjzl_server::admin::router(admin);
     let mcp_app = axum::Router::new()

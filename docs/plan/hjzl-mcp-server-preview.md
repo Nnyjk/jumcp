@@ -380,7 +380,7 @@ owner: data-platform
 
 | 字段 | 适用类型 | 说明 |
 |---|---|---|
-| `type` | `string\|int\|float\|bool\|date\|timestamp\|enum\|array<T>\|column_ref` | `column_ref` 仅允许引用 `enum` 白名单内的标识符，由执行器做标识符引用（quote），**不使用绑定** |
+| `type` | `string\|int\|float\|bool\|date\|timestamp\|enum\|array<T>\|column_ref` | `column_ref` 仅允许引用 `enum` 白名单内的标识符，由执行器做标识符引用（quote），**不使用绑定**；`array<T>` 本轮未启用（注册期拒绝），启用需实现 `= ANY($n)` 展开与 `T[]` 绑定 |
 | `required` / `nullable` | 全部 | 区分「未提供」与「显式 null」 |
 | `max_len` / `min` / `max` / `pattern` | string / 数值 | 服务端校验，失败即 400 |
 | `enum` | enum / column_ref | 白名单 |

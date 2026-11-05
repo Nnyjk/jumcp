@@ -69,18 +69,14 @@ pub fn publish_seed(
     {
         return Ok(());
     }
-    registry.submit_for_review(&id)?;
-    registry.publish(
-        &id,
-        &seed.approval_id,
-        &seed.submitted_by,
-        &seed.approved_by,
-    )?;
+    registry.submit_for_review(&id, &seed.submitted_by)?;
+    registry.publish(&id, &seed.approval_id, &seed.approved_by)?;
     registry.set_visibility(
         &id,
         Some(compiled.def.discoverable),
         Some(compiled.def.callable),
         &seed.visibility_approval_id,
+        &seed.submitted_by,
     )?;
     Ok(())
 }

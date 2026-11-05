@@ -13,7 +13,7 @@ HJZL_MCP_TRANSPORT=streamable-http cargo run -p hjzl-server  # HTTP（POST /mcp�
 ```
 
 配置走 `HJZL_MCP_*`（`HJZL_MCP_CONFIG_FILE`、`HJZL_MCP_AUDIT_PATH`、`HJZL_MCP_REGISTRY_PATH`、
-`HJZL_MCP_TEMPLATES_FILE`、`HJZL_MCP_GROUPS_MODE`、`HJZL_MCP_BUDGET_OVERFLOW=fail|truncate`、`HJZL_ADMIN_TOKEN`）。策略与 `[[datasources]]` 同文件；数据源只写
+`HJZL_MCP_TEMPLATES_FILE`、`HJZL_MCP_GROUPS_MODE`、`HJZL_MCP_BUDGET_OVERFLOW=fail|truncate`、`HJZL_ADMIN_TOKENS="id:token,id:token"`）。策略与 `[[datasources]]` 同文件；数据源只写
 **环境变量名**（`dsn_env`），DSN 由部署注入。非法配置或只读自检失败时启动即退出（非零码）。
 
 ## 测试

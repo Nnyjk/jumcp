@@ -156,6 +156,101 @@ struct DatasourceFile {
     datasources: Vec<DatasourceRef>,
 }
 
+/// 管理面主体：token 派生身份，`X-Admin-Actor` 只是自述（不可信）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminPrincipal {
+    pub id: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AdminTokens {
+    principals: Vec<AdminPrincipal>,
+}
+
+impl AdminTokens {
+    /// 解析 `id:token,id:token`。格式错误、id 重复、token 重复、token 过短一律拒绝（启动 fail-closed）。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let mut principals: Vec<AdminPrincipal> = Vec::new();
+        for item in raw.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (id, token) = item
+                .split_once(':')
+                .ok_or_else(|| format!("HJZL_ADMIN_TOKENS 项 {item:?} 必须是 id:token 形式"))?;
+            let id = id.trim();
+            let token = token.trim();
+            if !is_admin_id(id) {
+                return Err(format!(
+                    "HJZL_ADMIN_TOKENS 的 id {id:?} 非法（[a-z0-9._-]{{2,32}}）"
+                ));
+            }
+            if token.len() < 16 {
+                return Err(format!(
+                    "HJZL_ADMIN_TOKENS 的 token（{id}）必须至少 16 字符"
+                ));
+            }
+            if principals.iter().any(|p| p.id == id) {
+                return Err(format!("HJZL_ADMIN_TOKENS 存在重复 id: {id}"));
+            }
+            if principals.iter().any(|p| p.token == token) {
+                return Err(format!("HJZL_ADMIN_TOKENS 存在重复 token（{id}）"));
+            }
+            principals.push(AdminPrincipal {
+                id: id.to_string(),
+                token: token.to_string(),
+            });
+        }
+        Ok(Self { principals })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.principals.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.principals.len()
+    }
+
+    pub fn ids(&self) -> Vec<&str> {
+        self.principals.iter().map(|p| p.id.as_str()).collect()
+    }
+
+    /// 常量时间鉴权：遍历全部候选、等长填充逐字节比并累积，不做 `==` 早退。
+    pub fn authenticate(&self, presented: &str) -> Option<&str> {
+        let mut matched: Option<&str> = None;
+        for principal in &self.principals {
+            if constant_time_eq(&principal.token, presented) {
+                matched = Some(principal.id.as_str());
+            }
+        }
+        matched
+    }
+}
+
+fn is_admin_id(id: &str) -> bool {
+    (2..=32).contains(&id.len())
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        })
+}
+
+/// 等长填充比较：长度差与逐字节异或结果一起按位或，全程无早退。
+pub fn constant_time_eq(expected: &str, presented: &str) -> bool {
+    let a = expected.as_bytes();
+    let b = presented.as_bytes();
+    let len = a.len().max(b.len());
+    let mut diff: u8 = (a.len() ^ b.len()).min(1) as u8;
+    for i in 0..len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// 服务级 Settings：TOML 文件 + HJZL_MCP_* env，构造即校验。
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -168,8 +263,9 @@ pub struct Settings {
     pub registry_path: String,
     /// 启动时装载的模板定义文件（JSON）；空表示不预置模板。
     pub templates_file: String,
-    /// 管理面 Bearer token（HJZL_ADMIN_TOKEN）。HTTP 模式未配置即拒绝启动（fail-closed）。
-    pub admin_token: String,
+    /// 管理面 token→actor 映射（HJZL_ADMIN_TOKENS="alice:tok,bob:tok"）。
+    /// HTTP 模式为空即拒绝启动（fail-closed）；不接受任何“匿名管理员”降级。
+    pub admin_tokens: AdminTokens,
     /// 静态客户端平铺阈值（§5.2）：可见 kind=tool 能力数 ≤ 阈值时直接平铺；0 表示禁用平铺。
     pub flatten_threshold: i64,
     pub groups_mode: String,
@@ -189,7 +285,7 @@ impl Default for Settings {
             audit_path: "data/audit.sqlite3".to_string(),
             registry_path: "data/registry.sqlite3".to_string(),
             templates_file: String::new(),
-            admin_token: String::new(),
+            admin_tokens: AdminTokens::default(),
             flatten_threshold: 40,
             groups_mode: "strict".to_string(),
             budget_overflow: "fail".to_string(),
@@ -212,7 +308,7 @@ impl Settings {
         s.audit_path = env_or("HJZL_MCP_AUDIT_PATH", &s.audit_path);
         s.registry_path = env_or("HJZL_MCP_REGISTRY_PATH", &s.registry_path);
         s.templates_file = env_or("HJZL_MCP_TEMPLATES_FILE", &s.templates_file);
-        s.admin_token = env_or("HJZL_ADMIN_TOKEN", &s.admin_token);
+        s.admin_tokens = AdminTokens::parse(&env_or("HJZL_ADMIN_TOKENS", ""))?;
         s.flatten_threshold = env_or("HJZL_MCP_FLATTEN_THRESHOLD", "40")
             .parse::<i64>()
             .map_err(|_| "HJZL_MCP_FLATTEN_THRESHOLD 非法".to_string())?;
@@ -368,6 +464,51 @@ mod tests {
         };
         assert!(ds.validate().is_err());
     }
+    #[test]
+    fn admin_tokens_parse_and_authenticate() {
+        let tokens =
+            AdminTokens::parse("alice:tok_alice_000000000,bob:tok_bob_00000000000").unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens.authenticate("tok_bob_00000000000"), Some("bob"));
+        assert_eq!(tokens.authenticate("tok_bob_00000000001"), None);
+        assert_eq!(tokens.authenticate(""), None);
+        assert!(AdminTokens::parse("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn admin_tokens_reject_bad_inputs() {
+        assert!(AdminTokens::parse("alice").is_err(), "缺少冒号");
+        assert!(
+            AdminTokens::parse("ALICE:tok_alice_000000000").is_err(),
+            "id 大写"
+        );
+        assert!(
+            AdminTokens::parse("a:tok_alice_000000000").is_err(),
+            "id 过短"
+        );
+        assert!(
+            AdminTokens::parse("alice:short,bob:tok_bob_00000000000").is_err(),
+            "token 过短"
+        );
+        assert!(
+            AdminTokens::parse("alice:tok_x_0000000000,alice:tok_y_0000000000").is_err(),
+            "id 重复"
+        );
+        assert!(
+            AdminTokens::parse("alice:tok_same_00000000,bob:tok_same_00000000").is_err(),
+            "token 重复"
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_matches_semantics() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("abc", "abcd"));
+        assert!(!constant_time_eq("abcd", "abc"));
+        assert!(constant_time_eq("", ""));
+    }
+
     #[test]
     fn loads_repo_policy_file() {
         let s = Settings::from_env().unwrap();

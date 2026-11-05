@@ -66,7 +66,7 @@ export function LoadingState() {
 /** 占位操作按钮：显式标注未接通，避免被误认为可用。 */
 export function DisabledAction({ label }: { label: string }) {
   return (
-    <button type="button" className="btn btn-disabled" disabled title="尚未接通后端 admin API">
+    <button type="button" className="btn btn-disabled" disabled title="写操作尚未接通：变更须经 admin API 落审计">
       {label}（未接通）
     </button>
   )

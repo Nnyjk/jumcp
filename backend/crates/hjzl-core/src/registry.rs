@@ -27,6 +27,8 @@ pub struct CapabilityRecord {
     pub successor_id: String,
     /// 最近一次状态/定义/可见性变更时间（ISO8601）；审核队列据此排序。
     pub updated_at: String,
+    /// 提审人身份（四眼判定的基准）：由鉴权派生，不来自请求头自述。
+    pub submitted_by: String,
 }
 
 pub struct CapabilityStore {
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS capabilities (
     capability_id TEXT PRIMARY KEY, kind TEXT NOT NULL, group_name TEXT NOT NULL, risk TEXT NOT NULL,
     status TEXT NOT NULL, discoverable INTEGER NOT NULL DEFAULT 0, callable INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 1, definition_json TEXT NOT NULL, definition_hash TEXT NOT NULL, successor_id TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT ''
+    updated_at TEXT NOT NULL DEFAULT '', submitted_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_cap_status_group ON capabilities(status, group_name);
 CREATE TABLE IF NOT EXISTS capability_versions (
@@ -61,19 +63,17 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_update BEFORE UPDATE ON capability_versi
 CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versions BEGIN SELECT RAISE(ABORT, 'capability_versions is append-only'); END;
 "#).map_err(|e| McpError::store(e.to_string()))?;
         // 旧库补列：CREATE TABLE IF NOT EXISTS 不会为已存在的表加列。
-        let has_updated = conn
-            .prepare("PRAGMA table_info(capabilities)")
-            .and_then(|mut stmt| {
-                let names: Vec<String> = stmt
-                    .query_map([], |r| r.get::<_, String>(1))?
-                    .filter_map(Result::ok)
-                    .collect();
-                Ok(names.iter().any(|n| n == "updated_at"))
-            })
-            .map_err(|e| McpError::store(e.to_string()))?;
+        let has_updated = column_exists(&conn, "updated_at")?;
         if !has_updated {
             conn.execute(
                 "ALTER TABLE capabilities ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|e| McpError::store(e.to_string()))?;
+        }
+        if !column_exists(&conn, "submitted_by")? {
+            conn.execute(
+                "ALTER TABLE capabilities ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''",
                 [],
             )
             .map_err(|e| McpError::store(e.to_string()))?;
@@ -271,13 +271,19 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
         } else {
             diff.to_string()
         };
+        // 审计主体用本次操作者（批准人＝鉴权派生 id），不用固定 "system" 掩盖真实操作者。
+        let audit_actor = if approved_by.is_empty() {
+            submitted_by
+        } else {
+            approved_by
+        };
         self.write_admin_audit(
             id,
             approval_id,
             &record.definition_hash,
             &record.definition_hash,
             &diff_str,
-            "system",
+            audit_actor,
         )?;
         let rec = self.get(id)?;
         match rec {
@@ -286,7 +292,12 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
         }
     }
 
-    pub fn submit_for_review(&self, id: &str) -> Result<CapabilityRecord, McpError> {
+    /// draft → review。`submitted_by` 必须是鉴权派生身份，四眼判定以它为准。
+    pub fn submit_for_review(
+        &self,
+        id: &str,
+        submitted_by: &str,
+    ) -> Result<CapabilityRecord, McpError> {
         let record = self.require(id)?;
         if record.status != "draft" {
             return Err(McpError::new(
@@ -297,8 +308,8 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
         {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
             conn.execute(
-                "UPDATE capabilities SET status='review', updated_at=? WHERE capability_id=?",
-                rusqlite::params![now_iso(), id],
+                "UPDATE capabilities SET status='review', submitted_by=?, updated_at=? WHERE capability_id=?",
+                rusqlite::params![submitted_by, now_iso(), id],
             )
             .map_err(|e| McpError::store(e.to_string()))?;
         }
@@ -311,11 +322,12 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
         }
     }
 
+    /// review → published。四眼比较的是「记录的提审人」与「本次批准人」，
+    /// 两者都来自鉴权派生身份，请求体无法自述。
     pub fn promote_to_published(
         &self,
         id: &str,
         approval_id: &str,
-        submitted_by: &str,
         approved_by: &str,
         diff: &str,
     ) -> Result<CapabilityRecord, McpError> {
@@ -330,7 +342,7 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
             id,
             "published",
             approval_id,
-            submitted_by,
+            &record.submitted_by,
             approved_by,
             diff,
         )
@@ -380,7 +392,11 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
             &record.definition_hash,
             &dhash,
             &diff_str,
-            approved_by,
+            if submitted_by.is_empty() {
+                approved_by
+            } else {
+                submitted_by
+            },
         )?;
         let rec = self.get(id)?;
         match rec {
@@ -415,6 +431,7 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
         discoverable: Option<bool>,
         callable: Option<bool>,
         approval_id: &str,
+        actor: &str,
     ) -> Result<CapabilityRecord, McpError> {
         if approval_id.is_empty() {
             return Err(McpError::new(
@@ -469,7 +486,7 @@ CREATE TRIGGER IF NOT EXISTS trg_ver_no_delete BEFORE DELETE ON capability_versi
             &before,
             &before,
             &canonical_json(&Value::Object(changes)),
-            "admin",
+            actor,
         )?;
         let rec = self.get(id)?;
         match rec {
@@ -512,6 +529,18 @@ impl CapabilityStore {
         }
         Ok(rows)
     }
+}
+
+fn column_exists(conn: &Connection, column: &str) -> Result<bool, McpError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(capabilities)")
+        .map_err(|e| McpError::store(e.to_string()))?;
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| McpError::store(e.to_string()))?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(names.iter().any(|n| n == column))
 }
 
 fn now_iso() -> String {
@@ -577,6 +606,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<CapabilityRecord> {
         definition_hash: row.get(9)?,
         successor_id: row.get(10)?,
         updated_at: row.get(11)?,
+        submitted_by: row.get(12)?,
     })
 }
 
@@ -597,9 +627,9 @@ mod tests {
             json!({"description":"x"}),
         )
         .unwrap();
-        s.submit_for_review("cap1").unwrap();
+        s.submit_for_review("cap1", "alice").unwrap();
         let e = s
-            .promote_to_published("cap1", "ap-1", "alice", "alice", "")
+            .promote_to_published("cap1", "ap-1", "alice", "")
             .unwrap_err();
         assert_eq!(e.code, "MCP_APPROVAL_REQUIRED");
     }
@@ -675,9 +705,8 @@ mod tests {
             json!({"description":"v1","keep":1}),
         )
         .unwrap();
-        s.submit_for_review("cap1").unwrap();
-        s.promote_to_published("cap1", "ap-1", "alice", "bob", "")
-            .unwrap();
+        s.submit_for_review("cap1", "alice").unwrap();
+        s.promote_to_published("cap1", "ap-1", "bob", "").unwrap();
         let before = s.get("cap1").unwrap().unwrap();
         let before_hash = before.definition_hash.clone();
         let r = s
@@ -753,9 +782,8 @@ mod tests {
             json!({"description":"v1"}),
         )
         .unwrap();
-        s.submit_for_review("cap1").unwrap();
-        s.promote_to_published("cap1", "ap-1", "alice", "bob", "")
-            .unwrap();
+        s.submit_for_review("cap1", "alice").unwrap();
+        s.promote_to_published("cap1", "ap-1", "bob", "").unwrap();
         let before = s.get("cap1").unwrap().unwrap();
         // 注入必失败约束：后开一个 trigger 让第二次插入冲突
         {

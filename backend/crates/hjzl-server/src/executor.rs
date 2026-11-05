@@ -253,6 +253,90 @@ pub fn check_placeholders(sql: &str, param_count: usize) -> Result<(), McpError>
     Ok(())
 }
 
+/// null 参数的显式转换检查。
+///
+/// 为什么不在绑定层兜底：`Option::<String>::None` 绑成 text OID，`$1 IS NULL OR col = $1`
+/// 用在 int/date 列上会得到 `operator does not exist: integer = text`——把类型歧义交给数据库
+/// 只会产生难以定位的 500。这里在绑定前把「null 且没有显式 `::type`」显式拒绝。
+pub fn check_null_params(sql: &str, params: &[Value]) -> Result<(), McpError> {
+    let casted = casted_positions(sql);
+    for (index, value) in params.iter().enumerate() {
+        let position = index + 1;
+        if value.is_null() && !casted.contains(&position) {
+            return Err(McpError::new(
+                "MCP_NULL_PARAM_NEEDS_CAST",
+                json!({
+                    "placeholder": format!("${position}"),
+                    "hint": "可空参数请在 SQL 中显式转换，如 $1::int"
+                }),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 扫出被显式 `::type` 转换的占位符位置；跳过字符串字面量与注释（`--` 与 `/* */`）。
+fn casted_positions(sql: &str) -> std::collections::HashSet<usize> {
+    let bytes = sql.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                // 字符串字面量：'' 是转义，故成对跳过。
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            b'$' => {
+                let mut j = i + 1;
+                let mut digits = String::new();
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    digits.push(bytes[j] as char);
+                    j += 1;
+                }
+                if digits.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                if let Ok(position) = digits.parse::<usize>() {
+                    let mut k = j;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if bytes.get(k) == Some(&b':') && bytes.get(k + 1) == Some(&b':') {
+                        out.insert(position);
+                    }
+                }
+                i = j;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +399,48 @@ mod tests {
         assert!(check_placeholders("SELECT 1", 0).is_ok());
         let e = check_placeholders("SELECT $1", 0).unwrap_err();
         assert_eq!(e.code, "MCP_PARAM_COUNT_MISMATCH");
+    }
+
+    #[test]
+    fn null_param_without_cast_is_rejected() {
+        let e = check_null_params("SELECT * FROM t WHERE id = $1", &[Value::Null]).unwrap_err();
+        assert_eq!(e.code, "MCP_NULL_PARAM_NEEDS_CAST");
+        assert_eq!(e.data["placeholder"], json!("$1"));
+        assert!(
+            e.data["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("::int")
+        );
+    }
+
+    #[test]
+    fn null_param_with_explicit_cast_is_allowed() {
+        assert!(
+            check_null_params(
+                "SELECT * FROM t WHERE $1::int IS NULL OR id = $1::int",
+                &[Value::Null]
+            )
+            .is_ok()
+        );
+        assert!(check_null_params("SELECT * FROM t WHERE d = $1::date", &[Value::Null]).is_ok());
+    }
+
+    #[test]
+    fn non_null_params_need_no_cast() {
+        assert!(check_null_params("SELECT * FROM t WHERE id = $1", &[json!(1)]).is_ok());
+    }
+
+    #[test]
+    fn placeholders_in_literals_and_comments_are_ignored() {
+        // 字符串里的 $1 不是占位符：参数为 null 也不该误判。
+        assert!(check_null_params("SELECT '$1' AS s", &[]).is_ok());
+        assert!(check_null_params("SELECT '$1' AS s -- $2\n", &[]).is_ok());
+        assert!(check_null_params("SELECT 1 /* $3 */ FROM t", &[]).is_ok());
+        // 字面量里的 `$1::int` 不构成"已转换"证据：$2 为 null 且无转换时仍要报错。
+        let e =
+            check_null_params("SELECT '$1::int' AS s, $2", &[json!("x"), Value::Null]).unwrap_err();
+        assert_eq!(e.data["placeholder"], json!("$2"));
     }
 
     #[test]

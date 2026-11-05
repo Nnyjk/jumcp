@@ -1,19 +1,21 @@
 //! Admin HTTP API（W4.1 最小版）：审核队列 / 状态流转 / 可见性 / 审计查询 + 健康检查。
 //!
 //! 边界：
-//! - 只在 streamable-http 模式挂载（stdio 无管理面）；未配置 `HJZL_ADMIN_TOKEN` 时进程拒绝启动。
+//! - 只在 streamable-http 模式挂载（stdio 无管理面）；未配置 `HJZL_ADMIN_TOKENS` 时进程拒绝启动。
+//! - 身份只能来自 token→actor 映射：`X-Admin-Actor` 仅用于一致性校验，永远以派生 id 为准。
 //! - 全部拒绝写 `policy_decision`，成功写 `admin_change`（submit 在此层写，publish/visibility 由
 //!   CapabilityStore 写，避免同一变更两条记录）。
 //! - 审计查询只读：不提供任何 UPDATE/DELETE 入口，DB 层另有 append-only trigger 兜底。
 
 use crate::service::Service;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use hjzl_core::audit::ChainVerdict;
+use hjzl_core::config::AdminTokens;
 use hjzl_core::entry::Actor;
 use hjzl_core::errors::McpError;
 use hjzl_core::registry::{CapabilityRecord, CapabilityStore, STATUSES};
@@ -38,7 +40,13 @@ const FILTER_KEYS: &[&str] = &[
 pub struct AdminState {
     pub service: Arc<Service>,
     pub store: Arc<CapabilityStore>,
-    pub token: String,
+    pub tokens: AdminTokens,
+}
+
+/// 鉴权中间件派生出的管理主体：后续 handler 只用它，不再读 `X-Admin-Actor` 做身份。
+#[derive(Clone, Debug)]
+pub struct AuthenticatedAdmin {
+    pub id: String,
 }
 
 /// 挂在 streamable-http 监听上的完整路由：`/health` 免鉴权，`/admin/*` 必须带 Bearer token。
@@ -105,21 +113,24 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-fn actor_from(headers: &HeaderMap) -> Result<Actor, McpError> {
-    let id = headers
+/// 审计主体恒用派生 id；`X-Admin-Actor` 若存在则必须与之一致（防前端把身份写死在请求头里）。
+fn actor_of(auth: &AuthenticatedAdmin, headers: &HeaderMap) -> Result<Actor, McpError> {
+    let declared = headers
         .get(ACTOR_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            McpError::new(
-                "MCP_BAD_REQUEST",
-                json!({"missing": [ACTOR_HEADER], "hint": "管理操作必须带操作者身份"}),
-            )
-        })?;
+        .filter(|s| !s.is_empty());
+    if let Some(declared) = declared
+        && declared != auth.id
+    {
+        return Err(McpError::new(
+            "MCP_BAD_REQUEST",
+            json!({"derived": auth.id, "declared": declared, "hint": "X-Admin-Actor 与 token 派生身份不一致"}),
+        ));
+    }
     let mut actor = Actor::new("default", "admin");
     actor.actor_type = "admin".to_string();
-    actor.actor_id = id.to_string();
+    actor.actor_id = auth.id.clone();
     Ok(actor)
 }
 
@@ -131,17 +142,19 @@ fn reject(state: &AdminState, actor: &Actor, e: McpError, detail: Value) -> ApiE
     }
 }
 
-async fn require_token(State(state): State<AdminState>, req: Request, next: Next) -> Response {
-    let authorized = bearer(req.headers()) == Some(state.token.as_str());
-    if authorized {
-        return next.run(req).await;
-    }
-    let actor = Actor::new("default", "admin");
-    let e = McpError::new(
-        "MCP_UNAUTHORIZED",
-        json!({"hint": "管理面需要 Authorization: Bearer <HJZL_ADMIN_TOKEN>"}),
-    );
-    ApiError::from_mcp_via_policy(&state, &actor, e).into_response()
+async fn require_token(State(state): State<AdminState>, mut req: Request, next: Next) -> Response {
+    let derived = bearer(req.headers()).and_then(|token| state.tokens.authenticate(token));
+    let Some(id) = derived else {
+        let actor = Actor::new("default", "admin");
+        let e = McpError::new(
+            "MCP_UNAUTHORIZED",
+            json!({"hint": "管理面需要 Authorization: Bearer <HJZL_ADMIN_TOKENS 中的 token>"}),
+        );
+        return ApiError::from_mcp_via_policy(&state, &actor, e).into_response();
+    };
+    req.extensions_mut()
+        .insert(AuthenticatedAdmin { id: id.to_string() });
+    next.run(req).await
 }
 
 impl ApiError {
@@ -399,10 +412,11 @@ fn parse_page_param(
 /// draft → review。registry 不写 admin_change（状态推进本身不是治理变更），在此层补记。
 async fn submit(
     State(state): State<AdminState>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let actor = actor_from(&headers).map_err(|e| {
+    let actor = actor_of(&auth, &headers).map_err(|e| {
         reject(
             &state,
             &Actor::new("default", "admin"),
@@ -424,7 +438,7 @@ async fn submit(
         })?;
     let record = state
         .store
-        .submit_for_review(&id)
+        .submit_for_review(&id, &actor.actor_id)
         .map_err(|e| reject(&state, &actor, e, json!({"capability_id": id})))?;
     state
         .service
@@ -457,11 +471,12 @@ struct PublishBody {
 /// review → published。四眼判定只在这里做一次（registry 是唯一执行点）。
 async fn publish(
     State(state): State<AdminState>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<PublishBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let actor = actor_from(&headers).map_err(|e| {
+    let actor = actor_of(&auth, &headers).map_err(|e| {
         reject(
             &state,
             &Actor::new("default", "admin"),
@@ -491,9 +506,17 @@ async fn publish(
                 json!({"capability_id": id}),
             )
         })?;
+    // approved_by 只做一致性校验：真正的批准人身份来自 token 派生，不采信请求体自述。
+    if approved_by != auth.id {
+        let e = McpError::new(
+            "MCP_BAD_REQUEST",
+            json!({"derived": auth.id, "declared": approved_by, "field": "approved_by"}),
+        );
+        return Err(reject(&state, &actor, e, json!({"capability_id": id})));
+    }
     let record = state
         .store
-        .promote_to_published(&id, &approval_id, &actor.actor_id, &approved_by, "")
+        .promote_to_published(&id, &approval_id, &actor.actor_id, "")
         .map_err(|e| reject(&state, &actor, e, json!({"capability_id": id})))?;
     Ok(Json(json!({
         "id": record.capability_id,
@@ -512,11 +535,12 @@ struct VisibilityBody {
 
 async fn visibility(
     State(state): State<AdminState>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<VisibilityBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let actor = actor_from(&headers).map_err(|e| {
+    let actor = actor_of(&auth, &headers).map_err(|e| {
         reject(
             &state,
             &Actor::new("default", "admin"),
@@ -537,7 +561,13 @@ async fn visibility(
         })?;
     let record = state
         .store
-        .set_visibility(&id, body.discoverable, body.callable, &approval_id)
+        .set_visibility(
+            &id,
+            body.discoverable,
+            body.callable,
+            &approval_id,
+            &actor.actor_id,
+        )
         .map_err(|e| reject(&state, &actor, e, json!({"capability_id": id})))?;
     Ok(Json(json!({
         "id": record.capability_id,

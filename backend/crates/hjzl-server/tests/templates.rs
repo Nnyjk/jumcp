@@ -137,12 +137,10 @@ fn published_registry(
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
     let id = value["template_id"].as_str().expect("template_id");
     registry.register(value).expect("register draft");
-    registry.submit_for_review(id).expect("submit");
+    registry.submit_for_review(id, "alice").expect("submit");
+    registry.publish(id, "ap-pub", "bob").expect("publish");
     registry
-        .publish(id, "ap-pub", "alice", "bob")
-        .expect("publish");
-    registry
-        .set_visibility(id, Some(true), Some(true), "ap-vis")
+        .set_visibility(id, Some(true), Some(true), "ap-vis", "alice")
         .expect("visibility");
     (registry, store, audit)
 }

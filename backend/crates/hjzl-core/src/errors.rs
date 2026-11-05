@@ -27,6 +27,7 @@ pub fn default_message(code: &str) -> &str {
         "MCP_PARAM_COUNT_MISMATCH" => "参数个数与 SQL 占位符不匹配",
         "MCP_UNSUPPORTED_COLUMN_TYPE" => "结果集含不支持的列类型",
         "MCP_EXEC_TIMEOUT" => "执行超时，结果未知",
+        "MCP_NULL_PARAM_NEEDS_CAST" => "null 参数需要显式类型转换",
         "MCP_TEMPLATE_INVALID" => "模板定义未通过校验门禁",
         "MCP_FILTER_UNSUPPORTED" => "不支持的过滤键",
         "MCP_UNAUTHORIZED" => "管理面鉴权失败",

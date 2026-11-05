@@ -23,23 +23,16 @@ export interface RequestOptions {
   params?: QueryParams | undefined
   body?: unknown | undefined
   signal?: AbortSignal | undefined
-  /**
-   * 标记为管理面写操作：后端要求写操作带 X-Admin-Actor 标识操作者（§4.4.4 四眼原则）。
-   * 只读请求不带该头。
-   */
-  adminWrite?: boolean | undefined
 }
 
 const BASE_URL = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
-/** 后端 /admin/* 需要 Bearer token（HJZL_ADMIN_TOKEN）。 */
-const ADMIN_TOKEN = import.meta.env.VITE_ADMIN_TOKEN ?? ''
-/** 写操作的操作者标识（后端 x-admin-actor）。 */
-const ADMIN_ACTOR = import.meta.env.VITE_ADMIN_ACTOR ?? ''
 
+/**
+ * 前端不携带任何管理面凭证（§4.4.5）：token 只存在于网关/BFF 与后端之间，
+ * 操作者身份由后端按 token 派生，前端既不读取也不发送 Authorization / X-Admin-Actor。
+ */
 function buildInit(options: RequestOptions): RequestInit {
   const headers: Record<string, string> = {}
-  if (ADMIN_TOKEN !== '') headers.authorization = `Bearer ${ADMIN_TOKEN}`
-  if (options.adminWrite === true && ADMIN_ACTOR !== '') headers['x-admin-actor'] = ADMIN_ACTOR
   if (options.body !== undefined) headers['content-type'] = 'application/json'
 
   const init: RequestInit = { method: options.method ?? 'GET' }
