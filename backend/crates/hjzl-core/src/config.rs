@@ -170,6 +170,8 @@ pub struct Settings {
     pub templates_file: String,
     /// 管理面 Bearer token（HJZL_ADMIN_TOKEN）。HTTP 模式未配置即拒绝启动（fail-closed）。
     pub admin_token: String,
+    /// 静态客户端平铺阈值（§5.2）：可见 kind=tool 能力数 ≤ 阈值时直接平铺；0 表示禁用平铺。
+    pub flatten_threshold: i64,
     pub groups_mode: String,
     /// 预算溢出策略：默认 fail；truncate 必须显式开启（§4.1.4）。
     pub budget_overflow: String,
@@ -188,6 +190,7 @@ impl Default for Settings {
             registry_path: "data/registry.sqlite3".to_string(),
             templates_file: String::new(),
             admin_token: String::new(),
+            flatten_threshold: 40,
             groups_mode: "strict".to_string(),
             budget_overflow: "fail".to_string(),
             policy: TenantPolicy::default(),
@@ -210,6 +213,9 @@ impl Settings {
         s.registry_path = env_or("HJZL_MCP_REGISTRY_PATH", &s.registry_path);
         s.templates_file = env_or("HJZL_MCP_TEMPLATES_FILE", &s.templates_file);
         s.admin_token = env_or("HJZL_ADMIN_TOKEN", &s.admin_token);
+        s.flatten_threshold = env_or("HJZL_MCP_FLATTEN_THRESHOLD", "40")
+            .parse::<i64>()
+            .map_err(|_| "HJZL_MCP_FLATTEN_THRESHOLD 非法".to_string())?;
         s.groups_mode = env_or("HJZL_MCP_GROUPS_MODE", &s.groups_mode);
         s.budget_overflow = env_or("HJZL_MCP_BUDGET_OVERFLOW", &s.budget_overflow);
         if Path::new(&s.config_file).exists() {
@@ -228,6 +234,12 @@ impl Settings {
         }
         if !matches!(self.groups_mode.as_str(), "strict" | "intersect") {
             return Err(format!("groups_mode 非法: {}", self.groups_mode));
+        }
+        if self.flatten_threshold < 0 {
+            return Err(format!(
+                "flatten_threshold 不能为负: {}",
+                self.flatten_threshold
+            ));
         }
         if self.registry_path.is_empty() {
             return Err("registry_path 不能为空".to_string());
