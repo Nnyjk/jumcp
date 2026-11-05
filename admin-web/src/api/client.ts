@@ -23,16 +23,28 @@ export interface RequestOptions {
   params?: QueryParams | undefined
   body?: unknown | undefined
   signal?: AbortSignal | undefined
+  /**
+   * 标记为管理面写操作：后端要求写操作带 X-Admin-Actor 标识操作者（§4.4.4 四眼原则）。
+   * 只读请求不带该头。
+   */
+  adminWrite?: boolean | undefined
 }
 
 const BASE_URL = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
+/** 后端 /admin/* 需要 Bearer token（HJZL_ADMIN_TOKEN）。 */
+const ADMIN_TOKEN = import.meta.env.VITE_ADMIN_TOKEN ?? ''
+/** 写操作的操作者标识（后端 x-admin-actor）。 */
+const ADMIN_ACTOR = import.meta.env.VITE_ADMIN_ACTOR ?? ''
 
 function buildInit(options: RequestOptions): RequestInit {
+  const headers: Record<string, string> = {}
+  if (ADMIN_TOKEN !== '') headers.authorization = `Bearer ${ADMIN_TOKEN}`
+  if (options.adminWrite === true && ADMIN_ACTOR !== '') headers['x-admin-actor'] = ADMIN_ACTOR
+  if (options.body !== undefined) headers['content-type'] = 'application/json'
+
   const init: RequestInit = { method: options.method ?? 'GET' }
-  if (options.body !== undefined) {
-    init.headers = { 'content-type': 'application/json' }
-    init.body = JSON.stringify(options.body)
-  }
+  if (Object.keys(headers).length > 0) init.headers = headers
+  if (options.body !== undefined) init.body = JSON.stringify(options.body)
   if (options.signal !== undefined) init.signal = options.signal
   return init
 }
@@ -47,6 +59,7 @@ function buildUrl(path: string, params?: QueryParams): string {
   return `${BASE_URL}${path}${query ? `?${query}` : ''}`
 }
 
+/** 后端错误体形如 {"error":{"code","message","data"}}；非 JSON 错误体保留原文。 */
 function errorFromResponse(status: number, bodyText: string): ApiError {
   let code = `HTTP_${status}`
   let message = bodyText.trim() || `请求失败（HTTP ${status}）`
@@ -59,7 +72,10 @@ function errorFromResponse(status: number, bodyText: string): ApiError {
           ? (outer.error as Record<string, unknown>)
           : undefined
       const rawCode = outer.code ?? inner?.code
-      const rawMessage = outer.message ?? inner?.message ?? (typeof outer.error === 'string' ? outer.error : undefined)
+      const rawMessage =
+        outer.message ??
+        inner?.message ??
+        (typeof outer.error === 'string' ? outer.error : undefined)
       if (typeof rawCode === 'string' && rawCode !== '') code = rawCode
       if (typeof rawMessage === 'string' && rawMessage !== '') message = rawMessage
     }
@@ -89,20 +105,4 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   } catch {
     throw new ApiError(response.status, 'INVALID_RESPONSE', '后端返回的不是合法 JSON')
   }
-}
-
-/** 发起请求并返回原始文本（健康检查当前返回纯文本）。 */
-export async function requestText(path: string, options: RequestOptions = {}): Promise<string> {
-  const url = buildUrl(path, options.params)
-  let response: Response
-  try {
-    response = await fetch(url, buildInit(options))
-  } catch (cause) {
-    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
-    throw new ApiError(0, 'NETWORK_ERROR', `无法连接后端 ${url}`)
-  }
-  if (!response.ok) {
-    throw errorFromResponse(response.status, await response.text())
-  }
-  return response.text()
 }

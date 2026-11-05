@@ -1,8 +1,14 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchAuditEvents } from '../api/admin'
+import { fetchAuditEvents, PAGE_LIMIT } from '../api/admin'
 import type { AuditEventType, AuditQuery } from '../api/types'
-import { EmptyState, ErrorState, LoadingState, PageShell } from '../components/PageShell'
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageShell,
+  Pagination,
+} from '../components/PageShell'
 
 const EVENT_TYPES: AuditEventType[] = [
   'session_init',
@@ -25,10 +31,11 @@ const EMPTY_FILTER: AuditQuery = {
 export default function AuditQueryPage() {
   const [draft, setDraft] = useState<AuditQuery>(EMPTY_FILTER)
   const [filter, setFilter] = useState<AuditQuery>(EMPTY_FILTER)
+  const [offset, setOffset] = useState(0)
 
   const { data, error, isPending, isError } = useQuery({
-    queryKey: ['audit-events', filter],
-    queryFn: ({ signal }) => fetchAuditEvents(filter, signal),
+    queryKey: ['audit-events', filter, offset],
+    queryFn: ({ signal }) => fetchAuditEvents(filter, offset, signal),
   })
 
   return (
@@ -41,6 +48,7 @@ export default function AuditQueryPage() {
         className="filter-bar"
         onSubmit={(event) => {
           event.preventDefault()
+          setOffset(0)
           setFilter(draft)
         }}
       >
@@ -91,6 +99,7 @@ export default function AuditQueryPage() {
           onClick={() => {
             setDraft(EMPTY_FILTER)
             setFilter(EMPTY_FILTER)
+            setOffset(0)
           }}
         >
           重置
@@ -99,8 +108,8 @@ export default function AuditQueryPage() {
 
       {isPending && <LoadingState />}
       {isError && <ErrorState error={error} />}
-      {data && data.length === 0 && <EmptyState hint="没有符合条件的审计事件。" />}
-      {data && data.length > 0 && (
+      {data && data.events.length === 0 && <EmptyState hint="没有符合条件的审计事件。" />}
+      {data && data.events.length > 0 && (
         <table className="table">
           <thead>
             <tr>
@@ -115,7 +124,7 @@ export default function AuditQueryPage() {
             </tr>
           </thead>
           <tbody>
-            {data.map((event) => (
+            {data.events.map((event) => (
               <tr key={event.event_id}>
                 <td>{event.ts}</td>
                 <td className="mono">{event.event_id}</td>
@@ -132,6 +141,10 @@ export default function AuditQueryPage() {
           </tbody>
         </table>
       )}
+      {data && (
+        <Pagination total={data.total} offset={data.offset} limit={data.limit} onChange={setOffset} />
+      )}
+      <p className="hint">分页步长固定 {PAGE_LIMIT} 条，与后端默认 limit 一致。</p>
     </PageShell>
   )
 }

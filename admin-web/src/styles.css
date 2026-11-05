@@ -105,6 +105,33 @@ body {
   border-color: #2c5580;
 }
 
+.badge-ok {
+  color: var(--ok);
+  border-color: #2f6b45;
+}
+
+.badge-warn {
+  color: #ffd479;
+  border-color: #7a6320;
+}
+
+.badge-error {
+  color: var(--danger);
+  border-color: #7a2f2f;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.section-title {
+  font-size: 14px;
+  margin: 20px 0 8px;
+}
+
 .toolbar,
 .filter-bar {
   display: flex;

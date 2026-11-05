@@ -28,8 +28,8 @@ export default function ReviewQueuePage() {
 
       {isPending && <LoadingState />}
       {isError && <ErrorState error={error} />}
-      {data && data.length === 0 && <EmptyState hint="当前没有待审核条目。" />}
-      {data && data.length > 0 && (
+      {data && data.items.length === 0 && <EmptyState hint="当前没有待审核条目。" />}
+      {data && data.items.length > 0 && (
         <table className="table">
           <thead>
             <tr>
@@ -39,22 +39,22 @@ export default function ReviewQueuePage() {
               <th>风险</th>
               <th>状态</th>
               <th>版本</th>
+              <th>更新时间</th>
               <th>定义哈希</th>
-              <th>提交人</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {data.map((item) => (
-              <tr key={`${item.capability_id}@${item.version}`}>
-                <td>{item.capability_id}</td>
+            {data.items.map((item) => (
+              <tr key={`${item.id}@${item.version}`}>
+                <td>{item.id}</td>
                 <td>{item.kind}</td>
                 <td>{item.group}</td>
                 <td>{item.risk}</td>
                 <td>{item.status}</td>
                 <td>{item.version}</td>
+                <td>{item.updated || '—'}</td>
                 <td className="mono">{item.definition_hash}</td>
-                <td>{item.submitted_by || '—'}</td>
                 <td>
                   <DisabledAction label="批准" />
                 </td>
@@ -62,6 +62,9 @@ export default function ReviewQueuePage() {
             ))}
           </tbody>
         </table>
+      )}
+      {data && data.items.length > 0 && (
+        <p className="hint">共 {data.total} 条待审核。</p>
       )}
     </PageShell>
   )
