@@ -128,7 +128,189 @@ Native driver / JDBC → Database
 - **动态新增数据源要不要重启**：**不要**。MCP 工具 `dbx_add_connection` / `dbx_duplicate_connection` / `dbx_remove_connection` 直接改 DBX 存储，下一次调用按需拉起对应 Agent 进程 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-mcp/src/server.rs#L4148-L4182 、 #L4248-L4256 、 #L4309-L4362 。
 - **进程复用粒度**：同一 driver 的多个连接**共享一个 Agent 进程**，进程指纹 = `agent_key + program + args + working_dir + env`（env 入指纹是为了隔离 Oracle 的 `NLS_LANG` 等进程级设置）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_runtime.rs#L413-L425 。同一进程内并发会话上限 **256**、请求线程池 **64** —— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/MultiSessionJsonRpcServer.java#L31-L33 、 #L247-L252 。若 Agent 不支持 `multi_session` 协议 v2，宿主回退为"每连接一个专属进程" —— https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/connection/mod.rs#L4000-L4004 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L151-L161 。
 
-## 3. 对我们可借鉴
+## 3. 插件/连接类型如何声明连接元数据与能力
+
+DBX 把"数据源长什么样"拆成**三层彼此独立的声明**，各自落盘位置不同。
+
+### 3.1 连接类型描述符 `plugins/connection-types/<db>.yaml`（上游共 90 个文件）
+
+这是**数据源元数据与能力位的主声明处**，Rust 侧编译期转成 `database_manifest.json`，运行时解析为 `DatabaseManifestEntry`。以达梦为例，逐行字段（原文 https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L1-L42 ）：
+
+```yaml
+schemaVersion: 1
+order: 260
+dbType: dameng
+compareModes: [schema, data]
+transferSupportLevel: family-compatible
+transferObjectFamily: oracle
+rustVariant: Dameng
+label: 达梦 DM8
+dialect: Dameng
+runtimeMode: agent
+mcpMode: bridge
+agentKey: dameng
+driverStoreVisible: true
+driverStoreOrder: 1
+singleConnectionPool: true
+metadataConnectionScoped: false
+skipTcpProbe: true
+defaultPort: 5236
+traits:
+  schemaAware: true
+  singleDatabase: true
+  clearableQuerySchema: true
+  fetchFirst: true
+  diagramSql: true
+supportLevel: operate
+capabilities:
+  queryExecution: true
+  metadataBrowse: true
+  objectBrowser: true
+  objectSource: true
+  schemaSearch: true
+  diagram: true
+  tableDataEdit: true
+  tableStructureEdit: true
+  tableImport: true
+  dataTransfer: true
+  sqlFileExecution: true
+  databaseCreate: false
+  fieldLineage: true
+  sqlExplain: true
+  userAdmin: false
+  driverManagement: true
+```
+
+字段语义（逐条有据）：
+
+- `runtimeMode` 决定执行路径，枚举**只有 4 个值**：`Native` / `File` / `Agent` / `External` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L16-L21 。`agent`=走 Agent 子进程；`external`=走外部插件（本机 JDBC 插件即此类：`runtimeMode: external`、`mcpMode: bridge`、`formKind: jdbc`、`supportLevel: browse`）—— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/jdbc.yaml#L1-L16 。
+- `agentKey` = Agent 包键（= Agent 模块名），这是**数据源 → Agent 二进制**的唯一映射字段 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L130 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_catalog.rs#L6-L11 。
+- `driverProfiles[]` 让同一数据库有多个 Agent 包/版本变体，字段为 `{profile, agentKey, packageKey, label, storeVisible, storeOrder}` —— Oracle 的 `oci` profile 指向 `agentKey: oracle-oci`（https://github.com/t8y2/dbx/blob/main/plugins/connection-types/oracle.yaml#L15-L30 ）、H2 的 `h2-legacy/h2-v1/h2-v2/h2-v3/h2-custom` 五个 profile 共用 `agentKey: h2`（https://github.com/t8y2/dbx/blob/main/plugins/connection-types/h2.yaml#L14-L35 ）。
+- `capabilities{}` 是**能力位**（是否支持 DML/DDL/对象浏览/表数据编辑/建库/字段血缘/解释计划等）。Rust 侧枚举为 `DatabaseCapability{QueryExecution, MetadataBrowse, ObjectBrowser, ObjectSource, SchemaSearch, TableDataEdit, SqlFileExecution}`，未显式声明的按 `supportLevel` 推导默认值 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L100-L114 、 #L153-L180 。
+- `traits{}` 是行为特征：`schemaAware` / `singleDatabase` / `treeSchema` / `databaseObjectTree` / `clearableQuerySchema` / `fetchFirst` / `diagramSql` —— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L19-L24 、 https://github.com/t8y2/dbx/blob/main/plugins/connection-types/jdbc.yaml#L12-L15 。
+- `singleConnectionPool` / `metadataConnectionScoped` / `skipTcpProbe` 三个布尔直接驱动宿主的连接池与探测行为，且 `is_agent_type(db_type)` 恒为 `skipTcpProbe=true` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/database_capabilities.rs#L14-L26 、 #L66-L80 。
+- 这份 YAML 由 `crates/dbx-types/build.rs` 在编译期生成 `database_manifest.json` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/build.rs#L16-L18 、 #L67-L72 ，运行时读取入口 https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L186-L198 。
+
+### 3.2 插件清单 `plugins/<id>/manifest.json`
+
+本机 JDBC 插件的清单**只有 6 个顶层字段 + 一个 drivers 数组**：
+
+```json
+{
+  "id": "jdbc",
+  "name": "DBX JDBC Plugin",
+  "version": "0.1.52",
+  "protocol_version": 1,
+  "description": "Adds optional JDBC driver support to DBX.",
+  "executable": "bin/dbx-jdbc-plugin",
+  "drivers": [ { "id": "jdbc", "label": "JDBC", "kind": "external", "database_type": "jdbc" } ]
+}
+```
+（上游 https://github.com/t8y2/dbx/blob/main/plugins/jdbc/manifest.json#L1-L16 ；本机 `C:/Users/Nn/AppData/Roaming/com.dbx.app/plugins/jdbc/manifest.json:1-16`，本机版本 `0.1.51`）
+
+**清单里没有驱动坐标、没有连接参数 schema、没有能力位、没有权限级别**：`drivers[]` 的字段只有 `{id, label, kind, database_type}`（Rust 侧 `PluginDriverManifest`）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L210-L218 。JDBC 插件用的是**旧版 v0 清单**，宿主仍兼容读取（`protocol_version` / `executable` / `drivers` 被显式标注为 legacy v0 字段）—— 同上 #L131-L140 。
+
+宿主侧新版清单 `PluginManifest` 的完整字段名：`$schema`、`manifest_version`、`id`、`name`、`icon`、`version`、`publisher`、`description`、`source`、`homepage`、`engines`、`permissions[]`、`entrypoints`、`contributions[]`、`localizations`，外加 v0 兼容的 `protocol_version`、`executable`、`drivers[]` —— 同上 #L100-L140 。
+
+### 3.3 插件的连接参数 schema 与 MCP 能力位在哪
+
+`contributions[]` 是枚举：`connection-provider` / `workbench` / `filesystem-provider` / `context-menu` / `result-view` / `command` / `menus` / `mcp` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L274-L285 。
+
+- **连接参数 schema = `fields[]`**：`PluginConnectionProviderContribution` 字段为 `id`、`label`、`icon`、`database_type`、`description`、`fields[]`、`workbench`、`filesystem_provider`、`capabilities[]`、`actions[]`、`proxy_route`；单个字段 `PluginFormFieldDefinition{key, label, type, description, placeholder, required, default, …}`，`key` 就是 host/port/username/password/ssl 这类字段名 —— 同上 #L709-L736 、 #L414-L426 。连接能力位枚举只有 `test` / `connect` / `disconnect` 三项 —— 同上 #L744-L750 。
+- **MCP 能力位**：`PluginMcpContribution` 字段为 `id`、`description`、`ai_tools`（默认 true）、`external_tools`（默认 false，置 true 才暴露到 dbx MCP server）、`toolsets[]`、`tools{}`（按工具名声明 `{toolset, access}`）、可选子作用域 —— 同上 #L319-L344 。
+
+### 3.4 权限级别如何映射到连接
+
+- 插件作者只能声明**每个工具的 access 起点**：`PluginMcpAccess{Read, Write, Full}` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L381-L395 。
+- 宿主统一级别是 `McpAccessLevel{None < Read < Write < Full}`，旧的 `(read_only, allow_dangerous_sql)` 二元组映射为 `Read` / `Full` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/ai/mcp_access.rs#L64-L93 。
+- 生效级别按 **库 → 连接 → 分组 → 全局** 逐级回退取最具体者；连接只读、生产保护、数据库账号权限、MCP 连接 allowlist 是**任何作用域都越不过的硬上限** —— https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L450-L452 、 #L466 ；`DBX_MCP_ALLOW_WRITES=0` 只能收紧不能放宽 —— 同文件 #L471 ；未配置时全局默认是 `Read` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/ai/mcp_access.rs#L306 。
+
+## 4. 核心 ⇄ agent 的 RPC 协议与生命周期全貌
+
+### 4.1 协议文件与握手
+
+- 协议是**数据文件**（随 agent jar 一起打包）：`agents/common/src/main/resources/agent-protocol-v1.json` / `agent-protocol-v2.json`；本机 jar 根目录直接可见 `agent-protocol-v1.json` / `agent-protocol-v2.json`（`C:/Users/Nn/.dbx/agents/drivers/dameng/agent.jar!/agent-protocol-v2.json`）。
+- 握手：宿主 → agent `{"method":"handshake","params":{"appVersion":…,"supportedProtocolVersions":[2]}}`（`AGENT_PROTOCOL_VERSION = 2`）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L1142 、 #L3812-L3817 ；agent → 宿主返回 `{protocolVersion, agentProtocolVersion, capabilities}` —— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/resources/agent-protocol-v2.json#L4 。降级策略：agent 不认识 `handshake`（`Unknown method: handshake` 等）时退回 legacy 协议 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L3819-L3823 、 #L3700-L3721 。
+- 能力位全集与默认 SQL 能力集：https://github.com/t8y2/dbx/blob/main/agents/common/src/main/resources/agent-protocol-v2.json#L5-L7 —— `allCapabilities` 40 项（含 `multi_session`、`structured_error_v1`、`blob_bind_statements_v1`、`exact_metadata_identity_v1`、`native_job_*`、`zookeeper_endpoint_routes` 等）；`capabilities` 默认 8 项 `connect/test_connection/metadata/query/paged_query/transaction/ddl/multi_session`；`defaultSqlCapabilities` 再加 `structured_error_v1`。
+
+### 4.2 方法清单（`commonMethods`，43 个）
+
+`handshake`、`connect`、`open_session`、`close_session`、`validate_session`、`cancel_session`、`test_connection`、`validate_connection`、`connection_info`、`list_databases`、`list_schemas`、`list_tables`、`list_objects`、`list_data_types`、`completion_assistant_search_v1`、`get_object_source`、`get_table_ddl`、`get_columns`、`list_indexes`、`list_foreign_keys`、`list_triggers`、`list_constraints`、`list_partitions`、`list_subpartitions`、`get_table_partition_status`、`get_table_partitioning`、`execute_query`、`execute_query_page`、`fetch_query_page`、`close_query_session`、`read_large_value_chunk`、`release_large_value`、`start_table_read`、`fetch_table_read_page`、`close_table_read_session`、`get_explain_info`、`execute_batch`、`execute_transaction`、`begin_manual_transaction`、`commit_manual_transaction`、`rollback_manual_transaction`、`disconnect`、`shutdown` —— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/resources/agent-protocol-v2.json#L51-L97 。
+
+另有三组专用方法：native job（`prepare_legacy_job` / `commit_legacy_job` / `rollback_legacy_job` / `legacy_job_status`）、native job session（`open_native_job_session` / `close_native_job_session`）、MongoDB legacy 方法集与 KV 方法集 —— 同文件 #L8-L9 、 #L87-L96 。会话字段名固定：`sessionField = agentSessionId`、`cursorSessionField = sessionId` —— 同文件 #L98-L99 。
+
+### 4.3 生命周期
+
+- **会话标识**：`agentSessionId` 由宿主生成（uuid v4 simple 串）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/connection/mod.rs#L3951 ；agent 端缺失即抛 `agentSessionId is required` —— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/MultiSessionJsonRpcServer.java#L442-L447 。
+- **会话表**：`sessions` 为 `ConcurrentHashMap`，上限 `MAX_SESSIONS = 256`（超出报 backpressure）—— 同上 #L31 、 #L246-L252 ；请求线程池 `MAX_REQUEST_THREADS = 64`、清理线程池 `MAX_CLEANUP_THREADS = 16` —— 同上 #L32-L33 ；无 `agentSessionId` 的请求落到 legacy 会话 `"__legacy__"`（`connect`/`disconnect` 也走它）—— 同上 #L30 、 #L228-L237 。
+- **每个会话一个 Agent 实例**：`open_session` 时 `agentFactory.get()` 新建一个 `DatabaseAgent`，并把进程级共享的 `JdbcConnectionPoolRegistry` 挂上去 —— 同上 #L253-L266 。
+- **超时**：RPC 默认 30s（`RPC_TIMEOUT_SECS`）、启动 15s（`STARTUP_TIMEOUT_SECS`），握手超时取 `min(启动 deadline, RPC_TIMEOUT)` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L1143-L1144 、 #L136-L138 ；语句超时由 agent `statement.setQueryTimeout` 执行 —— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/JdbcExecutor.java#L71 。
+- **取消**：`cancel_session {agentSessionId}`，独立写 stdin 并**保持 stdin 打开**直到取消回执到达（EOF 会让 agent 提前退出）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L421-L429 、 #L2476-L2494 。
+- **错误**：结构化错误 `data{category, retryable, sessionDisposition}`，`category` 取 `timeout` / `sql` / `connection`，`sessionDisposition` 取 `keep` / `quarantine`（超时或连接错误且非 connect 阶段 → quarantine）—— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/AgentRpcError.java#L90-L92 、 #L138-L148 。宿主把这类错误翻译成统一错误码：`DBX-JDBC-1001/1002/2001/2002/2003/3001/3002/4001/5001/5002/9001`、`DBX-TXN-1001…1010`、`DBX-PLDEBUG-1001` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/backend_error.rs#L528-L699 。
+- **agent 退出码语义**：**没有专用退出码契约**；宿主只把退出状态拼进错误消息（`agent process exited with exit status: 1`）并附 stderr 尾部 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L4287-L4327 、 #L5201-L5213 。启动阶段未发 `{"ready":true}` 就退出 → 报错并**重试一次** —— 同上 #L2053-L2062 、 #L2093-L2114 。
+- **会话回收（agent 侧）**：`close_session` 移除会话并 `quarantineAndClose`；维护线程每 60s 跑一次 `expireIdleResources`（空闲资源过期）—— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/MultiSessionJsonRpcServer.java#L34 、 #L275-L287 、 #L337-L356 、 #L564 。
+- **会话回收（宿主侧）**：会话计数归零即把共享 runtime 从 map 里摘掉 —— https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_runtime.rs#L366-L391 ；另有 `stop_daemons` / `stop_daemon_by_key` / `restart_daemon_by_key` —— 同文件 #L85-L114 。
+- **进程复用与回收条件**：共享 runtime 键 = `agent_key + program + args + working_dir + env`（env 入指纹是为隔离 Oracle `NLS_LANG` 等进程级设置）—— 同文件 #L413-L425 ；runtime 用 `OnceCell` + 会话计数管理，失败即从 map 移除后重建 —— 同文件 #L325-L356 、 #L394-L411 ；**agent 不支持 multi_session v2 时退回"每连接一个专属进程"** —— https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/connection/mod.rs#L4000-L4004 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_driver.rs#L151-L161 。
+
+## 5. 驱动与类加载隔离
+
+### 5.1 驱动的三种来源
+
+1. **Bundled**：驱动作为 Gradle 依赖 shade 进 agent jar，不需要额外清单标记 —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L129-L143 。
+2. **External**：驱动 jar 放模块 `libs/`（`fileTree(dir: 'libs', include: ['*.jar'])`），清单额外写 `Agent-External-Driver: true`；发布工作流据此在 `agent-registry.json` 写 `external_driver_required: true` —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L145-L160 、 https://github.com/t8y2/dbx/blob/main/.github/workflows/agents-release.yml#L1579 、 #L1478 。
+3. **用户自带**（JDBC 插件场景）：连接里填 `jdbc_driver_paths` / `jdbc_driver_class`，运行时用 `URLClassLoader` 现场加载。
+
+### 5.2 Agent 侧加载策略
+
+```java
+if (driverPaths != null && !driverPaths.isEmpty()) {
+    URLClassLoader loader = new URLClassLoader(urls, getClass().getClassLoader());
+    Driver driver = (Driver) Class.forName(driverClass, true, loader).getDeclaredConstructor().newInstance();
+    DriverManager.registerDriver(new DriverShim(driver));
+} else {
+    Class.forName(driverClass);
+}
+```
+—— https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/AbstractJdbcAgent.java#L150-L167
+
+要点：**父子委派（parent-first）**，`URLClassLoader` 的 parent 是 agent 自身 classloader（因此 agent 内 shade 的 `common` 与 HikariCP 优先命中）；驱动实例通过 `DriverShim` 包装后再注册到 `DriverManager`（避免驱动自注册时丢失）—— 同上 #L169-L172 。
+
+### 5.3 JDBC 插件侧的加载与冲突处理
+
+- **一个插件进程只服务一个驱动**：`registerDrivers` 维护 `registeredDriverKey`，换驱动先 `closeSharedConnection()` 再重建；已注册同名驱动时直接复用（legacy 别名走 `LegacyJdbcDriverClass.load`）—— https://github.com/t8y2/dbx/blob/main/plugins/jdbc/src/main/java/app/dbx/jdbc/DbxJdbcPlugin.java#L1106-L1128 。
+- **类加载**：`new URLClassLoader(urls, DbxJdbcPlugin.class.getClassLoader())` 并设为线程 context classloader；随后 `ServiceLoader.load(Driver.class, loader)` 自动发现驱动，一个都没发现且给了 paths 才报错 `"No JDBC driver was discovered. Enter the driver class name for this JAR."` —— 同上 #L1130-L1171 。
+- **多驱动共存**：同一进程内**不允许**切换驱动 —— 同上 #L1108-L1110 （`"JDBC logical sessions require the same selected driver"`）；要并存只能起多个插件进程（宿主侧按 `(runtime_key, env.vars)` 复用/新建）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/jdbc_sessions.rs#L32-L80 。
+- **驱动坐标解析**：插件自带 `bin/dbx-maven-resolver`（main class `app.dbx.jdbc.maven.DbxMavenResolver`），用 Maven Resolver 解析依赖，本地仓库默认 `~/.dbx/maven` —— https://github.com/t8y2/dbx/blob/main/plugins/jdbc/src/main/java/app/dbx/jdbc/maven/DbxMavenResolver.java#L29-L78 、 #L138-L151 、 本机 `C:/Users/Nn/AppData/Roaming/com.dbx.app/plugins/jdbc/maven-cache/`（本机已存在的 Maven 缓存目录）。
+- **插件自己的协议**：插件进程对宿主暴露 `jdbcSessionProtocol` 探测方法，返回 `{version: 2, capabilities: [native_job_legacy_v1, native_job_session_v1, native_job_legacy_ob_v1, exact_metadata_identity_v1]}`；宿主不认这个版本就拒绝并提示升级 —— https://github.com/t8y2/dbx/blob/main/plugins/jdbc/src/main/java/app/dbx/jdbc/DbxJdbcPlugin.java#L704-L709 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/jdbc_sessions.rs#L62-L72 。
+
+### 5.4 什么时候才启用 JVM 侧
+
+- **DBX 的明确取舍**：*"For new agents, prefer a native (Go or Rust) driver over a Java/JDBC agent whenever a mature, license-compatible native driver is available."* 理由是原生 agent 单文件、无需 JRE，省掉 JVM 常驻内存与启动时间 —— https://github.com/t8y2/dbx/blob/main/agents/README.md#L95-L97 。
+- **判定落在 `runtimeMode`**：`native`（原生驱动） / `file`（本地文件库） / `agent`（Java Agent 子进程） / `external`（外部插件） —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L16-L21 ；达梦这类国产库走 `agent` —— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L10-L12 ，通用 JDBC 走 `external` —— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/jdbc.yaml#L6-L11 。
+- **能力上还要有 Java 版驱动**：JDBC Agent 库需要 JRE 21 + Agent 包 + JDBC 驱动三者齐备 —— https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L358-L360 。
+
+## 6. 新增一个数据源要交付什么（目录级清单）
+
+以新增一种数据库 `exampledb` 为例，按仓库实际结构：
+
+| # | 交付物 | 位置 / 证据 |
+|---|---|---|
+| 1 | Agent 模块：Gradle 模块 + 入口类 + 测试 | `agents/drivers/exampledb/build.gradle`、`agents/drivers/exampledb/src/main/java/com/dbx/agent/exampledb/ExampledbAgent.java`；基类选 `ConfiguredJdbcAgent` / `PostgresLikeAgent` / `AbstractJdbcAgent` —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L115-L124 |
+| 2 | Agent 必备能力（方言元数据） | 必须实现：`connect`、`testConnection`、`listDatabases`、`listSchemas`、`listTables`、`getColumns`、`listIndexes`、`listForeignKeys`、`listTriggers`、`executeQuery`、`disconnect`、`getConnection`；未连接时抛 `IllegalStateException("Not connected")` —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L19-L37 |
+| 3 | 注册进 Gradle | `agents/settings.gradle` 的 `driverModules` 数组加名字 —— https://github.com/t8y2/dbx/blob/main/agents/settings.gradle#L4-L16 |
+| 4 | 版本号 | `agents/versions.json` 加 `"exampledb": "0.1.0"`（CI 会自动 bump，不手改）—— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L165-L170 、 https://github.com/t8y2/dbx/blob/main/agents/README.md#L141-L141 |
+| 5 | JAR 清单 | `Main-Class` + `Agent-Label`（外置驱动再加 `Agent-External-Driver: true`）—— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L145-L160 、 #L172-L173 |
+| 6 | 构建产物校验 | `agents/scripts/validate_agent_jars.py` 会校验 JAR 内有 `Main-Class` 且类文件存在、有 `Agent-Label` —— https://github.com/t8y2/dbx/blob/main/agents/scripts/validate_agent_jars.py#L24-L43 |
+| 7 | 连接类型描述符 | `plugins/connection-types/exampledb.yaml`，字段清单见 §3.1（`dbType`、`label`、`dialect`、`runtimeMode`、`mcpMode`、`agentKey`、`driverStoreVisible`、`supportLevel`、`capabilities{}`、`traits{}`…）—— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L1-L42 |
+| 8 | Rust 侧类型枚举 | `crates/dbx-types` 的 `DatabaseType` 变体 + `rustVariant`（描述符里的 `rustVariant` 与之对应）—— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L116-L152 |
+| 9 | 分发登记 | CI 生成 `agent-registry.json`：`{version, label, min_app_version, jre, external_driver_required, jar:{url, sha256, size}}`，原生 agent 另有 `native{platforms{...}}` —— https://github.com/t8y2/dbx/blob/main/.github/workflows/agents-release.yml#L1444-L1500 、 #L1527-L1560 |
+| 10 | 行为测试 | 至少一个执行路径回归测试；有内嵌库用 `JdbcExecutionBehaviorTest` + `JdbcMetadataBehaviorTest`，否则用 `JdbcFakeExecutionBehaviorTest` —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L196-L260 |
+| 11 | 元数据覆盖台账 | `agents/metadata-constraint-coverage.tsv` 记录各库元数据约束的覆盖情况 —— https://github.com/t8y2/dbx/blob/main/agents/metadata-constraint-coverage.tsv |
+| 12 | 若走 Rust 原生驱动 | 不建 `agents/` 模块，改建 `crates/dbx-driver-<x>/`（如 `crates/dbx-driver-postgres`、`crates/dbx-driver-mysql`），并把 `runtimeMode` 写 `native` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L16-L21 、 https://github.com/t8y2/dbx/blob/main/agents/README.md#L95-L97 |
+
+> 上游 `agents/docs/agent-authoring.md` 的 "Module Registration" 一节给的是同样的六步（模块、settings.gradle、versions.json、`Agent-Label`、`Main-Class`、README 支持表）—— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L165-L176 。注意它**没有**提 `plugins/connection-types/*.yaml` 与 `crates/dbx-types` 的 `DatabaseType` 枚举——这是本文从 `crates/dbx-types/build.rs` 与 `database_manifest.rs` 反推出来的必做项。
+
+## 7. 对我们可借鉴
 
 我们的场景：Rust MCP server + 配置驱动 `[[datasources]]`（多数据源、每源独立 DSN 环境变量、只读/写账号分离、能力注册表）。
 
@@ -143,6 +325,9 @@ Native driver / JDBC → Database
 7. **只读/写账号分离的落点**：DBX 把只读判定完全放在**宿主**，数据库账号权限是硬上限（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L402-L404 ）。我们已有"只读/写账号分离"，DBX 的做法是让**账号权限成为不可逾越的上限**，配置层只能收紧不能放宽——这是可以直接抄的策略语义。
 8. **运行期只读开关**：`DBX_MCP_ALLOW_WRITES=0` 一次性把本次运行钉成只读，且明确"只能收紧不能放宽"（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L471 ）。对应我们的"部署期强制只读"开关语义。
 9. **审计记录字段**：时间/接入方式/客户端名与版本/工具/目标数据源/判定级别/是否经确认/耗时/请求响应摘要（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L462-L464 ）。我们做 MCP 调用审计可以直接用这份字段表。
+10. **能力位声明式化**。DBX 把每个数据库的能力写在一份 YAML 的 `capabilities{}`（queryExecution / metadataBrowse / objectBrowser / objectSource / schemaSearch / tableDataEdit / sqlFileExecution…）里，未声明的按 `supportLevel` 兜底推导 —— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L26-L42 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L100-L114 、 #L153-L180 。我们的"能力注册表"正是这个东西：**能力属于数据源声明，而不是散落在工具白名单里**。
+11. **数据源参数 schema 也是声明式的**：`PluginFormFieldDefinition{key,label,type,description,placeholder,required,default}` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L414-L426 ，配合连接能力位 `test/connect/disconnect`（#L744-L750 ）。我们的 `[[datasources]]` 里每个源的连接参数可以照此逐字段声明类型与必填。
+12. **"数据库类型 → 执行后端"的显式开关**：`runtimeMode{native,file,agent,external}` 让"要不要起 JVM 侧进程"成为数据源的一项属性，而不是散在代码里的 if —— https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L16-L21 。
 
 **不适用 / 不可照搬**
 
@@ -151,26 +336,29 @@ Native driver / JDBC → Database
 3. **不要照搬 DBX 的"连接树 + 分组"权限模型**。DBX 是桌面客户端，权限树面向人（组/连接/库三级 + UI）；我们是服务端、面向 Agent 与租户，权限模型应是"租户 cap ≤ 角色默认 ≤ 请求声明"（已在 `notes/mcp_plan/research_dbx.md` 记录过差异）。DBX 的**继承顺序思想**可借鉴，**存储形态**不必照搬。
 4. **不要照搬"状态化会话 + 显式事务 + USE/SET"**。DBX 允许会话固定连接、开事务、改 schema；我们走模板 + 只读 + 版本钉住，开这些等于开放 `USE`/`SET` 语义（该取舍已在 `notes/mcp_plan/research_dbx.md`「明确不采纳」记录）。
 5. **不要照搬 DBX 的 `max_rows` 夹紧策略到 token 预算**。行数上限夹紧是合理的（少给几行并回显 effective）；但 token 预算必须显式失败或显式摘要，不能静默夹紧（DBX 没有 token 预算概念，这一层差异见 `notes/mcp_plan/research_dbx.md`）。
+6. **不要照搬"两套清单并存"的分裂**。DBX 的数据源元数据散在三处：`plugins/connection-types/*.yaml`（描述符）、`plugins/<id>/manifest.json`（插件清单）、`crates/dbx-types` 的 `DatabaseType` 枚举 + `rustVariant`（Rust 侧还得再写一遍）—— 见 §6 表格第 7/8 行；连上游的 agent 编写指南都只列了其中 6 步、没提 YAML 与 Rust 枚举这两步 —— https://github.com/t8y2/dbx/blob/main/agents/docs/agent-authoring.md#L165-L176 。我们只有 Rust + 一份 TOML，**不要为了"插件化"再造第二、三份声明**；真要扩展，把连接类型元数据并进 `[[datasources]]` 一处即可。
 
-## 4. 未查清
+## 8. 未查清
 
 以下问题我**没有找到直接证据**，不做推测填空：
 
-1. **是否存在任何"attach 到运行中 JVM"的路径**（含商业/隐藏开关）。已查：本机 `C:/Users/Nn/.dbx/` 全量（`bin/`、`agents/`、`plugins/`）、`dbx-mcp.exe` 全字符串检索（`javaagent`/`agentmain`/`Instrumentation`/`jdwp`/`jattach` 均无命中）、反编译 `agents/common` 全部 164 个 `com/dbx/agent/**` 类（`premain`/`agentmain`/`Instrumentation`/`retransform` 零命中）、Agent JAR 的 `MANIFEST.MF`、上游 `agents/` 目录树（jsdelivr 列出的 1940 个文件中无任何 attach/premain 相关文件）。**未查**：GitHub 全库代码搜索（匿名 API 限额耗尽）、DBX 桌面端 asar 资源（本机未定位到桌面端安装目录，只有 `AppData/Local/com.dbx.app` 的 WebView2 缓存）。
-2. **`agent_key`（db_type → agent 包）的完整映射表**。已知入口 `database_capabilities::agent_key(db_type, driver_profile)`（https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_runtime.rs#L77-L79 ），但未逐项核对 `DatabaseType` 枚举与 Agent 包的对应表（`crates/dbx-core/src/database_capabilities.rs` 未下载）。
-3. **Agent 进程池的完整生命周期**（何时因空闲回收、LRU 上限、跨 DBX 桌面端与 MCP 进程是否共享同一 runtime）。只看到 `stop_daemons` / `stop_daemon_by_key` / `restart_daemon_by_key`（https://github.com/t8y2/dbx/blob/main/crates/dbx-driver-agent/src/agent_runtime.rs#L85-L114 ）和"会话数归零则移除 runtime"（#L366-L391 ），未查到全局 LRU 阈值。
-4. **元数据在 Agent 侧是否有二级缓存**。Agent 内有 `PostgresLikeAgent$TableAttributeCache`（本机 JAR 类名），但未读其源码确认缓存语义与失效条件；已确认的缓存是宿主侧 `object-meta:v1`。
-5. **DBX 的"行数/单元"夹紧是否在 Agent 侧二次生效**：宿主 `max_rows` 1–1000 与 Agent 默认 `DEFAULT_MAX_ROWS=10000` 并存，两者谁最终生效（宿主传参覆盖，还是 Agent 上限更大导致宿主截断）未追到最终调用点。
-6. **本地 jar 与上游 main 的版本差**：本机 dameng agent 为 `0.1.102`，上游 `main` 为最新源码；我引用的上游行号与本机 jar 行为一致的位置已逐条对照（如 `MultiSessionJsonRpcServer` 握手/会话逻辑），但**未做逐字节比对**。
-7. **DBX 对"多租户库"（同一实例多 schema/多 catalog）的建模细节**：只看到库范围/子作用域的权限表达，未查到是否有"一连接多库"的显式模型（如 `AttachedDatabaseConfig` 只在 SQLite 语境下出现，与本题无关）。
+1. **是否存在任何"attach 到运行中 JVM"的路径**（含商业/隐藏开关）。已查：本机 `C:/Users/Nn/.dbx/` 全量（`bin/`、`agents/`、`plugins/`）、`dbx-mcp.exe` 全字符串检索（`javaagent`/`agentmain`/`Instrumentation`/`jdwp`/`jattach` 均无命中）、反编译 `agents/common` 全部 164 个 `com/dbx/agent/**` 类（`premain`/`agentmain`/`Instrumentation`/`retransform` 零命中）、Agent JAR 的 `MANIFEST.MF`、上游 `agents/` 目录树（jsdelivr 列出的 1940 个文件中无任何 attach/premain 相关文件）、上游 `agents/common/src/main/java/com/dbx/agent/**` 与 `plugins/jdbc/src/main/java/**` 全文检索。**未查**：GitHub 全库代码搜索（匿名 API 限额耗尽）、DBX 桌面端 asar 资源（本机未定位到桌面端安装目录，只有 `AppData/Local/com.dbx.app` 的 WebView2 缓存）。
+2. **JDBC 连接表单（host/port/username/password/ssl…）的实际字段定义**。已确认"参数 schema 位于插件清单的 `contributions[connection-provider].fields[]`，字段名为 `PluginFormFieldDefinition.key`"（https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L414-L426 ），但 **JDBC 这条 `formKind: jdbc` 的具体字段表在桌面端 TypeScript 里，未取到对应文件**（`apps/desktop/src/lib/database/jdbcDialect.ts` 在仓库清单中存在但本次未下载）；也未确认 host/port/user/ssl 是由通用表单引擎按 `formKind` 生成还是逐条声明。
+3. **`PluginMcpAccess`（Read/Write/Full）→ 宿主 `McpAccessLevel` 的具体转换函数**未定位到：只见两端枚举（https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L381-L385 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/ai/mcp_access.rs#L64-L71 ），未找到把前者翻成后者的那一行代码。
+4. **`mcpMode` 的取值全集**未列全：只见过 `bridge`（dameng.yaml、jdbc.yaml、oracle.yaml、h2.yaml 都是），未确认是否还有 `native` 之类的其他值；`DatabaseRuntimeMode` 的 4 个值已确认。
+5. **元数据在 Agent 侧是否有二级缓存**。Agent 内有 `PostgresLikeAgent$TableAttributeCache`（本机 JAR 类名），但未读其源码确认缓存语义与失效条件；已确认的缓存是宿主侧 `object-meta:v1`。
+6. **DBX 的"行数/单元"夹紧是否在 Agent 侧二次生效**：宿主 `max_rows` 1–1000 与 Agent 默认 `DEFAULT_MAX_ROWS=10000` 并存，两者谁最终生效（宿主传参覆盖，还是 Agent 上限更大导致宿主截断）未追到最终调用点。
+7. **Agent 进程池的全局回收策略**：进程复用键、会话计数归零即移除、stop/restart 接口都已查清（§4.3），但**未查到"长期空闲的 agent 进程何时被杀"的全局 LRU/空闲阈值**，也**未查到 DBX 桌面端与独立 `dbx-mcp` 进程之间是否共享同一批 agent 进程**（`AgentManager` 是进程内结构，未找到跨进程共享代码路径，但未读到反证）。
+8. **本地 jar 与上游 main 的版本差**：本机 dameng agent 为 `0.1.102`，上游 `main` 为最新源码（`agents/versions.json` 已是 `dameng: 0.1.103`）；我引用的上游行号与本机 jar 行为一致的位置已逐条对照（如 `MultiSessionJsonRpcServer` 握手/会话逻辑），但**未做逐字节比对**。
+9. **DBX 对"多租户库"（同一实例多 schema/多 catalog）的建模细节**：已补上 `traits.singleDatabase` / `metadataConnectionScoped` / 库范围权限三个表达（§3.1），但**未查到"一连接多库"的显式模型**（`AttachedDatabaseConfig` 只在 SQLite 语境下出现，与本题无关）。
 
-## 5. 发行与安装形态（npm / Maven 侧）
+## 9. 发行与安装形态（npm / Maven 侧）
 
 - **MCP Server 走 npm**：包名 `@dbx-app/mcp-server`，版本 `0.4.139`，按平台分发原生二进制（`@dbx-app/mcp-win32-x64` 等）—— https://github.com/t8y2/dbx/blob/main/packages/mcp-server/package.json 。本机对应物是原生二进制而非 npm 包：`C:/Users/Nn/.dbx/bin/dbx-mcp.exe`（36 MB，Rust），版本文件 `C:/Users/Nn/.dbx/bin/.dbx-mcp-version` 内容 `0.4.136`。
 - **JDBC 驱动走 Maven**：通用 JDBC 插件自带 `bin/dbx-maven-resolver`（以 `app.dbx.jdbc.maven.DbxMavenResolver` 为 main class 运行），从 Maven 解析驱动坐标；插件本体是 Gradle shadow JAR —— 本机 `C:/Users/Nn/AppData/Roaming/com.dbx.app/plugins/jdbc/bin/dbx-maven-resolver`（脚本内容可直接读到 `-cp "$DIR/../lib/dbx-jdbc-plugin.jar" app.dbx.jdbc.maven.DbxMavenResolver "$@"`）、上游 https://github.com/t8y2/dbx/blob/main/plugins/jdbc/README.md#L21-L37 （"DBX does not bundle Java or JDBC drivers"）。
 - **Agent 包走 GitHub Release**：注册表 `https://github.com/t8y2/dbx/releases/download/agents-latest/agent-registry.json`，每个 Agent 一个 `.jar.tar.zst` —— 本机 `C:/Users/Nn/.dbx/agents/download-cache/driver-dameng-base-0.1.102-.agent.jar.tar.zst` 即该格式。
 
-## 6. 取证方法（环境坑，供后续复用）
+## 10. 取证方法（环境坑，供后续复用）
 
 - `raw.githubusercontent.com` 与 `github.com/blob/...` 在本机被拒连（`ECONNRESET` / `ECONNREFUSED`），`cdn.jsdelivr.net` 同样被拒；**可用的镜像是 `fastly.jsdelivr.net/gh/<owner>/<repo>@main/<path>`**。
 - `api.github.com` 匿名访问有 60 次/小时限额（本机 IP 已耗尽）；用 `Accept: application/vnd.github.raw` 可直接拿到文件原文，避开 base64。
