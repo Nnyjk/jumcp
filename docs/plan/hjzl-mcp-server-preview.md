@@ -284,7 +284,9 @@ L6 全量审计           ← 事后可追溯
 - 连接池（PgBouncer 等）下运行期 `SET` 会污染共享 socket，泄漏到其他服务的写请求。
 - 托管 PG 有不可覆盖的会话锁参数（Cloud SQL `cloudsql_session_read_only=locked`、AlloyDB `alloydb_session_read_only=locked`）；自建库用 `ALTER ROLE ... SET default_transaction_read_only = on` + 仅 SELECT 授权。
 
-**只读部署不暴露写工具**：写能力在只读部署中**不注册**，而非注册后靠策略拒绝（目录裁剪即 §4.1 的投影）。
+**只读部署不暴露写工具**：写开关未开启的部署中，写能力不进入可见集与目录（可入库为 `draft` 供审核），而非注册后靠策略拒绝（目录裁剪即 §4.1 的投影）。
+
+> L1–L6 只描述读面；写面使用续编的 L7–L12（写账号、语句形状、影响范围、参数值、事务锁、审计审批），细则见 `docs/plan/write-path.md` §4。读面规则不适用于写语句，写能力也不走 `db_query_readonly`。
 
 **能力边界必须先声明**：`max_scan_rows`、`required_index_hit` 在 PostgreSQL 上**无法在运行时强制**（PG 无行扫描上限设置；EXPLAIN 计划在绑定参数后可能变化）。这两项标注为「发布期预检 + 数据源支持时强制」，字段名改为 `preflight.max_scan_rows` / `preflight.require_index`，避免被读作运行时保证。附录 A 给出各数据源的强制能力矩阵。生态对照：Postgres MCP Pro 同样以数据库级只读为主保证、SQL 解析只用于阻断 `COMMIT`/`ROLLBACK` 逃逸（附录 C）。
 
@@ -614,7 +616,7 @@ invoke_capability(capability_id, version?, params, phase?, confirm_token?, idemp
 | 行数配额 | 50000 行/租户/日；并发写事务 2/数据源 |
 | 拒绝策略 | 拒绝优先于排队，返回 `retry_after_ms` |
 
-**审计**：prepare 落 `write_intent`（能力/版本/参数哈希/列名/影响行数预估/令牌 id/申请人），提交成功落 `write_apply`（`intent_id`、批准人、`affected_rows`、耗时、`statement_hash`），失败落 `write_failed`（错误码、阶段、是否回滚、`retryable`）。三者进入同一哈希链；审计中不出现参数明文。审计写失败则拒绝写（fail-closed）。
+**审计**：prepare 落 `write_intent`（能力/版本/参数哈希/列名/影响行数预估/令牌 id/申请人），提交成功落 `write_apply`（`intent_id`、批准人、`affected_rows`、耗时、`statement_hash`），失败落 `write_failed`（错误码、阶段、是否回滚、`retryable`）。三者进入同一哈希链；审计中不出现参数明文。prepare 阶段审计失败 = fail-closed（不签发令牌、无可用意图）；**提交成功后**审计追加失败不回滚、不返回错误或 `unknown`，返回 `ok:true` + `outcome:"applied"` + `audit_pending:true` + `audit_error:"MCP_AUDIT_ERROR"`，并进入对账队列与告警。`/health` 的 `audit_chain` 为 `valid` / `degraded` / `broken`；`broken` 时关闭写开关，读路径不受影响。
 
 **失败与重试**：
 
@@ -625,6 +627,7 @@ invoke_capability(capability_id, version?, params, phase?, confirm_token?, idemp
 | 事务内失败（约束/死锁/超时） | 否（已回滚） | 仅死锁与超时可带幂等键重试 |
 | 行数超限 / 乐观锁未命中 | 否（回滚） | 修正参数或重读后重新 prepare |
 | 提交未知（断连/提交超时） | **未知** | 禁止重试，按幂等键查询或人工核对 |
+| 提交成功 + 审计追加失败 | **是** | 返回 `ok:true` / `audit_pending:true`（`MCP_AUDIT_ERROR` 仅附注），进对账队列；禁止重试 |
 | 外部系统写 5xx/超时 | 视目标 | 仅 `idempotent=true` + 幂等键重试 1 次 |
 
 不提供跨系统两阶段提交；需要业务一致性时由目标服务本地事务写 outbox，本服务只负责送达与留痕。
@@ -717,13 +720,14 @@ Agent → db_query_readonly(sql) → L1..L4 校验 → 执行 → 审计(sql_has
 | endpoint 执行超时 / 5xx | 统一 envelope 返回 `ok:false` + `retryable`；仅 `idempotent=true` 时重试 1 次 | 不计入 DB 分母 |
 | `invoke_capability` 目标不可见 | `MCP_CAPABILITY_NOT_FOUND`（与不存在同构） | — |
 | 客户端不支持动态工具集 | 按 §4.2.0 降级矩阵 | 正常计 |
-| 执行超时 / 取消 / 连接中断（结果未知） | 标记 `outcome: unknown`，**禁止重试与重放**，隔离该连接并写审计；调用方需自行重新查询确认 | 计入（反映执行不稳定性） |
+| 执行超时 / 取消 / 连接中断（结果未知） | 结果标记为未知（不产生成功返回；写路径用 `MCP_WRITE_OUTCOME_UNKNOWN`），**禁止重试与重放**，隔离该连接并写审计；调用方需自行重新查询确认 | 计入（反映执行不稳定性） |
 | SQL 引用未声明 schema / 跨库越界 | `MCP_SCHEMA_OUT_OF_SCOPE`，不隐式降级到默认 schema | 计入 |
 | 确认令牌失效（过期/重放/参数变化） | `MCP_CONFIRM_TOKEN_INVALID`，要求重新 prepare | — |
 | 写开关未开 / 目标不在清单 | 不可见 → `MCP_CAPABILITY_NOT_FOUND`；可见但运行期开关关闭 → `MCP_WRITE_DISABLED` + `reason`；两种情况都不进入执行链 | — |
 | 写语句未通过 L8–L10 | `MCP_WRITE_REJECTED` + `reason`（形状/WHERE/列/函数/字面量） | — |
 | 影响行数超限 | 事务内回滚，`MCP_WRITE_LIMIT_EXCEEDED`，不截断 | — |
 | 写提交结果未知 | `MCP_WRITE_OUTCOME_UNKNOWN`，**禁止重试与重放**，按幂等键查询 | — |
+| 写提交成功、审计追加失败 | 返回成功并标 `audit_pending:true`，进对账队列；`/health` 转 `degraded`，链断则 `broken` 并关写 | — |
 | 同幂等键异参 | `MCP_IDEMPOTENCY_CONFLICT`，不执行 | — |
 
 ### 6.4 错误通道（协议限制）
@@ -761,6 +765,7 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | 检索质量恶化 | Top-5 recall 监控 + golden 集回归门禁 |
 | `invoke_capability` 成为 SSRF 跳板 | 仅允许注册期声明的 base URL；禁止参数指定绝对 URL；禁止跨 host 重定向；出站白名单 + 响应字节上限 |
 | 审计被篡改 | append-only + 哈希链 + 每日校验作业 |
+| 审计链断链 | `/health` 暴露 `audit_chain: valid/degraded/broken`；`degraded` 继续写并告警，`broken` 关闭写开关、读不受影响；已提交数据不回滚 |
 
 ---
 
@@ -802,6 +807,8 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | 写 | prepare→apply 延迟 | 审批 p95 ≤4h，执行 p95 ≤500ms | 拆分 `approval_wait_ms` 与 `exec_wait_ms` |
 | 写 | 误写率 | <0.1% | 24h 内标记误写/补偿的意图数 ÷ apply 成功数，均需关联 `intent_id` |
 | 写 | 四眼违规 / 审计一致性 | 0 / 0 | 同人批准计数；有 apply 无 intent 的记录数 |
+| 写 | `audit_pending` 未闭合数 | 0；>0 告警并置 `degraded` | 进程内 pending + 对账队列 `gaps_open` |
+| 写 | 补录成功率 / 超期缺口 | ≥99.9% / 0 | 24h 补录成功数 ÷ 应补录数；open >24h 的 gap 数 |
 
 ---
 

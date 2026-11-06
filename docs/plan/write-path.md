@@ -120,7 +120,7 @@ constraints:
 - `method ∈ {POST, PUT, PATCH, DELETE}`，注册期声明；`DELETE` 必须带路径 id 参数，禁止无目标批量删除。
 - 仅允许注册期声明的 base URL + 路径模板；禁止参数指定绝对 URL、跨 host 重定向（§4.3.8）。
 - `params_schema` 即请求体 schema；`idempotency_key` 透传为 `Idempotency-Key` 请求头。
-- 2xx → `ok:true`；4xx → `ok:false` 且永不重试；5xx/超时仅在 `idempotent=true` 且带幂等键时可重试 1 次。
+- 2xx → `ok:true`；4xx → `ok:false` 且永不重试；5xx/超时仅在 `idempotent=true` 且带幂等键时可重试 1 次。`ok` 是调用层判定；endpoint 写的 `outcome:"applied"` 表示目标返回 2xx，是否真正落库由目标系统负责。
 - `executor.type=kb` 不开放写；`template` 在 `invoke_capability` 内继续返回 `MCP_USE_DB_RUN_TEMPLATE`。
 
 ## 2. 协议
@@ -193,7 +193,7 @@ apply 严格按序：
 4. 重新判定：可见性、`callable`、角色授权、写开关矩阵、审批状态与有效期、配额。任一失败即拒绝，**已撤销的权限立即生效**。
 5. 幂等键检查（§5.3）。
 6. 执行单语句事务（§5.1），`affected_rows` 上限后检查在提交前（§4.2）。
-7. 提交成功后写 `write_apply` 审计，再返回结果；提交失败或连接中断 → `write_failed` + `MCP_WRITE_OUTCOME_UNKNOWN`。
+7. `COMMIT` 成功后写 `write_apply` 审计，再返回结果。审计成功 → 正常返回；审计 append 失败 → 数据已落库，**不回滚、不返回错误、不返回 `unknown`、不提示重试**：返回 `ok:true` + `outcome:"applied"` + `audit_pending:true` + `audit_error:"MCP_AUDIT_ERROR"`，同时写本地对账队列并告警（§7.4）。提交失败或连接中断 → `write_failed` + `MCP_WRITE_OUTCOME_UNKNOWN`（该路径不会产生 `audit_pending`）。
 
 返回：
 
@@ -204,15 +204,19 @@ apply 严格按序：
   "capability_id": "order.mark_paid",
   "version": 7,
   "ok": true,
+  "outcome": "applied",
   "affected_rows": 1,
   "returning": [{ "id": "O-20261106-001", "version": 4 }],
   "replayed": false,
+  "audit_pending": false,
   "elapsed_ms": 42,
   "token_id": "wt_9f2c1a"
 }
 ```
 
-`replayed=true` 出现在同幂等键重放（§5.3），此时 `elapsed_ms` 为首次执行耗时，另加 `applied_at`。
+`ok` 只表示调用层成功：写入已提交，或同幂等键重放；它不表示审计完整。`outcome` 只取 `applied`（首次提交）/ `replayed`（同幂等键重放）；失败一律走错误响应，不返回 `ok:false` 的写结果体。`audit_pending` 可以与 `ok:true` 并存，为 true 时附 `audit_error:"MCP_AUDIT_ERROR"`，调用方不得重试（§7.4）。
+
+`replayed=true` 是 `outcome == "replayed"` 的布尔别名（保留给旧调用方）；此时 `elapsed_ms` 为首次执行耗时，另加 `applied_at`。
 
 ### 2.3 令牌
 
@@ -299,7 +303,7 @@ CREATE TABLE write_intents (
 | `MCP_IDEMPOTENCY_CONFLICT` | 同键异参，或同键仍在执行中 | `{idempotency_key_hash, reason: params_mismatch\|in_flight}` | 仅 `in_flight` 可延后重试 |
 | `MCP_ROW_VERSION_MISMATCH` | 声明乐观锁且 `affected_rows = 0` | `{column, expected, affected_rows: 0}` | 否（需重读） |
 
-复用既有码，不造同义码：`MCP_MULTI_STATEMENT`、`MCP_CONFIRM_TOKEN_INVALID`、`MCP_VERSION_CONFLICT`、`MCP_CAPABILITY_NOT_FOUND`、`MCP_SCHEMA_OUT_OF_SCOPE`、`MCP_EXEC_TIMEOUT`、`MCP_VALIDATION_ERROR`、`MCP_BUDGET_EXCEEDED`、`MCP_USE_DB_RUN_TEMPLATE`（均在 `backend/crates/hjzl-core/src/errors.rs:6-33` 与 `backend/crates/hjzl-sqlguard/src/error.rs:8-14` 登记）。
+复用既有码，不造同义码：`MCP_MULTI_STATEMENT`、`MCP_CONFIRM_TOKEN_INVALID`、`MCP_VERSION_CONFLICT`、`MCP_CAPABILITY_NOT_FOUND`、`MCP_SCHEMA_OUT_OF_SCOPE`、`MCP_EXEC_TIMEOUT`、`MCP_VALIDATION_ERROR`、`MCP_BUDGET_EXCEEDED`、`MCP_USE_DB_RUN_TEMPLATE`、`MCP_AUDIT_ERROR`（均在 `backend/crates/hjzl-core/src/errors.rs:6-33` 与 `backend/crates/hjzl-sqlguard/src/error.rs:8-14` 登记）。
 
 ## 3. 风险分级与动作矩阵
 
@@ -548,6 +552,58 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 - 审批视图需要看到"要改什么"，因此 `write_intents` 表额外存 `params_ciphertext`（AES-GCM，密钥来自 `HJZL_MCP_WRITE_PARAM_KEY`），访问审批详情时解密，访问行为写 `policy_decision` 审计。
 - 留存：意图完成后 7 天删除密文（可配 1–30 天），哈希与事件永久保留在审计链上。密钥轮换与留存期属 D11。
 
+### 7.4 提交后审计失败与对账
+
+`COMMIT` 之后数据不可回滚，因此审计失败不能按 fail-closed 处理，也不能伪装成 `unknown`（会诱发重试与重复写）。三种情形的语义分开：
+
+| 情形 | 数据是否落库 | 返回 | 后续 |
+|---|---|---|---|
+| prepare 阶段 `write_intent` append 失败 | 否 | 错误（`MCP_AUDIT_ERROR`），不落令牌 | fail-closed：不产生可 apply 的意图，调用方重新 prepare |
+| 执行失败且 `write_failed` append 失败 | 否（已回滚） | 原错误码不变 | 进对账队列补 `write_failed`；不影响调用方判定 |
+| 提交成功且 `write_apply` append 失败 | **是** | `ok:true`、`outcome:"applied"`、`affected_rows`、`audit_pending:true`、`audit_error:"MCP_AUDIT_ERROR"` | 进对账队列 + 告警；**禁止重试**；不回滚 |
+
+对账队列持久化在注册表库：
+
+```sql
+CREATE TABLE write_audit_gaps (
+  gap_id TEXT PRIMARY KEY,
+  intent_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,        -- write_apply | write_failed
+  payload_json TEXT NOT NULL,      -- 与正常审计事件同一份 payload
+  created_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  closed_at TEXT
+);
+```
+
+- 对账任务每小时运行：读取未闭合 gap，把事件补进哈希链，payload 保留原始时间戳并附 `recovered: true` / `recovered_at`；链的 `prev_hash` 按补录时刻取，不重排历史。
+- 补录失败保持 open、指数退避、告警；超过 24h 未闭合 → 升级告警并计入"审计债务"清单，人工处置。不得伪造 `write_intent` 或改写已有事件。
+- 该机制不破坏"有 apply 无 intent = 0"：intent 在 prepare 已落链，缺的只是 apply 侧记录；补录后断言恢复成立，未闭合期间以 `audit_pending` / `gaps_open` 单独计量。
+- `audit_pending` 只出现在提交成功路径；执行失败路径即使审计补不上，也不改变"未写"的事实。
+
+### 7.5 审计链健康与 `/health`
+
+`/health` 增加审计子状态（与读侧健康检查并列，不替代）：
+
+```
+audit_chain: valid | degraded | broken
+audit_pending: <int>        # 本次进程内未闭合的 apply 补录数
+gaps_open: <int>            # 对账队列未闭合条目
+last_verified_at: <ISO8601>
+```
+
+| 状态 | 判定 | 写路径 | 读路径 |
+|---|---|---|---|
+| `valid` | 最近一次链校验通过 ∧ `audit_pending=0` ∧ `gaps_open=0` | 正常 | 正常 |
+| `degraded` | `audit_pending>0` 或 `gaps_open>0` 或校验任务超时/未完成 | 继续，但结果带 `audit_pending`，打标 + 告警 | 正常 |
+| `broken` | 哈希断链（`prev_hash`/`hash` 不符），或 append 连续失败超过 5 分钟 | **关闭写**：有效写开关视为 false，新 prepare/apply 一律 `MCP_WRITE_DISABLED`（`level: audit_broken`）；已在执行中的 apply 允许完成并进 gap 队列 | 正常 |
+
+- 启动时若链校验失败，以 `broken` 状态启动（读可用、写关闭）并告警，不退出进程；只有账号权限自检失败才拒绝启动。写路径不复用"自检失败即拒绝启动"的语义：已提交数据不可回滚，退出进程只会同时失去读面与对账能力。
+- 从 `broken` 或 `degraded` 恢复：链修复/补录闭合后状态回到 `valid`，写开关**需人工确认**恢复，避免抖动导致自动开写。
+- 写开关关闭期间，管理台必须显示 `audit_chain` 与 `gaps_open`，并允许查看/重试补录。
+
 ## 8. 审批与授权
 
 | 项 | 规则 |
@@ -577,7 +633,7 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 | 角色 | `policy.write_roles` | 空 | 能力可见，调用即 `MCP_WRITE_DISABLED level=role` |
 | 会话 | `initialize._meta.mcp.write` | 继承角色 | 仅可关闭（`false`）；关闭后调用 `MCP_WRITE_DISABLED level=session`；传 `true` 不能提权（§4.1.1 只做收敛） |
 
-生效顺序：全局 → 租户 → 组 → 数据源 → 能力 → 角色 → 会话 → 审批状态 → 配额。全局/租户/组/能力决定"是否可见"，关闭即 not-found（不泄露写能力存在性）；数据源/角色/会话决定"可见但能否执行"，关闭即 `MCP_WRITE_DISABLED`。全部为逻辑与；任一读取失败（配置缺失、注册表不可用）按关闭处理。`admin` 类语句（TRUNCATE/DDL/GRANT）在注册期即拒绝（`MCP_TEMPLATE_INVALID`），运行期出现按 `MCP_WRITE_REJECTED` 拒绝。
+生效顺序：全局 → 租户 → 组 → 数据源 → 能力 → 角色 → 会话 → 审批状态 → 配额。全局/租户/组/能力决定"是否可见"，关闭即 not-found（不泄露写能力存在性）；数据源/角色/会话决定"可见但能否执行"，关闭即 `MCP_WRITE_DISABLED`。全部为逻辑与；任一读取失败（配置缺失、注册表不可用）按关闭处理。另有运行期总闸：`/health` 的 `audit_chain=broken` 时有效写开关视为 false，`level=audit_broken`，不依赖任何用户配置（§7.5）。`admin` 类语句（TRUNCATE/DDL/GRANT）在注册期即拒绝（`MCP_TEMPLATE_INVALID`），运行期出现按 `MCP_WRITE_REJECTED` 拒绝。
 
 ## 10. 限流与配额
 
@@ -603,6 +659,7 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 | 乐观锁未命中 | `affected_rows=0` | 否 | 重读后重新 prepare | `MCP_ROW_VERSION_MISMATCH` |
 | 提交未知 | 提交阶段断连/超时 | **未知** | **禁止重试** | `MCP_WRITE_OUTCOME_UNKNOWN` |
 | 提交成功但响应丢失 | 调用方超时 | 是 | 用幂等键查询 | 重放返回 `replayed:true` |
+| 提交成功 + 审计 append 失败 | 审计表不可写 / 链追加失败 | 是 | **禁止重试** | `ok:true` + `outcome:"applied"` + `audit_pending:true`（`MCP_AUDIT_ERROR` 仅作附注）+ 对账告警 |
 | 外部系统写 | HTTP 5xx / 超时 | 视 `idempotent` | 仅幂等键 + `idempotent=true` 重试 1 次 | 统一 envelope `ok:false` |
 
 - 回滚：提交后不存在回滚；对外表述必须是"补偿"而不是"回滚"。
@@ -626,7 +683,7 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 
 | 指标 | 口径 | 目标 |
 |---|---|---|
-| 写成功率 | `write_apply{outcome=ok} / (ok + failed)`，剔除 `replayed` 与前置拒绝 | ≥99%（不含调用方参数错误） |
+| 写成功率 | `write_apply{outcome="applied"} / (applied + 执行/提交阶段的 write_failed)`，剔除 `replayed` 与前置拒绝 | ≥99%（不含调用方参数错误） |
 | 拒绝原因分布 | `write_failed` 按 `error_code` + `reason` 分组 / 全部 `write_intent` | 无单一原因 >40%（参数错误除外） |
 | affected_rows 分布 | 按能力分桶 p50/p95/p99/max；>阈值（默认 10× 能力均值）单独告警 | p99 不超过能力上限；7 日内 p95 上升 >20% 告警 |
 | prepare→apply 比率 | 已消费令牌数 / 新建意图数（按能力、7 日滚动） | 0.5–0.95；<0.3 视为模型误用或审批阻塞 |
@@ -636,32 +693,15 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 | 误写率 | 24h 内被人工修正/补偿的意图数 ÷ apply 成功数 | <0.1% |
 | 四眼违规 | 同人批准计数 | 0 |
 | 审计一致性 | 有 apply 无 intent 的记录数 | 0 |
+| `audit_pending` 未闭合数 | 进程内 `audit_pending` + `gaps_open`（按分钟采样） | 0；>0 即告警，`/health` 转 `degraded` |
+| 补录成功率 | 24h 内成功补录的 gap / 应补录 gap | ≥99.9%；连续 2 轮失败升级告警 |
+| 审计缺口超期 | open 超过 24h 的 gap 数 | 0；>0 进入"审计债务"清单 |
 
 误写率的数据源：管理台"标记误写"操作 + 补偿能力执行记录；两者都必须关联 `intent_id`，否则不计入分子。
 
-## 14. 与既有契约的冲突点
+`audit_pending` 与"有 apply 无 intent = 0"不冲突：`write_intent` 在 prepare 已入链，缺的是 apply 侧记录；补录成功后两者仍一一对应，未闭合期间按 pending/gap 单独计量，不得用伪造 intent 的方式"补齐"。
 
-下表列出写路径与既有契约的张力点、冲突原因与定稿处理（已落在对应文档/代码约束中）；实现时以"定稿处理"列为准。
-
-| # | 契约点 | 冲突 | 定稿处理 |
-|---|---|---|---|
-| C1 | preview §1.3 非目标 | 「本期不注册写能力」会让阶段五无从开工 | 限定为「阶段一–四不注册；阶段五按 §4.4.6 开放，默认关」 |
-| C2 | preview §5.1 预算预留 | 若 prepare/apply 是独立工具，需加常驻 600 | 不新增常驻工具；两个入口各加 3 个入参，描述增量按实测复核，峰值上界不变 |
-| C3 | preview §4.4.6 调用期确认 | 独立 `prepare_call` / `apply_call` 与 §2 原则 9「每 kind 唯一调用面」冲突 | 改为同一入口的 `phase`；`prepare` 无副作用，不构成第二出口 |
-| C4 | preview §3.3 注解段 | 入口工具统一 `readOnlyHint=true`，写开启后注解失真 | 注解按会话投影；能力级注解由 `describe_capability` 返回（§1.3） |
-| C5 | preview §4.3.1 L1「唯一强只读保证」 | 写面没有对应的强保证层 | 保留 L1–L6 读侧；新增 L7–L12 写侧，L7 为写面唯一强保证（§4） |
-| C6 | preview §7 启动自检 | 只检查只读账号写失败 | 并列增加写账号自检 W1–W7（§6.2），任一失败拒绝启动 |
-| C7 | preview §8 阶段五 | 「启用写路径须重算常驻预算」未说明结论 | 明确「不新增常驻工具；启用时复核入参与描述增量并附实测」 |
-| C8 | `config.rs:18-20` 的 `readonly` | 与写能力语义纠缠，易被读成「只读数据源不能写」 | `readonly` 只描述只读连接；写面由 `write_dsn_env` + `write.enabled` 独立控制 |
-| C9 | `template.rs:250-254` 注册期拒绝 `risk != read` | 写模板无法入库 | 按部署开关判定：`write_enabled=false` 时维持拒绝；开启后放行 `risk=write`，`sensitive` 另需开关 |
-| C10 | `admin-web` 三处「未接通」文案 | 阶段五上线后过期 | 与 W5.7 同步替换；接口未可用前保持现状 |
-| C11 | `audit.rs:12-21` 事件闭集 | 写事件无法写入 | 追加 `write_intent` / `write_apply` / `write_failed` |
-| C12 | preview §9 指标表 | 只有读侧与治理指标 | 追加 §13 的写侧指标行 |
-| C13 | preview §6.3 失败路径表 | 缺写侧失败分类 | 追加写侧错误码行（§2.5、§11） |
-
-不新增协议语义、不新增 MCP 方法；`write_*` 是服务端内部事件与错误码，不改变 JSON-RPC 结构。
-
-## 15. 待决策（D4–D12）
+## 14. 待决策（D4–D12）
 
 | # | 决策 | 建议默认 | 不决策的后果 |
 |---|---|---|---|
@@ -675,7 +715,7 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 | D11 | 审批视图参数留存：加密方式、密钥归属与留存期 | AES-GCM，密钥在 KMS/环境变量，留存 7 天 | 不留存则审批人看不到要改什么，只能盲批；长期明文留存则审计面变成 PII 仓库 |
 | D12 | 二次签核责任人：是否需要独立 DBA 角色与 SLA | 需要 `dba_roles`，SLA 4h；默认关闭 | 高风险写只有单人批准，四眼退化为形式 |
 
-## 16. 代码落点
+## 15. 代码落点
 
 | 位置 | 改动 |
 |---|---|
@@ -683,8 +723,10 @@ write_probe = { schema = "public", table = "__hjzl_write_probe" }
 | `backend/crates/hjzl-sqlguard/src/lib.rs` | 导出写校验；`validate()` 语义不动 |
 | `backend/crates/hjzl-core/src/template.rs` | `TemplateDef.write` 结构；注册期按 `risk` 分流校验；`PreparedQuery` 增加 `write_shape_hash` |
 | `backend/crates/hjzl-core/src/config.rs` | `DatasourceRef.write` 段与校验；`Settings.write_enabled` |
-| `backend/crates/hjzl-core/src/registry.rs` | `write_tokens`、`write_intents`、`write_idempotency` 三表与状态迁移；批准/吊销 |
-| `backend/crates/hjzl-core/src/audit.rs` | 三个事件类型入闭集 |
+| `backend/crates/hjzl-core/src/registry.rs` | `write_tokens`、`write_intents`、`write_idempotency`、`write_audit_gaps` 四表与状态迁移；批准/吊销 |
+| `backend/crates/hjzl-core/src/audit.rs` | 三个事件类型入闭集；补录事件带 `recovered` 标记 |
+| `backend/crates/hjzl-server/src/reconcile.rs`（新增） | 对账任务：gap 补录、指数退避、告警；`/health` 的 `audit_chain` 状态计算 |
+| `backend/crates/hjzl-server/src/service.rs` | `/health` 增加 `audit_chain` / `audit_pending` / `gaps_open` / `last_verified_at` |
 | `backend/crates/hjzl-core/src/errors.rs` | 8 个新错误码与默认文案 |
 | `backend/crates/hjzl-server/src/mcp.rs` | `phase` / `confirm_token` / `idempotency_key` 解析；注解按会话投影；写分发 |
 | `backend/crates/hjzl-server/src/pg_write.rs`（新增） | 写池、自检 W1–W7、单语句事务、行数后检查、提交未知处理 |

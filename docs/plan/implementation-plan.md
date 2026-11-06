@@ -134,7 +134,7 @@ graph LR
 | W5.1 | 写侧骨架与开关 | `write_dsn_env` + `[datasources.write]` 配置与校验；读写独立连接池；写账号自检 W1–W7；五级开关（全局/租户/组/数据源/能力）默认关；`write_*` 事件入审计闭集 | 任一开关未开时调用返回 `MCP_WRITE_DISABLED`；写自检任一失败拒绝启动；只读自检行为不变；开关变更全部落审计 | 阶段一 W1.4/W1.5、W0.6；写侧输入闭环（§0.2） |
 | W5.2 | SQL 写校验 L8–L10 | `hjzl-sqlguard` 写校验模块（形状、WHERE、列/表/函数白名单、参数绑定、`RETURNING`）；注册期按 `risk` 分流；拒绝用例矩阵 | 写语句矩阵 100% 按预期拒绝/放行；读路径用例零回归；退化 WHERE 与字面量值全部拦截 | W3.2、W5.1 |
 | W5.3 | prepare/apply 协议与令牌 | `phase`/`confirm_token`/`idempotency_key` 入参；`write_intents`/`write_tokens` 表与状态机；六元绑定、TTL、单次消费、吊销；8 个新错误码 | 令牌重放、过期、参数变化、跨会话、跨人全部 `MCP_CONFIRM_TOKEN_INVALID`；`write_intent` 先于令牌落盘；apply 前重新判定权限 | W5.2、W3.3 |
-| W5.4 | 写执行器（PostgreSQL） | 单语句事务执行；`statement_timeout`/`lock_timeout`；行数后检查在提交前；`RETURNING` 先暂存后提交；提交未知处理 | 超 `max_affected_rows` 时事务回滚且 DB 行数不变（DB 断言）；提交阶段断连返回 `MCP_WRITE_OUTCOME_UNKNOWN` 且不重试；提交成功后才返回行 | W5.3 |
+| W5.4 | 写执行器（PostgreSQL） | 单语句事务执行；`statement_timeout`/`lock_timeout`；行数后检查在提交前；`RETURNING` 先暂存后提交；提交未知处理；提交成功但审计失败时的 `audit_pending` + 对账队列 | 超 `max_affected_rows` 时事务回滚且 DB 行数不变（DB 断言）；提交阶段断连返回 `MCP_WRITE_OUTCOME_UNKNOWN` 且不重试；提交成功后才返回行；审计失败返回 `ok:true`/`audit_pending:true` 且可补录闭合 | W5.3 |
 | W5.5 | 幂等与并发 | `write_idempotency` 表；同键同参重放、同键异参拒绝；乐观锁结构校验；重复提交窗口；并发上限信号量 | 并发同键只成功一次；重放返回首次结果且不重复写（DB 断言）；乐观锁未命中返回 `MCP_ROW_VERSION_MISMATCH` 且不自动重试 | W5.4 |
 | W5.6 | 审批、授权与配额 | `write_roles`/`approver_roles`/`dba_roles`；四眼在 apply 复查；批准有效期与调用次数；时间窗；租户/会话/能力/数据源配额与日行数上限 | 同人批准 0 通过（含 prepare 后换人批准的场景）；撤销后下一次 apply 立即失败；配额超限拒绝且不排队 | W4.2、W5.3 |
 | W5.7 | 管理台与 admin API | 写意图队列/详情/批准/拒绝/转 DBA 签核；能力审核页展示写字段 diff；审计按 `intent_id` 串联；替换三处「未接通」文案 | UI 无直连库；批准/拒绝全部经 API 且产生 `admin_change`/`policy_decision`；审批视图访问参数密文也落审计 | W4.1、W5.3、W5.6 |
@@ -149,7 +149,7 @@ graph LR
 5. 行数上限：超限事务回滚，DB 侧断言行数未变；不发生"截断写入"。
 6. 幂等与并发：同键同参重放、同键异参拒绝、并发双 apply 只成功一次、乐观锁未命中不重试。
 7. 四眼：提交人=批准人 0 通过；批准过期后 apply 拒绝；撤销权限后下一次 apply 拒绝。
-8. 审计：`write_intent` 与 `write_apply`/`write_failed` 一一对应；哈希链校验通过；审计中无参数明文。
+8. 审计：`write_intent` 与 `write_apply`/`write_failed` 一一对应；哈希链校验通过；审计中无参数明文；提交成功但审计失败时返回 `ok:true` + `audit_pending:true`，对账队列可补录闭合，`/health` 正确显示 `degraded`/`broken` 且 `broken` 时关写。
 9. 提交未知：断连/超时场景返回 `MCP_WRITE_OUTCOME_UNKNOWN`，无自动重试、无换连接重放。
 10. staging 环境端到端可用（内测租户），指标口径可复算；生产写仍默认关闭，开放与否由 D10 决定。
 
