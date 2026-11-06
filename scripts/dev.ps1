@@ -9,6 +9,7 @@
     -ResetData    启动前清空 .dev-data/（默认保留，便于连续试用）
     -NoWeb        只起后端
   Ctrl+C（或关窗）会同时停掉前后端子进程；日志在 .dev-data/logs/。
+  前端代理目标用 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 HJZL_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
 #>
 [CmdletBinding()]
 param(
@@ -108,9 +109,6 @@ try {
   # ------------------------------------------------------------ 准备数据目录
   if ($ResetData -and (Test-Path $DataDir)) {
     Write-Host "==> 清空 $DataDir"
-    # .dev-data/node_modules 可能是指向 admin-web/node_modules 的链接，先摘链接再删目录
-    $link = Join-Path $DataDir 'node_modules'
-    if (Test-Path $link) { & cmd.exe /c rmdir $link 2>&1 | Out-Null }
     Remove-Item -Recurse -Force $DataDir -ErrorAction SilentlyContinue
   }
   New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -221,40 +219,17 @@ dsn_env = "HJZL_DEV_PG_DSN"
     }
     $webPortUsed = $candidate
 
-    # 后端端口非 8000 时，admin-web 的代理目标需要改指向；不改动前端源码，
-    # 而是在 .dev-data 生成一份只改代理目标的配置（复用 admin-web/vite.config.ts 的其余配置）。
+    # 前端代理目标由 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
     $viteArgs = @('run', 'dev', '--', '--host', '127.0.0.1', '--port', "$webPortUsed")
-    if ($BackendPort -ne 8000) {
-      $link = Join-Path $DataDir 'node_modules'
-      if (-not (Test-Path $link)) {
-        try {
-          New-Item -ItemType Junction -Path $link -Target (Join-Path $WebDir 'node_modules') -ErrorAction Stop | Out-Null
-        } catch {
-          Write-Host ("警告：无法建立 .dev-data/node_modules 链接（{0}），管理台代理将仍指向 8000" -f $_.Exception.Message) -ForegroundColor Yellow
-        }
-      }
-      $viteCfg = Join-Path $DataDir 'vite.config.local.mjs'
-      $cfgText = @"
-// 由 scripts/dev.ps1 生成：只改管理面代理的后端地址，其余配置复用 admin-web/vite.config.ts。
-import base from '../admin-web/vite.config.ts'
-
-const target = 'http://127.0.0.1:$BackendPort'
-const resolved = typeof base === 'function' ? await base({ command: 'serve', mode: 'development', ssrBuild: false }) : base
-const proxy = { ...(resolved.server?.proxy ?? {}) }
-for (const key of Object.keys(proxy)) {
-  proxy[key] = { ...proxy[key], target }
-}
-export default { ...resolved, server: { ...resolved.server, proxy } }
-"@
-      Set-Content -Path $viteCfg -Value $cfgText -Encoding utf8
-      $viteArgs += @('--config', $viteCfg)
-      Write-Host ("==> 管理面代理已指向后端端口 {0}（配置：{1}）" -f $BackendPort, $viteCfg)
-    }
+    $apiTarget = "http://127.0.0.1:$BackendPort"
+    Write-Host ("==> 前端代理目标：{0}" -f $apiTarget)
 
     $webLog = Join-Path $LogDir 'web.log'
     $webErr = Join-Path $LogDir 'web.err.log'
     $savedToken = [Environment]::GetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', 'Process')
+    $savedTarget = [Environment]::GetEnvironmentVariable('HJZL_DEV_API_TARGET', 'Process')
     [Environment]::SetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', $AliceToken, 'Process')
+    [Environment]::SetEnvironmentVariable('HJZL_DEV_API_TARGET', $apiTarget, 'Process')
     try {
       if ($env:OS -eq 'Windows_NT') {
         $webProc = Start-Process -FilePath 'cmd.exe' -ArgumentList (@('/c', 'npm') + $viteArgs) `
@@ -265,6 +240,7 @@ export default { ...resolved, server: { ...resolved.server, proxy } }
       }
     } finally {
       [Environment]::SetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', $savedToken, 'Process')
+      [Environment]::SetEnvironmentVariable('HJZL_DEV_API_TARGET', $savedTarget, 'Process')
     }
     [void]$script:Children.Add([pscustomobject]@{ Name = 'web'; Id = $webProc.Id })
     Write-Host ("==> 前端已启动（pid {0}）：http://127.0.0.1:{1}" -f $webProc.Id, $webPortUsed)

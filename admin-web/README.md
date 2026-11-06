@@ -25,7 +25,8 @@ npm run lint
 
 - `VITE_API_BASE`：后端 admin API 根地址，缺省空串（走同源相对路径）。例：`VITE_API_BASE=http://127.0.0.1:8000`
 - 前端不读取也不发送任何管理面凭证：没有 `VITE_ADMIN_*` 变量，`Authorization` / `X-Admin-Actor` 均不由浏览器发出，操作者身份由后端按 token 派生。
-- 本地开发：Vite 代理把 `/admin`、`/health` 转发到 `http://127.0.0.1:8000` 并注入 Bearer，token 只存在于 Node 进程环境 —— `HJZL_DEV_ADMIN_TOKEN=... npm run dev`（后端 token 由 `HJZL_ADMIN_TOKENS="alice:tok1,bob:tok2"` 配置）。**一键启动脚本已经代你设好这个变量**：`pwsh scripts/dev.ps1`（或 `scripts/dev.sh`）会同时拉起后端与前端并注入 `HJZL_DEV_ADMIN_TOKEN`，直接开 http://127.0.0.1:5173 即可；手动起则必须自己 export，否则请求全部 401。
+- `HJZL_DEV_API_TARGET`：开发期 Vite 代理的后端地址，默认 `http://127.0.0.1:8000`。与 `HJZL_DEV_ADMIN_TOKEN` 一样只存在于 Node 进程环境，不是 `VITE_*` 变量、不会进浏览器产物；后端换端口时用它覆盖，例如 `HJZL_DEV_API_TARGET=http://127.0.0.1:8100 HJZL_DEV_ADMIN_TOKEN=... npm run dev`。
+- 本地开发：Vite 代理把 `/admin`、`/health` 转发到 `HJZL_DEV_API_TARGET`（默认 `http://127.0.0.1:8000`）并注入 Bearer，token 只存在于 Node 进程环境 —— `HJZL_DEV_ADMIN_TOKEN=... npm run dev`（后端 token 由 `HJZL_ADMIN_TOKENS="alice:tok1,bob:tok2"` 配置）。**一键启动脚本已经代你设好这个变量**：`pwsh scripts/dev.ps1`（或 `scripts/dev.sh`）会同时拉起后端与前端并注入 `HJZL_DEV_ADMIN_TOKEN`，直接开 http://127.0.0.1:5173 即可；手动起则必须自己 export，否则请求全部 401。
 - 生产部署：静态产物与后端同源部署，由网关/BFF 在 `/admin` 路径注入 `Authorization`（或改用会话 Cookie），前端不做任何凭证处理；缺凭证时后端返回 401。
 
 ## 边界（不可放宽）

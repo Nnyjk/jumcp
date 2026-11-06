@@ -14,6 +14,7 @@ scripts/dev.sh                  # Linux / macOS / CI
 
 - 后端默认 http://127.0.0.1:8000（`-BackendPort` / `--backend-port` 可改），前端默认 5173（`-WebPort` / `--web-port` 被占用时自动 +1 顺延）。
 - **管理面凭证只存在于进程环境**：后端 `HJZL_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`，前端由 Vite 代理注入 `HJZL_DEV_ADMIN_TOKEN` —— 不设这个变量，管理台请求会全部 401。
+- 前端代理目标用 `HJZL_DEV_API_TARGET` 指定（默认 `http://127.0.0.1:8000`），启动器会按后端实际端口自动设置；手动起前端时后端换端口就要带上它。
 - `-PgDsn <dsn>` / `--pg-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-pg`，DSN 走 `HJZL_DEV_PG_DSN`）；不给则用 `config/policy.toml` 原样，`db_query_readonly` 返回 `MCP_NOT_IMPLEMENTED`（属预期）。
 - `-ResetData` / `--reset-data` 启动前清空 `.dev-data/`（默认保留，便于连续试用）；`-NoWeb` / `--no-web` 只起后端。
 - Ctrl+C 同时停掉前后端；日志在 `.dev-data/logs/`（`backend.log` / `web.log`），数据在 `.dev-data/{registry,audit}.sqlite3`。

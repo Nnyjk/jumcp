@@ -9,6 +9,7 @@
 #   --no-web        只起后端
 #
 # Ctrl+C 会同时停掉前后端（POSIX 用进程组，Windows 用 taskkill /T）；日志在 .dev-data/logs/。
+# 前端代理目标用 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 HJZL_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
 
 set -uo pipefail
 # 作业控制：后台子进程各自成组，Ctrl+C 时能按进程组整体收掉
@@ -140,14 +141,6 @@ done
 
 if [ "$RESET_DATA" = "1" ] && [ -d "$DATA_DIR" ]; then
   echo "==> 清空 $DATA_DIR"
-  # .dev-data/node_modules 可能是指向 admin-web/node_modules 的链接，先摘链接再删目录
-  if [ -L "$DATA_DIR/node_modules" ]; then
-    if [ "$IS_WINDOWS" = "1" ]; then
-      cmd //c rmdir "$(cygpath -w "$DATA_DIR/node_modules")" >/dev/null 2>&1 || rm -f "$DATA_DIR/node_modules"
-    else
-      rm -f "$DATA_DIR/node_modules"
-    fi
-  fi
   rm -rf "$DATA_DIR"
 fi
 mkdir -p "$LOG_DIR"
@@ -229,37 +222,16 @@ if [ "$NO_WEB" != "1" ]; then
   fi
   WEB_PORT_USED="$candidate"
 
+  # 前端代理目标由 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
   VITE_ARGS=(run dev -- --host 127.0.0.1 --port "$WEB_PORT_USED")
-  if [ "$BACKEND_PORT" != "8000" ]; then
-    LINK="$DATA_DIR/node_modules"
-    if [ ! -e "$LINK" ]; then
-      if [ "$IS_WINDOWS" = "1" ]; then
-        cmd //c mklink //J "$(cygpath -w "$LINK")" "$(cygpath -w "$WEB_DIR/node_modules")" >/dev/null 2>&1 || cp -r "$WEB_DIR/node_modules" "$LINK"
-      else
-        ln -s "$WEB_DIR/node_modules" "$LINK" 2>/dev/null || cp -r "$WEB_DIR/node_modules" "$LINK"
-      fi
-    fi
-    VITE_CFG="$DATA_DIR/vite.config.local.mjs"
-    cat >"$VITE_CFG" <<EOF
-// 由 scripts/dev.sh 生成：只改管理面代理的后端地址，其余配置复用 admin-web/vite.config.ts。
-import base from '../admin-web/vite.config.ts'
-
-const target = 'http://127.0.0.1:$BACKEND_PORT'
-const resolved = typeof base === 'function' ? await base({ command: 'serve', mode: 'development', ssrBuild: false }) : base
-const proxy = { ...(resolved.server?.proxy ?? {}) }
-for (const key of Object.keys(proxy)) {
-  proxy[key] = { ...proxy[key], target }
-}
-export default { ...resolved, server: { ...resolved.server, proxy } }
-EOF
-    VITE_ARGS+=(--config "$VITE_CFG")
-    echo "==> 管理面代理已指向后端端口 $BACKEND_PORT（配置：$VITE_CFG）"
-  fi
+  API_TARGET="http://127.0.0.1:$BACKEND_PORT"
+  echo "==> 前端代理目标：$API_TARGET"
 
   WEB_LOG="$LOG_DIR/web.log"
   (
     cd "$WEB_DIR" || exit 1
     export HJZL_DEV_ADMIN_TOKEN="$ALICE_TOKEN"
+    export HJZL_DEV_API_TARGET="$API_TARGET"
     exec npm "${VITE_ARGS[@]}"
   ) >"$WEB_LOG" 2>&1 &
   WEB_PID=$!
