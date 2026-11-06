@@ -3,6 +3,21 @@
 Harness Agent 平台的 MCP 服务：入口裁剪（§4.1）、渐进发现（§4.2）、只读分发（§4.3）与治理审计（§4.4）。
 架构见 `docs/plan/hjzl-mcp-server-preview.md`。
 
+## 本地一键启动
+
+一条命令拉起「后端（streamable-http）+ 管理台（Vite dev）」，打开 http://127.0.0.1:5173 即可试用。
+
+```
+pwsh scripts/dev.ps1            # Windows / PowerShell 7+
+scripts/dev.sh                  # Linux / macOS / CI
+```
+
+- 后端默认 http://127.0.0.1:8000（`-BackendPort` / `--backend-port` 可改），前端默认 5173（`-WebPort` / `--web-port` 被占用时自动 +1 顺延）。
+- **管理面凭证只存在于进程环境**：后端 `HJZL_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`，前端由 Vite 代理注入 `HJZL_DEV_ADMIN_TOKEN` —— 不设这个变量，管理台请求会全部 401。
+- `-PgDsn <dsn>` / `--pg-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-pg`，DSN 走 `HJZL_DEV_PG_DSN`）；不给则用 `config/policy.toml` 原样，`db_query_readonly` 返回 `MCP_NOT_IMPLEMENTED`（属预期）。
+- `-ResetData` / `--reset-data` 启动前清空 `.dev-data/`（默认保留，便于连续试用）；`-NoWeb` / `--no-web` 只起后端。
+- Ctrl+C 同时停掉前后端；日志在 `.dev-data/logs/`（`backend.log` / `web.log`），数据在 `.dev-data/{registry,audit}.sqlite3`。
+
 ## 构建与运行
 
 ```bash
@@ -51,4 +66,4 @@ scripts/test-all.sh            # Linux / macOS / CI
 
 ## 管理台（admin-web）
 
-`cd admin-web && npm install && npm run dev` 起本地开发服务；`npm run build` 做类型检查与构建。
+只读联调前端（Fluent 2 风格）：四个页面展示数据/空态/错误态，写操作按钮标注「未接通」。本地试用请直接用上面的「本地一键启动」；手动起法是 `cd admin-web && npm install && npm run dev`，但**必须**带上 `HJZL_DEV_ADMIN_TOKEN=<管理面 token>`（Vite 代理据此注入 `Authorization`，缺失则请求全部 401），后端 token 由 `HJZL_ADMIN_TOKENS="id:token,id:token"` 配置。`npm run build` 做类型检查与构建。

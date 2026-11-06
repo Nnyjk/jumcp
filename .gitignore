@@ -15,3 +15,6 @@ Thumbs.db
 
 # Rust
 backend/target/
+
+# 本地一键启动产物（scripts/dev.*）
+.dev-data/
