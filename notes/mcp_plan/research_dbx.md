@@ -5,6 +5,8 @@
 
 它和本项目是**同一类问题**（把数据库能力交给 Agent，且必须防越权），但它的取舍点不同：它替代的是"人用的客户端 + 顺带开个 MCP"，本项目是"给 Agent 的数据面"。因此下面只记可直接复用的机制。
 
+DBX 的 **Java Agent 体系与多数据源接入**（Agent 实为父进程拉起的独立子进程 + stdio JSON-RPC，不是 JVM 插桩）另见 `notes/mcp_plan/research_dbx_java_agent.md`。
+
 ## 可复用机制
 
 | 机制 | DBX 做法 | 本计划落点 |
@@ -26,9 +28,17 @@
 ## 明确不采纳
 
 - **状态化会话与显式事务**：本项目走模板 + 只读，模板路径无状态；开放会话状态等于开放 `USE`/`SET` 语义，与"只读 + 版本钉住"冲突。
-- **写路径整体**：§1.3 已明确本期不注册 `risk = write|sensitive` 能力、不暴露 `prepare_call`/`apply_call`；§4.4.6 只是启用写路径时必须满足的契约（启用需重算 §5.1 常驻预算）。
 - **桌面 UI 工具**（`open_table` / `execute_and_show`）：本项目无桌面端，且 UI 回写会成为第二条调用通道（§4.4.5 已禁止）。
 - **多后端镜像**（桌面/Web/Docker 能力不同）：本服务是单一服务端，能力矩阵只按"数据源 + 客户端"两维展开。
+
+## 写路径的当前落点
+
+写路径按实施计划阶段五实施（排期见 `docs/plan/implementation-plan.md` §阶段五 W5.1–W5.8，契约细则见 `docs/plan/write-path.md`，对外摘要见 `docs/plan/hjzl-mcp-server-preview.md` §4.4.6）：
+
+- **默认全关**：五级开关（全局 → 租户 → 组 → 数据源 → 能力）须同时打开，且角色授权成立、会话未显式关闭，才允许写；发现层任一开关关闭 → 能力不可见（`MCP_CAPABILITY_NOT_FOUND`），运行期关闭或审批失效 → `MCP_WRITE_DISABLED`，两者都是拒绝，不降级为只读执行。
+- **prepare/apply 不新增工具**：是 `db_run_template` 的 `phase` 入参。`prepare` 无副作用，只做校验、落 `write_intent`、签发一次性令牌；`apply` 消费令牌后执行，执行前重新判定权限（撤销优先）。
+- **能力建模**：`kind ∈ {template, endpoint}` ∧ `risk = write`；写账号与只读账号是两个不同的 DSN 环境变量，写账号启动自检要求 DML 可用、DDL/超管不可用，失败即拒绝启动。
+- 上表「两阶段写 + 单次令牌」「高风险调用即时确认」「撤销后仍可清理」三行对应的就是这套契约，落点是上述 `phase` 机制与五级开关，而非独立入口。
 
 ## 差异点（不要照搬）
 

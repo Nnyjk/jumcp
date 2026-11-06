@@ -1,6 +1,6 @@
 # Harness Agent 平台 MCP 服务实施计划
 
-> **状态**：预览稿；待 §11 三项阻塞决策后定稿。
+> **状态**：预览稿；待 §11.1 三项阻塞决策后定稿。写路径另受 §11.2（D4–D12）约束，阶段五开工前须闭环。
 > **首个落地载体**：`hjzl-mcp-server` 仓库。技术栈已定稿（Rust + React，见 `docs/plan/implementation-plan.md` §3.2）；本计划只锁定契约与不变量。
 > **适用对象**：平台架构师、MCP 服务开发者、Agent 平台运维与安全负责人。
 
@@ -34,7 +34,7 @@
 - 不实现跨 MCP Server 的工具联邦路由。
 - 不解决模型侧工具选择准确率的训练优化（本计划只做评测与回归门禁）。
 - 不提供数据源权限清单导出；数据源账号权限由租户运维配置，本服务只消费。
-- **本期不注册 `risk ∈ {write, sensitive}` 能力**，也不暴露 `prepare_call` / `apply_call`；§4.4.6 定义的是未来开放写路径时必须满足的契约（含常驻预算重算）。
+- **阶段一–四不注册 `risk ∈ {write, sensitive}` 能力**；阶段五按 §4.4.6 开放 `write`（默认关，`sensitive` 另行开关），不新增 `prepare_call` / `apply_call` 之类工具。
 
 ---
 
@@ -112,7 +112,7 @@ capability:
 | `template` | `search_capabilities` | 常驻 `db_run_template`（§4.3.3） | ✅ 始终可用（不依赖 schema 注入） |
 | `endpoint` | `search_capabilities` | 常驻 `invoke_capability`（§4.3.8） | ✅ 始终可用 |
 
-> `risk ∈ {write, sensitive}` 的能力在调用面前增加确认阶段（prepare → apply，§4.4.6）；确认不构成第二条调用面，`prepare` 不执行任何副作用。
+> `risk ∈ {write, sensitive}` 的能力在调用面前增加确认阶段：同一入口的 `phase=prepare` → `phase=apply`（§4.4.6）。确认不构成第二条调用面，`prepare` 不执行任何副作用。
 
 > `kind=tool` 的调用的确依赖客户端能力；`template` / `endpoint` 走常驻分发器，因此 `api.internal.read`、`kb.search` 这类能力在静态客户端上**仍然可调用**——前提是它们被建模为 `endpoint` 而非 `tool`。建模为 `tool` 的能力在静态客户端上等于不可用，注册审核时须显式确认客户端形态。
 
@@ -544,23 +544,98 @@ admin_review_queue()
 
 配置来源唯一：管理台保存的组可见性与预算，必须能还原为入口层 Header / `_meta` 的等价约束，不允许存在只活在 UI 里的配置。
 
-#### 4.4.6 调用期确认（高风险能力）
+#### 4.4.6 写路径契约（prepare / apply）
 
-发布期审批管"这个能力能不能存在"，调用期确认管"这一次要不要放行"，两者不可互相替代。
+发布期审批管"这个能力能不能存在"，调用期确认管"这一次要不要放行"，两者不可互相替代。字段级细则、校验分层 L7–L12、开关与配额见 `docs/plan/write-path.md`。
 
-**生效范围**：本期不注册写能力、不暴露下列入口（§1.3）；本节是开放写路径的前置契约，启用时 `prepare_call` / `apply_call` 必须计入 §5.1 常驻预算并重算峰值。
+**生效范围**：阶段一–四不注册写能力；阶段五开放 `risk=write`，`sensitive` 另行开关，`admin`（TRUNCATE/DDL/GRANT）不开放。写能力默认关：全局/租户/组/能力开关关闭时能力不可见（`MCP_CAPABILITY_NOT_FOUND`）；可见后数据源/角色/会话开关关闭时返回 `MCP_WRITE_DISABLED`。两者都是拒绝，不降级为只读执行。
+
+**调用形态**：不新增工具。prepare/apply 是同一入口的 `phase`，写能力的第二个出口一律不存在（§2 原则 9）。
 
 ```
-prepare_call(capability_id, params) → { summary, confirm_token, expires_at }
-apply_call(confirm_token)           → 执行结果
+db_run_template(template_id, version?, params, phase?, confirm_token?, idempotency_key?)
+invoke_capability(capability_id, version?, params, phase?, confirm_token?, idempotency_key?)
 ```
 
-- `risk ∈ {write, sensitive}` 的调用必须经两阶段；`confirm_token` **单次使用**、有效期 5 分钟、绑定参数归一化哈希与 capability 版本，参数变化即失效（`MCP_CONFIRM_TOKEN_INVALID`）。
-- `summary` 必须包含：能力 id/version、目标数据源与 schema、归一化后的关键参数、将要改变的对象、执行主体。
-- `apply` 时**重新判定**可见性、`callable`、角色授权/租约与只读/生产保护；两次调用之间被撤销的权限立即生效（撤销优先）。
-- 批准不升权、不产生时间豁免；拒绝、超时、无法送达确认界面一律视为拒绝。
-- 写能力不得通过读入口执行，反之亦然；同一 kind 仍只有一个调用面（§3.3）。
-- 写权限被撤销后，回滚/清理类操作仍可用（避免"锁死"），但不得执行新的写操作。
+| 阶段 | 入参 | 副作用 | 返回 |
+|---|---|---|---|
+| prepare | 省略 `phase` 或 `phase="prepare"` | 无；只做校验、`EXPLAIN` 预估、落意图、签发令牌 | `summary` + `confirm_token` + `expires_at` + `status` |
+| apply | `phase="apply"` + `confirm_token` + 相同 `params` | 执行一条 DML | `affected_rows` / `returning` / `replayed` / `elapsed_ms` |
+
+`summary` 必含：能力 id/version、目标数据源与 schema、操作类型与目标表、写入列、谓词形状（占位符形式）、`affected_rows` 预估（标注 `preview: estimate` 或 `count`）、`params_hash`、审批要求。**不回传参数值**；参数值仅管理台审批视图可见（加密留存）。
+
+**prepare 请求 / 返回**（`db_run_template` 形态；`invoke_capability` 同构）：
+
+```json
+{"template_id":"order.mark_paid","version":7,
+ "params":{"order_id":"O-1","status":"paid","expected_row_version":3}}
+→ {"phase":"prepare","intent_id":"wi_01J9","status":"prepared",
+   "confirm_token":"wt_9f2c","expires_at":"2026-11-06T10:20:00Z",
+   "summary":{"capability_id":"order.mark_paid","version":7,"datasource":"core-pg",
+              "operation":"update","tables":["public.orders"],
+              "columns":["status","paid_at","version"],"predicate":"id = $1 AND version = $3",
+              "params_hash":"sha256:2b0f","affected_rows_estimate":1,
+              "preview":"estimate","approval":{"required":true,"approvers_needed":1}}}
+```
+
+**令牌**：`wt_` 前缀的不透明串，服务端只存 SHA-256；单次使用，TTL 300s（60–900 可配），绑定 `tenant + actor + session + capability + version + params_hash` 六元组。apply 以原子 `UPDATE ... WHERE used_at IS NULL AND expires_at > now` 消费，影响行数非 1 即拒绝。重放、过期、跨会话、参数变化统一 `MCP_CONFIRM_TOKEN_INVALID`，`data.reason` 区分。
+
+**apply 顺序**：校验参数哈希与令牌绑定（租户/人/会话/能力/版本）→ 消费令牌 → 重新判定可见性/`callable`/角色授权/开关/审批状态 → 幂等键检查 → 单语句事务执行 → 行数后检查（超限回滚）→ `COMMIT` → 写 `write_apply` 审计 → 返回。提交前任何失败都不产生写入；提交阶段断连返回 `MCP_WRITE_OUTCOME_UNKNOWN`，**禁止重试与重放**。
+
+**语句与行数**：一条语句、一个事务；仅 INSERT/UPDATE/DELETE；UPDATE/DELETE 必须有非退化 WHERE；值只能来自绑定参数，或已声明的自增列/服务端时间列（`write-path.md` L10）；列为能力声明白名单。`affected_rows > max_affected_rows`（默认 100）时整体回滚并返回 `MCP_WRITE_LIMIT_EXCEEDED`，不截断。
+
+**幂等与并发**：`idempotency_key` 按 `(tenant, actor, capability)` 落库，同键同参返回首次结果（`replayed:true`），同键异参 `MCP_IDEMPOTENCY_CONFLICT`；窗口 24h。声明 `optimistic_lock` 的能力在 `affected_rows=0` 时返回 `MCP_ROW_VERSION_MISMATCH`，不自动重试。并发写事务按数据源限流，超限拒绝不排队。
+
+**错误码**（新增，写侧专用）：`MCP_WRITE_DISABLED` / `MCP_WRITE_REJECTED` / `MCP_WRITE_LIMIT_EXCEEDED` / `MCP_WRITE_QUOTA_EXCEEDED` / `MCP_WRITE_APPROVAL_REQUIRED` / `MCP_WRITE_OUTCOME_UNKNOWN` / `MCP_IDEMPOTENCY_CONFLICT` / `MCP_ROW_VERSION_MISMATCH`；复用 `MCP_MULTI_STATEMENT`、`MCP_CONFIRM_TOKEN_INVALID`、`MCP_VERSION_CONFLICT`、`MCP_SCHEMA_OUT_OF_SCOPE`、`MCP_EXEC_TIMEOUT`。
+
+**开关与生效顺序**：
+
+| 级别 | 键 | 默认 | 说明 |
+|---|---|---|---|
+| 全局 | `HJZL_MCP_WRITE_ENABLED` | `false` | 写能力不进入可见集；`draft` 仍可入库审核 |
+| 租户 | `policy.write_enabled` | `false` | 只做收敛 |
+| 组 | `[[groups]] write_enabled` | `false` | 组内写能力不可发现/调用 |
+| 数据源 | `[datasources.write] enabled` | `false` | 写 DSN 不加载 |
+| 能力 | `write.enabled` | `false` | 不进入可见集 |
+| 角色/会话 | `policy.write_roles` / `_meta.mcp.write` | 空 / 继承 | 会话只能关，不能开 |
+
+顺序：全局 → 租户 → 组 → 数据源 → 能力 → 角色 → 会话 → 审批 → 配额；全部逻辑与，读取失败按关闭处理。
+
+**审批与配额**：
+
+| 项 | 取值 |
+|---|---|
+| 谁能写 / 谁能批 | `write_roles` / `approver_roles`；提交人与批准人不同 |
+| 批准有效期 / 覆盖次数 | 3600s / 默认 1 次（`sensitive` 固定 1） |
+| DBA 二次签核 | 可配，默认关 |
+| 时间窗 | 可配，窗外拒绝 |
+| 自助低风险 | 仅 staging ∧ 单表主键定位 ∧ 影响 1 行 |
+| 笔数配额 | 租户 60/min、会话 10/min、能力 20/min、数据源 30/min |
+| 行数配额 | 50000 行/租户/日；并发写事务 2/数据源 |
+| 拒绝策略 | 拒绝优先于排队，返回 `retry_after_ms` |
+
+**审计**：prepare 落 `write_intent`（能力/版本/参数哈希/列名/影响行数预估/令牌 id/申请人），提交成功落 `write_apply`（`intent_id`、批准人、`affected_rows`、耗时、`statement_hash`），失败落 `write_failed`（错误码、阶段、是否回滚、`retryable`）。三者进入同一哈希链；审计中不出现参数明文。审计写失败则拒绝写（fail-closed）。
+
+**失败与重试**：
+
+| 场景 | 已写 | 处理 |
+|---|---|---|
+| 前置拒绝（开关/授权/形状/配额） | 否 | 修正后重新 prepare |
+| 令牌/审批失效 | 否 | 重新 prepare 或等审批 |
+| 事务内失败（约束/死锁/超时） | 否（已回滚） | 仅死锁与超时可带幂等键重试 |
+| 行数超限 / 乐观锁未命中 | 否（回滚） | 修正参数或重读后重新 prepare |
+| 提交未知（断连/提交超时） | **未知** | 禁止重试，按幂等键查询或人工核对 |
+| 外部系统写 5xx/超时 | 视目标 | 仅 `idempotent=true` + 幂等键重试 1 次 |
+
+不提供跨系统两阶段提交；需要业务一致性时由目标服务本地事务写 outbox，本服务只负责送达与留痕。
+
+**授权与撤销**：写角色 allowlist；四眼在 apply 时复查；撤销权限后下一次 apply 立即失败；回滚/清理类能力保留，避免锁死。写权限被撤销后不得执行新的写操作。
+
+**注解**：写能力 `readOnlyHint=false`；INSERT 为 `destructiveHint=false`，UPDATE/DELETE/upsert 为 `true`；声明幂等键或天然幂等时 `idempotentHint=true`。入口工具在写开关关闭的会话中仍按只读注解投影，开启后按最保守语义投影。
+
+**管理台**：写意图队列与详情（摘要、参数解密视图、批准/拒绝/转 DBA 签核、执行结果、`intent_id` 审计追溯）；UI 不直连库，批准人取自 token。上线后替换「未接通」文案。
+
+> 本契约不改变 JSON-RPC 结构，不新增 MCP 方法；`prepare` 不构成第二条调用面。指标口径见 §9，字段级细则见 `docs/plan/write-path.md`。
 
 ---
 
@@ -584,7 +659,7 @@ apply_call(confirm_token)           → 执行结果
 > 会话累计注入超限时：返回 `MCP_CONTEXT_BUDGET_EXHAUSTED` 并提示改用模板（`db_run_template` / `invoke_capability` 不新增 schema）。
 > 会话累计 result 超限时：后续调用强制「摘要模式」（只回聚合值与 `row_count`，明细走分页引用），并在结果元信息标注 `summary: true`。
 
-**写路径预留**：本期不注册 `risk = write|sensitive` 能力，上表不含 `prepare_call` / `apply_call`；一旦启用（§4.4.6），两者计入常驻 600 并重算峰值，不得直接沿用 7,500 上界。
+**写路径预留**：阶段一–四不注册 `risk = write|sensitive` 能力；阶段五不新增常驻工具（prepare/apply 是 `db_run_template` / `invoke_capability` 的入参），常驻总量不变，启用时只需复核新增入参与描述带来的 token 增量并附实测。
 
 **pruning 假设**：上表**不假设客户端会丢弃历史 tool result**。若某客户端确认支持按阈值 pruning，其预算可按 §4.2.0 矩阵单列一行，不得默认沿用。
 
@@ -645,6 +720,11 @@ Agent → db_query_readonly(sql) → L1..L4 校验 → 执行 → 审计(sql_has
 | 执行超时 / 取消 / 连接中断（结果未知） | 标记 `outcome: unknown`，**禁止重试与重放**，隔离该连接并写审计；调用方需自行重新查询确认 | 计入（反映执行不稳定性） |
 | SQL 引用未声明 schema / 跨库越界 | `MCP_SCHEMA_OUT_OF_SCOPE`，不隐式降级到默认 schema | 计入 |
 | 确认令牌失效（过期/重放/参数变化） | `MCP_CONFIRM_TOKEN_INVALID`，要求重新 prepare | — |
+| 写开关未开 / 目标不在清单 | 不可见 → `MCP_CAPABILITY_NOT_FOUND`；可见但运行期开关关闭 → `MCP_WRITE_DISABLED` + `reason`；两种情况都不进入执行链 | — |
+| 写语句未通过 L8–L10 | `MCP_WRITE_REJECTED` + `reason`（形状/WHERE/列/函数/字面量） | — |
+| 影响行数超限 | 事务内回滚，`MCP_WRITE_LIMIT_EXCEEDED`，不截断 | — |
+| 写提交结果未知 | `MCP_WRITE_OUTCOME_UNKNOWN`，**禁止重试与重放**，按幂等键查询 | — |
+| 同幂等键异参 | `MCP_IDEMPOTENCY_CONFLICT`，不执行 | — |
 
 ### 6.4 错误通道（协议限制）
 
@@ -671,6 +751,10 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | 模板 description 注入 | 结构化生成 + 变更重审 + 审核队列可见 diff |
 | 自由 SQL 越权/写穿 | L1 只读账号为唯一强保证（§4.3.1）；L2–L4 纵深 |
 | 只读账号配置错误 | 启动自检：以只读账号执行 `CREATE TEMP TABLE`/`INSERT` 必须失败，否则拒绝启动（fail-fast） |
+| 写账号权限过大 | 写 DSN 独立于只读 DSN；启动自检要求 DML 可用、DDL/超管不可用，失败即拒绝启动（§4.4.6、`docs/plan/write-path.md` L7） |
+| 误写与越权写 | 单语句 + WHERE 必填 + 列白名单 + 影响行数上限；超限回滚；五级开关默认关 |
+| 写操作无法追责 | `write_intent` / `write_apply` / `write_failed` 三类事件入同一哈希链；参数只存哈希与列名 |
+| 令牌重放/参数替换 | 单次令牌 + 六元绑定（租户/人/会话/能力/版本/参数哈希）+ 吊销 |
 | 敏感数据外泄 | 列黑名单 + 行数/token 上限 + 全量审计 |
 | 敏感组审批打断 | 授权租约 `(tenant, role, groups, expires_at, requested_by, approval_id)`，会话内复用，不逐请求审批 |
 | 模板膨胀 | 单组模板数告警；低频自动 `deprecated`；组数 ≤20 |
@@ -689,7 +773,7 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | 二 渐进发现 | 第 6–9 周 | 元工具三件套、可见集检索、预算判定、静态客户端降级 | G2：峰值 ≤8,000，Top-5 recall ≥85% |
 | 三 注册表与分发 | 第 10–14 周 | capability 存储、模板校验门禁、`db_run_template`、`invoke_capability`、授权租约 | G3：模板占 DB 调用 ≥40%，静态客户端可调 |
 | 四 治理闭环 | 第 15–19 周 | Admin API 与管理台、审批流、聚类固化、评估自动化、灰度淘汰 | G4：admin 审计 100%，模板占比 ≥60% |
-| 五（可选）写路径与多执行器 | 第 20 周起 | §4.4.6 写路径、`endpoint` 增量（新执行器/多实例路由/限流）、多数据源 | 启用写路径须重算常驻预算 |
+| 五 写路径 | 第 20–27 周 | 写账号与开关、L8–L10 校验、prepare/apply 令牌、单语句写执行器、幂等与乐观锁、审批与配额、管理台写意图页；G5 之后扩展多执行器与多数据源 | G5：写开关默认全关且越权零放行、超限回滚、四眼与令牌契约全绿、staging 端到端可用 |
 
 阶段〇与阶段一后半重叠：骨架、CI 与数据源联调可在决策冻结前启动。工作包拆分、每阶段完成定义、风险回退见 `docs/plan/implementation-plan.md`；指标口径见 §9。
 
@@ -711,6 +795,13 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | 质量 | `search_capabilities` Top-5 recall | ≥85% | golden 集；判定 = 返回前 5 含 golden id；每 2 周回归 |
 | 质量 | 工具选择准确率 | 不低于阶段〇基线 | 同模型、同 prompt、同任务集 A/B；差异 >5% 视为回归 |
 | 质量 | fallback 率 | 阶段四 ≤15% | 分母同上 |
+| 写 | 写成功率 | ≥99%（剔除前置拒绝与重放） | `write_apply{ok} / (ok + failed)`，按能力 7 日滚动 |
+| 写 | 拒绝原因分布 | 单一原因 ≤40%（参数错误除外） | `write_failed` 按 `error_code` + `reason` 分组 / 全部 `write_intent` |
+| 写 | affected_rows 分布 | p99 不超过能力上限；7 日内 p95 上升 >20% 告警 | 审计 `write_apply.affected_rows` 分桶；超 10× 均值单独告警 |
+| 写 | prepare→apply 比率 | 0.5–0.95 | 已消费令牌 / 新建意图；<0.3 视为模型误用或审批阻塞 |
+| 写 | prepare→apply 延迟 | 审批 p95 ≤4h，执行 p95 ≤500ms | 拆分 `approval_wait_ms` 与 `exec_wait_ms` |
+| 写 | 误写率 | <0.1% | 24h 内标记误写/补偿的意图数 ÷ apply 成功数，均需关联 `intent_id` |
+| 写 | 四眼违规 / 审计一致性 | 0 / 0 | 同人批准计数；有 apply 无 intent 的记录数 |
 
 ---
 
@@ -729,6 +820,9 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | R9 | 双通道配置漂移 | 权限判定不一致 | 通道优先级固定 + 生效值写入审计 `session_init` |
 | R10 | EXPLAIN 预检误判 | 放行高成本查询 | 预检仅作提示，L1–L3 为硬约束；高成本标记进审核队列 |
 | R11 | 审计存储增长 | 成本 | 分类保留 + 冷热分层；`capability_search` 采样保留 |
+| R12 | 写路径误伤在线业务 | 锁等待、长事务、批量更新拖垮业务库 | 单语句 + `lock_timeout` + 影响行数上限；按数据源开关逐级关停；读路径不受影响 |
+| R13 | 写账号权限漂移 | 账号被授予 DDL/superuser，写面变全权 | 启动自检 W2/W3/W6 + 每日权限巡检；不通过即拒绝启动 |
+| R14 | 审批与令牌被绕过 | 未批准写入、令牌重放、参数替换 | 四眼在 apply 复查 + 六元绑定 + 单次消费 + 吊销；异常计数触发全局关写 |
 
 ---
 
@@ -742,7 +836,21 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 | D2 | 客户端能力基线：是否要求 Agent 客户端升级到支持动态工具集 | 以阶段〇矩阵结果决定；对不支持的客户端单独设基线，不做统一承诺 | 决定 §4.2 形态与 G1 口径 |
 | D3 | 状态模型：线性三态还是双布尔 | 双布尔（§4.4.1），系统直调场景必须有 `discoverable=false, callable=true` | 决定注册表数据模型，越晚改成本越高 |
 
-### 11.2 本稿已预置默认值（可在评审中推翻，不阻塞）
+### 11.2 写路径待决策（D4–D12，未定则不得进入阶段五）
+
+| # | 决策 | 建议默认 | 不决策的后果 |
+|---|---|---|---|
+| D4 | 写权限授予方式：角色 allowlist 由谁维护、是否需申请表 | 按组授权，落 `policy.toml` + admin API，不按人开白名单 | 只能按人开口子，转岗/离职后权限残留，审计无法回答"谁被授权" |
+| D5 | 是否要求生产写挂工单/变更单号 | 生产写必填 `change_ticket`，staging 不需要 | 生产写无法与变更管理对账，事后只能靠时间线推测 |
+| D6 | 写审计保留期 | `write_*` 与 `admin_change` 同为 7 年；参数密文 7 天 | 合规审计缺证，或存储与密钥管理成本无人认领 |
+| D7 | 写账号来源与轮换（谁创建、周期、是否独立实例） | 平台 DBA 创建，一数据源一账号，90 天轮换；高价值库独立实例 | 写账号被复用为通用账号，轮换无 owner |
+| D8 | 允许写的目标系统清单 | 首批仅内部订单库 staging + 一个只写 API，清单入配置 | 任意注册的写能力都可能指向未评估系统 |
+| D9 | PII 列写保护：黑名单由谁定、能否能力级豁免 | 数据源级硬黑名单不可豁免，能力级只能加严 | 敏感列被写能力覆盖，只读侧列黑名单失效 |
+| D10 | 生产写是否首批开放 | 不开放，阶段五只到 staging 与内测租户 | 审批组织未就绪即上线，误写直接暴露业务 |
+| D11 | 审批视图参数留存：加密方式、密钥归属、留存期 | AES-GCM，密钥在 KMS/环境变量，留存 7 天 | 不留存则审批人盲批；长期明文留存则审计面变 PII 仓库 |
+| D12 | 二次签核：是否需要独立 DBA 角色与 SLA | 需要 `dba_roles`，SLA 4h，默认关闭 | 高风险写只有单人批准，四眼退化 |
+
+### 11.3 本稿已预置默认值（可在评审中推翻，不阻塞）
 
 | 事项 | 本稿取值 |
 |---|---|
@@ -827,3 +935,5 @@ MCP `tools/list` / `tools/call` 无独立的"越权"结果通道，越界与预�
 - 契约测试清单（越界矩阵、黑名单用例、预算边界、版本冲突、降级矩阵）作为仓库结构的一部分在阶段一建立。
 - 新增 `kind` 时必须同时定义唯一调用面（§2.9）与静态客户端可用性（§3.3 调用面矩阵）；禁止出现"只可发现、无处调用"的建模。
 - 若 API / KB 执行器无法复用 §4.3.8 分发链（例如需要流式或多步交互），必须回写 §3.3 契约，不得在 `invoke_capability` 内做特例分支。
+- 写路径的方言扩面（MySQL / ClickHouse）在 G5 之后单独评估：无事务或 `affected_rows` 语义不一致的引擎不得进入写面，直到 §4.4.6 与 `docs/plan/write-path.md` 的能力矩阵补齐。
+- 写路径新增执行器类型（如 gRPC）必须复用同一 prepare/apply 与同一审计事件，禁止为其增加专用确认参数。
