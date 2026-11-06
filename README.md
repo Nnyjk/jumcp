@@ -32,6 +32,17 @@ export HJZL_TEST_PG_DSN='postgres://reader:pw@host:5432/db'
 cargo test -p hjzl-server -- --ignored
 ```
 
+## 一键测试
+
+一条命令跑完「后端 fmt/clippy/测试 + 前端 typecheck/build/lint + E2E 冒烟」并输出 PASS/FAIL 汇总表。
+
+```
+pwsh scripts/test-all.ps1      # Windows / PowerShell 7+
+scripts/test-all.sh            # Linux / macOS / CI
+```
+
+参数（两脚本等价）：`-SkipE2E`/`--skip-e2e` 只跑静态检查与测试；`-PgDsn <dsn>`/`--pg-dsn <dsn>` 设 `HJZL_TEST_PG_DSN` 并额外跑 `#[ignore]` 真库用例；`-NoClean`/`--no-clean` 保留临时目录与服务日志。
+
 ## 目录
 
 - `backend/crates/hjzl-core/`：`config`、`entry`（三通道 + EffectiveScope）、`audit`（哈希链）、`registry`（双布尔 + 四眼）、`budget`（§5 上限）
