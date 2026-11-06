@@ -6,6 +6,7 @@ import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { InfoBar } from '../components/InfoBar'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../components/PageShell'
+import { HEALTH_STATUS_LABEL } from '../labels'
 
 const CHAIN_LABEL: Record<AuditChainState, string> = {
   valid: '审计链完整',
@@ -64,7 +65,9 @@ export default function HealthPage() {
             <div className="stat-grid">
               <div className="stat">
                 <span className="stat-label">status</span>
-                <div className="stat-value">{data.status}</div>
+                <div className="stat-value" title={data.status}>
+                  {HEALTH_STATUS_LABEL[data.status] ?? data.status}
+                </div>
               </div>
               <div className="stat">
                 <span className="stat-label">version</span>

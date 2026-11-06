@@ -11,6 +11,7 @@ import {
   PageShell,
   Pagination,
 } from '../components/PageShell'
+import { EVENT_TYPE_LABEL } from '../labels'
 
 const EVENT_TYPES: AuditEventType[] = [
   'session_init',
@@ -41,7 +42,11 @@ const COLUMNS: Array<DataTableColumn<AuditEnvelope>> = [
     key: 'event_type',
     header: '事件类型',
     width: '150px',
-    cell: (row) => <code className="code-chip">{row.event_type}</code>,
+    cell: (row) => (
+      <code className="code-chip" title={row.event_type}>
+        {EVENT_TYPE_LABEL[row.event_type]}
+      </code>
+    ),
   },
   {
     key: 'hash',
@@ -92,8 +97,8 @@ export default function AuditQueryPage() {
             >
               <option value="">全部</option>
               {EVENT_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
+                <option key={type} value={type} title={type}>
+                  {EVENT_TYPE_LABEL[type]}
                 </option>
               ))}
             </select>
