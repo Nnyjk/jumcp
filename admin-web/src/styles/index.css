@@ -1,0 +1,4 @@
+/* 样式入口：token → 布局 → 组件，顺序固定（布局依赖 token，组件覆盖布局细节）。 */
+@import './tokens.css';
+@import './layout.css';
+@import './components.css';

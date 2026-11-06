@@ -1,7 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchHealth } from '../api/admin'
-import type { AuditChainState } from '../api/types'
-import { ErrorState, LoadingState, PageShell } from '../components/PageShell'
+import type { AuditChainState, HealthDatasource } from '../api/types'
+import { Badge, type BadgeTone } from '../components/Badge'
+import { Card } from '../components/Card'
+import { DataTable, type DataTableColumn } from '../components/DataTable'
+import { InfoBar } from '../components/InfoBar'
+import { EmptyState, ErrorState, LoadingState, PageShell } from '../components/PageShell'
 
 const CHAIN_LABEL: Record<AuditChainState, string> = {
   valid: '审计链完整',
@@ -9,89 +13,99 @@ const CHAIN_LABEL: Record<AuditChainState, string> = {
   error: '审计链校验失败',
 }
 
+const CHAIN_TONE: Record<AuditChainState, BadgeTone> = {
+  valid: 'success',
+  tampered: 'danger',
+  error: 'danger',
+}
+
+const DATASOURCE_COLUMNS: Array<DataTableColumn<HealthDatasource>> = [
+  { key: 'name', header: '名称', mono: true, width: '320px', cell: (row) => row.name },
+  { key: 'engine', header: '引擎', width: '180px', cell: (row) => row.engine },
+  {
+    key: 'readonly',
+    header: '只读',
+    width: '120px',
+    cell: (row) => (
+      <Badge tone={row.readonly ? 'success' : 'warning'}>{row.readonly ? '只读' : '可写'}</Badge>
+    ),
+  },
+]
+
 export default function HealthPage() {
-  const { data, error, isPending, isError, isSuccess } = useQuery({
+  const { data, error, isPending, isError } = useQuery({
     queryKey: ['health'],
     queryFn: ({ signal }) => fetchHealth(signal),
   })
 
   const chain = data?.audit_chain
-  const chainClass =
-    chain === 'valid' ? 'badge badge-ok' : chain === 'tampered' ? 'badge badge-warn' : 'badge badge-error'
+  const chainDetail = data?.audit_chain_detail
 
   return (
-    <PageShell
-      title="健康检查"
-      mode="只读"
-      description="GET /health 的结构化响应，用于确认管理台与后端连通性及审计链完整性。本页不提供任何执行入口。"
-    >
-      {isPending && <LoadingState />}
-      {isError && <ErrorState error={error} />}
-      {isSuccess && data && (
-        <>
-          <div className="toolbar">
-            <span className={chainClass}>
-              {CHAIN_LABEL[chain ?? 'error']}
-              {chain ? `（${chain}）` : ''}
-            </span>
-            {data.audit_chain_detail && (
-              <span className="hint">详情：{data.audit_chain_detail}</span>
+    <PageShell>
+      {chain !== undefined && chain !== 'valid' && (
+        <InfoBar
+          severity="danger"
+          title={chain === 'tampered' ? '审计链完整性校验未通过' : '审计链校验失败'}
+          description={
+            chain === 'tampered'
+              ? '某条审计记录的 prev_hash / hash 与内容不一致：追加日志可能被绕过应用层改写，须立即排查写入路径与数据库权限。'
+              : '链校验过程报错，当前无法确认审计日志完整性；该结论不等同于「完整」。'
+          }
+          meta={chainDetail === undefined ? undefined : `audit_chain_detail：${chainDetail}`}
+        />
+      )}
+
+      <Card title="运行状态" subtitle="GET /health · 免鉴权端点">
+        {isPending && <LoadingState rows={4} label="正在读取健康状态" />}
+        {isError && <ErrorState error={error} />}
+        {data !== undefined && chain !== undefined && (
+          <>
+            <div className="stat-grid">
+              <div className="stat">
+                <span className="stat-label">status</span>
+                <div className="stat-value">{data.status}</div>
+              </div>
+              <div className="stat">
+                <span className="stat-label">version</span>
+                <div className="stat-value">
+                  <span className="mono">{data.version}</span>
+                </div>
+              </div>
+              <div className="stat">
+                <span className="stat-label">audit_chain</span>
+                <div className="stat-value">
+                  <Badge tone={CHAIN_TONE[chain]} dot>
+                    {CHAIN_LABEL[chain]}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+            {data.audit_chain_detail !== undefined && (
+              <dl className="detail-list detail-block">
+                <dt>audit_chain_detail</dt>
+                <dd>
+                  <code>{data.audit_chain_detail}</code>
+                </dd>
+              </dl>
             )}
-          </div>
+          </>
+        )}
+      </Card>
 
-          <table className="table">
-            <thead>
-              <tr>
-                <th>项</th>
-                <th>值</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>status</td>
-                <td>{data.status}</td>
-              </tr>
-              <tr>
-                <td>version</td>
-                <td>{data.version}</td>
-              </tr>
-              <tr>
-                <td>audit_chain</td>
-                <td>{data.audit_chain}</td>
-              </tr>
-              {data.audit_chain_detail && (
-                <tr>
-                  <td>audit_chain_detail</td>
-                  <td className="mono">{data.audit_chain_detail}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-
-          <h3 className="section-title">数据源（{data.datasources.length}）</h3>
+      {data !== undefined && (
+        <Card title={`数据源（${data.datasources.length}）`} flush>
           {data.datasources.length === 0 ? (
-            <p className="hint">未配置数据源。</p>
+            <EmptyState hint="未配置数据源。在部署配置中登记数据源后，健康页会显示引擎与只读标记。" />
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>引擎</th>
-                  <th>只读</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.datasources.map((ds) => (
-                  <tr key={ds.name}>
-                    <td>{ds.name}</td>
-                    <td>{ds.engine}</td>
-                    <td>{ds.readonly ? '是' : '否'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable
+              label="数据源"
+              columns={DATASOURCE_COLUMNS}
+              rows={data.datasources}
+              rowKey={(row) => row.name}
+            />
           )}
-        </>
+        </Card>
       )}
     </PageShell>
   )

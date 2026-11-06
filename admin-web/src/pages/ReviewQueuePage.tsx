@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchReviewQueue } from '../api/admin'
+import type { ReviewQueueItem } from '../api/types'
+import { RiskBadge, StatusBadge } from '../components/Badge'
+import { Card } from '../components/Card'
+import { DataTable, type DataTableColumn } from '../components/DataTable'
 import {
   DisabledAction,
   EmptyState,
@@ -8,6 +12,39 @@ import {
   PageShell,
 } from '../components/PageShell'
 
+const COLUMNS: Array<DataTableColumn<ReviewQueueItem>> = [
+  { key: 'id', header: '能力 ID', mono: true, width: '176px', cell: (row) => row.id },
+  {
+    key: 'kind',
+    header: '类型',
+    width: '88px',
+    cell: (row) => row.kind,
+  },
+  { key: 'group', header: '组', mono: true, width: '88px', cell: (row) => row.group },
+  {
+    key: 'risk',
+    header: '风险',
+    width: '72px',
+    cell: (row) => <RiskBadge risk={row.risk} />,
+  },
+  {
+    key: 'status',
+    header: '状态',
+    width: '106px',
+    cell: (row) => <StatusBadge status={row.status} />,
+  },
+  { key: 'version', header: '版本', numeric: true, width: '52px', cell: (row) => row.version },
+  { key: 'updated', header: '更新时间', mono: true, width: '176px', cell: (row) => row.updated || '—' },
+  { key: 'hash', header: '定义哈希', mono: true, width: '76px', cell: (row) => row.definition_hash },
+  {
+    key: 'actions',
+    header: '操作',
+    width: '136px',
+    sticky: true,
+    cell: () => <DisabledAction compact label="批准" />,
+  },
+]
+
 export default function ReviewQueuePage() {
   const { data, error, isPending, isError } = useQuery({
     queryKey: ['review-queue'],
@@ -15,57 +52,37 @@ export default function ReviewQueuePage() {
   })
 
   return (
-    <PageShell
-      title="审核队列"
-      mode="未实现"
-      description="draft / review 状态的能力版本等待审批。提交与批准必须为不同主体（四眼原则），本视图暂不提供任何写操作入口。"
-    >
-      <div className="toolbar">
-        <DisabledAction label="批准发布" />
-        <DisabledAction label="退回" />
-        <span className="hint">写操作尚未接通：UI 不得直连库，所有变更须经 admin API 落审计。</span>
-      </div>
+    <PageShell>
+      <Card flush>
+        <div className="command-bar">
+          <DisabledAction label="批准发布" />
+          <DisabledAction label="退回" />
+          <span className="hint">写操作尚未接通：UI 不得直连库，所有变更须经 admin API 落审计。</span>
+        </div>
+      </Card>
 
-      {isPending && <LoadingState />}
-      {isError && <ErrorState error={error} />}
-      {data && data.items.length === 0 && <EmptyState hint="当前没有待审核条目。" />}
-      {data && data.items.length > 0 && (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>能力 ID</th>
-              <th>类型</th>
-              <th>组</th>
-              <th>风险</th>
-              <th>状态</th>
-              <th>版本</th>
-              <th>更新时间</th>
-              <th>定义哈希</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map((item) => (
-              <tr key={`${item.id}@${item.version}`}>
-                <td>{item.id}</td>
-                <td>{item.kind}</td>
-                <td>{item.group}</td>
-                <td>{item.risk}</td>
-                <td>{item.status}</td>
-                <td>{item.version}</td>
-                <td>{item.updated || '—'}</td>
-                <td className="mono">{item.definition_hash}</td>
-                <td>
-                  <DisabledAction label="批准" />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {data && data.items.length > 0 && (
-        <p className="hint">共 {data.total} 条待审核。</p>
-      )}
+      <Card
+        title="待审核版本"
+        subtitle={
+          data === undefined ? (isError ? '查询失败' : '查询中') : `共 ${data.total} 条`
+        }
+        flush
+      >
+        {isPending && <LoadingState rows={6} label="正在加载审核队列" />}
+        {isError && <ErrorState error={error} />}
+        {data !== undefined && data.items.length === 0 && (
+          <EmptyState hint="当前没有 draft / review 状态的条目。新版本提交后会出现在这里。" />
+        )}
+        {data !== undefined && data.items.length > 0 && (
+          <DataTable
+            label="待审核能力版本"
+            meta={`本页 ${data.items.length} 行 · 共 ${data.total} 条`}
+            columns={COLUMNS}
+            rows={data.items}
+            rowKey={(row) => `${row.id}@${row.version}`}
+          />
+        )}
+      </Card>
     </PageShell>
   )
 }

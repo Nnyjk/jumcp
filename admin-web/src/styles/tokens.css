@@ -1,0 +1,255 @@
+/**
+ * Fluent / Windows 11 设计 token。
+ * 两套配色都以自定义属性声明；data-theme 由 theme.ts 解析成 light|dark（system 在 JS 侧解析），
+ * 因此这里不需要再复制一份 prefers-color-scheme 媒体块，手工切换与系统跟随共用同一份变量。
+ */
+:root {
+  color-scheme: light;
+
+  /* 强调色：WinUI 浅色 accent */
+  --accent: #0067c0;
+  --accent-hover: #1975c5;
+  --accent-pressed: #005a9e;
+  --accent-subtle: rgba(0, 103, 192, 0.09);
+  --accent-border: rgba(0, 103, 192, 0.28);
+  --on-accent: #ffffff;
+
+  /* 语义色 */
+  --success: #0f7b0f;
+  --success-subtle: rgba(15, 123, 15, 0.1);
+  --success-border: rgba(15, 123, 15, 0.28);
+  --warning: #9d5d00;
+  --warning-subtle: rgba(157, 93, 0, 0.1);
+  --warning-border: rgba(157, 93, 0, 0.3);
+  --danger: #c42b1c;
+  --danger-subtle: rgba(196, 43, 28, 0.08);
+  --danger-border: rgba(196, 43, 28, 0.3);
+
+  /* 文本：正文 20px 行高，次级与三级都满足 4.5:1 */
+  --text-primary: #1a1a1a;
+  --text-secondary: #5b5b5b;
+  --text-tertiary: #6f6f6f;
+  --text-disabled: #767676;
+
+  /* Mica 背景与亚克力层 */
+  --bg-base: #eeeeee;
+  --bg-mica: radial-gradient(140% 120% at 12% -12%, #fbfbfb 0%, #f3f3f3 42%, #e7e7e7 100%);
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-strong: rgba(255, 255, 255, 0.86);
+  --surface-subtle: rgba(255, 255, 255, 0.42);
+  --surface-nav: rgba(249, 249, 249, 0.72);
+  --surface-titlebar: rgba(245, 245, 245, 0.72);
+  --surface-control: rgba(255, 255, 255, 0.72);
+  --surface-control-hover: rgba(255, 255, 255, 0.95);
+  --surface-sticky: rgba(250, 250, 250, 0.86);
+  --surface-opaque: #fafafa;
+
+  --border: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.12);
+
+  --fill-subtle: rgba(0, 0, 0, 0.035);
+  --fill-hover: rgba(0, 0, 0, 0.055);
+  --fill-active: rgba(0, 0, 0, 0.08);
+  --fill-disabled: rgba(0, 0, 0, 0.04);
+  --nav-active-bg: rgba(0, 0, 0, 0.055);
+
+  --row-hover: rgba(0, 0, 0, 0.045);
+  --row-alt: rgba(0, 0, 0, 0.018);
+
+  /* Fluent 双层浅阴影，不用 Material 大投影 */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 1px rgba(0, 0, 0, 0.1);
+  --shadow-pop: 0 4px 10px rgba(0, 0, 0, 0.1), 0 0 2px rgba(0, 0, 0, 0.08);
+  --shadow-frozen: -10px 0 14px -12px rgba(0, 0, 0, 0.35);
+
+  --skeleton-base: rgba(0, 0, 0, 0.06);
+  --skeleton-shine: rgba(0, 0, 0, 0.12);
+
+  /* 排版与尺寸 */
+  --font-sans: 'Segoe UI Variable Display', 'Segoe UI', system-ui, 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', 'Liberation Mono', monospace;
+  --fs-12: 12px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-28: 28px;
+
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  --control-height: 32px;
+  --nav-width: 260px;
+  --nav-width-collapsed: 48px;
+  --content-max: 1200px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --accent: #60cdff;
+  --accent-hover: #86dbff;
+  --accent-pressed: #42c3f5;
+  --accent-subtle: rgba(96, 205, 255, 0.12);
+  --accent-border: rgba(96, 205, 255, 0.34);
+  --on-accent: #000000;
+
+  --success: #6ccb5f;
+  --success-subtle: rgba(108, 203, 95, 0.12);
+  --success-border: rgba(108, 203, 95, 0.32);
+  --warning: #fce100;
+  --warning-subtle: rgba(252, 225, 0, 0.1);
+  --warning-border: rgba(252, 225, 0, 0.3);
+  --danger: #ff99a4;
+  --danger-subtle: rgba(255, 153, 164, 0.1);
+  --danger-border: rgba(255, 153, 164, 0.32);
+
+  --text-primary: #ffffff;
+  --text-secondary: #c5c5c5;
+  --text-tertiary: #a8a8a8;
+  --text-disabled: #8c8c8c;
+
+  --bg-base: #202020;
+  --bg-mica: radial-gradient(140% 120% at 12% -12%, #2d2d2d 0%, #232323 42%, #1a1a1a 100%);
+  --surface: rgba(255, 255, 255, 0.05);
+  --surface-strong: rgba(255, 255, 255, 0.08);
+  --surface-subtle: rgba(255, 255, 255, 0.03);
+  --surface-nav: rgba(32, 32, 32, 0.6);
+  --surface-titlebar: rgba(32, 32, 32, 0.65);
+  --surface-control: rgba(255, 255, 255, 0.055);
+  --surface-control-hover: rgba(255, 255, 255, 0.09);
+  --surface-sticky: rgba(38, 38, 38, 0.88);
+  --surface-opaque: #262626;
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --fill-subtle: rgba(255, 255, 255, 0.04);
+  --fill-hover: rgba(255, 255, 255, 0.07);
+  --fill-active: rgba(255, 255, 255, 0.1);
+  --fill-disabled: rgba(255, 255, 255, 0.03);
+  --nav-active-bg: rgba(255, 255, 255, 0.06);
+
+  --row-hover: rgba(255, 255, 255, 0.055);
+  --row-alt: rgba(255, 255, 255, 0.022);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 1px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 6px 16px rgba(0, 0, 0, 0.5), 0 0 2px rgba(0, 0, 0, 0.4);
+  --shadow-frozen: -10px 0 16px -12px rgba(0, 0, 0, 0.85);
+
+  --skeleton-base: rgba(255, 255, 255, 0.06);
+  --skeleton-shine: rgba(255, 255, 255, 0.13);
+}
+
+/* ---------------------------------- 基础 ---------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  line-height: 20px;
+  color: var(--text-primary);
+  background-color: var(--bg-base);
+  background-image: var(--bg-mica);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 焦点一律可见：2px 强调色 outline，偏移 2px（Fluent focus visual） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Fluent 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-pill);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-disabled);
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

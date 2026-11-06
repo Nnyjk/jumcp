@@ -3,7 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>HJZL MCP 管理台</title>
+    <script>
+      // 首帧前解析主题（localStorage 覆盖 > 系统偏好）并写 data-theme；CSS 只维护一份 token，避免浅色闪屏。
+      (function () {
+        try {
+          var stored = window.localStorage.getItem('hjzl-admin-theme')
+          var preference = stored === 'light' || stored === 'dark' ? stored : 'system'
+          var dark =
+            preference === 'dark' ||
+            (preference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var root = document.documentElement
+          root.dataset.theme = dark ? 'dark' : 'light'
+          root.style.colorScheme = dark ? 'dark' : 'light'
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

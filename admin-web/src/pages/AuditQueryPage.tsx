@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchAuditEvents, PAGE_LIMIT } from '../api/admin'
-import type { AuditEventType, AuditQuery } from '../api/types'
+import type { AuditEnvelope, AuditEventType, AuditQuery } from '../api/types'
+import { Card } from '../components/Card'
+import { DataTable, type DataTableColumn } from '../components/DataTable'
 import {
   EmptyState,
   ErrorState,
@@ -28,6 +30,29 @@ const EMPTY_FILTER: AuditQuery = {
   actor_role: '',
 }
 
+const COLUMNS: Array<DataTableColumn<AuditEnvelope>> = [
+  { key: 'ts', header: '时间', mono: true, width: '196px', cell: (row) => row.ts },
+  { key: 'event_id', header: '事件 ID', mono: true, width: '150px', cell: (row) => row.event_id },
+  { key: 'tenant', header: '租户', width: '76px', cell: (row) => row.tenant },
+  { key: 'actor', header: '主体', width: '72px', cell: (row) => row.actor.id || row.actor.type },
+  { key: 'role', header: '角色', width: '68px', cell: (row) => row.actor.role },
+  { key: 'session', header: '会话 ID', mono: true, width: '88px', cell: (row) => row.session_id || '—' },
+  {
+    key: 'event_type',
+    header: '事件类型',
+    width: '150px',
+    cell: (row) => <code className="code-chip">{row.event_type}</code>,
+  },
+  {
+    key: 'hash',
+    header: '哈希链尾',
+    mono: true,
+    width: '96px',
+    cell: (row) => row.hash,
+    title: (row) => `hash=${row.hash}\nprev_hash=${row.prev_hash}`,
+  },
+]
+
 export default function AuditQueryPage() {
   const [draft, setDraft] = useState<AuditQuery>(EMPTY_FILTER)
   const [filter, setFilter] = useState<AuditQuery>(EMPTY_FILTER)
@@ -39,112 +64,113 @@ export default function AuditQueryPage() {
   })
 
   return (
-    <PageShell
-      title="审计查询"
-      mode="只读"
-      description="按 §4.4.3 审计 envelope 查询追加日志。审计视图只读：没有编辑控件，也不得导出后回写状态。"
-    >
-      <form
-        className="filter-bar"
-        onSubmit={(event) => {
-          event.preventDefault()
-          setOffset(0)
-          setFilter(draft)
-        }}
-      >
-        <label>
-          租户
-          <input
-            value={draft.tenant ?? ''}
-            onChange={(event) => setDraft({ ...draft, tenant: event.target.value })}
-            placeholder="tenant"
-          />
-        </label>
-        <label>
-          事件类型
-          <select
-            value={draft.event_type ?? ''}
-            onChange={(event) => setDraft({ ...draft, event_type: event.target.value })}
-          >
-            <option value="">全部</option>
-            {EVENT_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          会话 ID
-          <input
-            value={draft.session_id ?? ''}
-            onChange={(event) => setDraft({ ...draft, session_id: event.target.value })}
-            placeholder="session_id"
-          />
-        </label>
-        <label>
-          角色
-          <input
-            value={draft.actor_role ?? ''}
-            onChange={(event) => setDraft({ ...draft, actor_role: event.target.value })}
-            placeholder="actor_role"
-          />
-        </label>
-        <button type="submit" className="btn">
-          查询
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={() => {
-            setDraft(EMPTY_FILTER)
-            setFilter(EMPTY_FILTER)
+    <PageShell>
+      <Card title="查询条件" subtitle="过滤键与后端 FILTER_KEYS 白名单一致">
+        <form
+          className="filter-bar"
+          onSubmit={(event) => {
+            event.preventDefault()
             setOffset(0)
+            setFilter(draft)
           }}
         >
-          重置
-        </button>
-      </form>
+          <label className="field">
+            <span>租户</span>
+            <input
+              className="input"
+              value={draft.tenant ?? ''}
+              onChange={(event) => setDraft({ ...draft, tenant: event.target.value })}
+              placeholder="tenant"
+            />
+          </label>
+          <label className="field">
+            <span>事件类型</span>
+            <select
+              className="select"
+              value={draft.event_type ?? ''}
+              onChange={(event) => setDraft({ ...draft, event_type: event.target.value })}
+            >
+              <option value="">全部</option>
+              {EVENT_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>会话 ID</span>
+            <input
+              className="input"
+              value={draft.session_id ?? ''}
+              onChange={(event) => setDraft({ ...draft, session_id: event.target.value })}
+              placeholder="session_id"
+            />
+          </label>
+          <label className="field">
+            <span>角色</span>
+            <input
+              className="input"
+              value={draft.actor_role ?? ''}
+              onChange={(event) => setDraft({ ...draft, actor_role: event.target.value })}
+              placeholder="actor_role"
+            />
+          </label>
+          <div className="filter-actions">
+            <button type="submit" className="btn btn-primary">
+              查询
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                setDraft(EMPTY_FILTER)
+                setFilter(EMPTY_FILTER)
+                setOffset(0)
+              }}
+            >
+              重置
+            </button>
+          </div>
+        </form>
+      </Card>
 
-      {isPending && <LoadingState />}
-      {isError && <ErrorState error={error} />}
-      {data && data.events.length === 0 && <EmptyState hint="没有符合条件的审计事件。" />}
-      {data && data.events.length > 0 && (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>事件 ID</th>
-              <th>租户</th>
-              <th>主体</th>
-              <th>角色</th>
-              <th>会话 ID</th>
-              <th>事件类型</th>
-              <th>哈希链尾</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.events.map((event) => (
-              <tr key={event.event_id}>
-                <td>{event.ts}</td>
-                <td className="mono">{event.event_id}</td>
-                <td>{event.tenant}</td>
-                <td>{event.actor.id || event.actor.type}</td>
-                <td>{event.actor.role}</td>
-                <td className="mono">{event.session_id || '—'}</td>
-                <td>{event.event_type}</td>
-                <td className="mono" title={`prev_hash=${event.prev_hash}`}>
-                  {event.hash}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {data && (
-        <Pagination total={data.total} offset={data.offset} limit={data.limit} onChange={setOffset} />
-      )}
-      <p className="hint">分页步长固定 {PAGE_LIMIT} 条，与后端默认 limit 一致。</p>
+      <Card
+        title="审计事件"
+        subtitle={
+          data === undefined
+            ? isError
+              ? '查询失败'
+              : '查询中'
+            : `共 ${data.total} 条 · 每页 ${PAGE_LIMIT} 条`
+        }
+        flush
+        footer={
+          data !== undefined && data.events.length > 0 ? (
+            <Pagination
+              total={data.total}
+              offset={data.offset}
+              limit={data.limit}
+              onChange={setOffset}
+            />
+          ) : undefined
+        }
+      >
+        {isPending && <LoadingState rows={8} label="正在查询审计事件" />}
+        {isError && <ErrorState error={error} />}
+        {data !== undefined && data.events.length === 0 && (
+          <EmptyState hint="没有符合条件的审计事件。放宽租户/会话/角色过滤，或清空事件类型后重试。" />
+        )}
+        {data !== undefined && data.events.length > 0 && (
+          <DataTable
+            label="审计事件"
+            meta={`本页 ${data.events.length} 行`}
+            columns={COLUMNS}
+            rows={data.events}
+            rowKey={(row) => row.event_id}
+          />
+        )}
+      </Card>
     </PageShell>
   )
 }
