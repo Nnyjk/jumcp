@@ -18,9 +18,9 @@
   --success: #0f7b0f;
   --success-subtle: rgba(15, 123, 15, 0.1);
   --success-border: rgba(15, 123, 15, 0.28);
-  --warning: #9d5d00;
-  --warning-subtle: rgba(157, 93, 0, 0.1);
-  --warning-border: rgba(157, 93, 0, 0.3);
+  --warning: #7f4a00;
+  --warning-subtle: rgba(127, 74, 0, 0.1);
+  --warning-border: rgba(127, 74, 0, 0.32);
   --danger: #c42b1c;
   --danger-subtle: rgba(196, 43, 28, 0.08);
   --danger-border: rgba(196, 43, 28, 0.3);
@@ -34,6 +34,12 @@
   /* Mica 背景与亚克力层 */
   --bg-base: #eeeeee;
   --bg-mica: radial-gradient(140% 120% at 12% -12%, #fbfbfb 0%, #f3f3f3 42%, #e7e7e7 100%);
+  /* 极淡的环境色斑：给毛玻璃提供可折射的底层内容，不抢正文对比度。 */
+  --bg-ambient:
+    radial-gradient(52% 42% at 88% 4%, rgba(0, 103, 192, 0.07), transparent 70%),
+    radial-gradient(46% 38% at 6% 18%, rgba(0, 140, 130, 0.05), transparent 72%),
+    radial-gradient(60% 50% at 50% 112%, rgba(112, 84, 214, 0.05), transparent 70%),
+    var(--bg-mica);
   --surface: rgba(255, 255, 255, 0.7);
   --surface-strong: rgba(255, 255, 255, 0.86);
   --surface-subtle: rgba(255, 255, 255, 0.42);
@@ -61,6 +67,19 @@
   --shadow-pop: 0 4px 10px rgba(0, 0, 0, 0.1), 0 0 2px rgba(0, 0, 0, 0.08);
   --shadow-frozen: -10px 0 14px -12px rgba(0, 0, 0, 0.35);
 
+  /* 毛玻璃材质：半透明面 + 模糊/饱和 + 1px 高光内描边 + 柔和多层扩散阴影 */
+  --glass-surface: rgba(255, 255, 255, 0.6);
+  --glass-surface-strong: rgba(255, 255, 255, 0.74);
+  --glass-border: rgba(255, 255, 255, 0.62);
+  --glass-blur: blur(26px) saturate(150%);
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.26);
+  --glass-shadow:
+    0 1px 2px rgba(16, 24, 40, 0.04),
+    0 10px 28px -14px rgba(16, 24, 40, 0.16),
+    0 26px 56px -40px rgba(16, 24, 40, 0.24);
+
   --skeleton-base: rgba(0, 0, 0, 0.06);
   --skeleton-shine: rgba(0, 0, 0, 0.12);
 
@@ -86,7 +105,9 @@
   --control-height: 32px;
   --nav-width: 260px;
   --nav-width-collapsed: 48px;
-  --content-max: 1200px;
+
+  /* 内容区铺满窗口；仅长文本段落用可读行宽兜底。 */
+  --measure: 92ch;
 }
 
 :root[data-theme='dark'] {
@@ -102,9 +123,9 @@
   --success: #6ccb5f;
   --success-subtle: rgba(108, 203, 95, 0.12);
   --success-border: rgba(108, 203, 95, 0.32);
-  --warning: #fce100;
-  --warning-subtle: rgba(252, 225, 0, 0.1);
-  --warning-border: rgba(252, 225, 0, 0.3);
+  --warning: #d7c257;
+  --warning-subtle: rgba(215, 194, 87, 0.14);
+  --warning-border: rgba(215, 194, 87, 0.4);
   --danger: #ff99a4;
   --danger-subtle: rgba(255, 153, 164, 0.1);
   --danger-border: rgba(255, 153, 164, 0.32);
@@ -116,6 +137,11 @@
 
   --bg-base: #202020;
   --bg-mica: radial-gradient(140% 120% at 12% -12%, #2d2d2d 0%, #232323 42%, #1a1a1a 100%);
+  --bg-ambient:
+    radial-gradient(52% 42% at 88% 4%, rgba(96, 205, 255, 0.09), transparent 70%),
+    radial-gradient(46% 38% at 6% 18%, rgba(108, 203, 95, 0.06), transparent 72%),
+    radial-gradient(60% 50% at 50% 112%, rgba(150, 120, 255, 0.07), transparent 70%),
+    var(--bg-mica);
   --surface: rgba(255, 255, 255, 0.05);
   --surface-strong: rgba(255, 255, 255, 0.08);
   --surface-subtle: rgba(255, 255, 255, 0.03);
@@ -142,6 +168,18 @@
   --shadow-pop: 0 6px 16px rgba(0, 0, 0, 0.5), 0 0 2px rgba(0, 0, 0, 0.4);
   --shadow-frozen: -10px 0 16px -12px rgba(0, 0, 0, 0.85);
 
+  --glass-surface: rgba(40, 40, 40, 0.58);
+  --glass-surface-strong: rgba(44, 44, 44, 0.76);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-blur: blur(26px) saturate(145%);
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --glass-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 12px 30px -14px rgba(0, 0, 0, 0.55),
+    0 30px 64px -40px rgba(0, 0, 0, 0.7);
+
   --skeleton-base: rgba(255, 255, 255, 0.06);
   --skeleton-shine: rgba(255, 255, 255, 0.13);
 }
@@ -167,7 +205,7 @@ body {
   line-height: 20px;
   color: var(--text-primary);
   background-color: var(--bg-base);
-  background-image: var(--bg-mica);
+  background-image: var(--bg-ambient);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;

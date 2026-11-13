@@ -1,5 +1,7 @@
 import { NavLink } from 'react-router-dom'
+import { gsap } from 'gsap'
 import { Icon, type IconName } from './Icon'
+import { MOTION_EASE, useGsapScope } from '../motion/useGsap'
 
 export interface NavEntry {
   to: string
@@ -15,22 +17,46 @@ export function Sidebar({
   items,
   collapsed,
   onToggleCollapsed,
+  onNavigate,
 }: {
   items: NavEntry[]
   collapsed: boolean
   onToggleCollapsed: () => void
+  /** 点击导航即离开操作视图，回到该路由的页面。 */
+  onNavigate: () => void
 }) {
   const collapseLabel = collapsed ? '展开导航' : '折叠导航'
+  const sidebarRef = useGsapScope<HTMLElement>((scope) => {
+    // 折叠/展开时图标与文字只做透明度/位移过渡；宽度由既有 grid transition 负责。
+    gsap.from(scope.querySelectorAll('.nav-link'), {
+      opacity: 0,
+      x: -6,
+      duration: 0.2,
+      ease: MOTION_EASE,
+      stagger: 0.018,
+      clearProps: 'opacity,transform',
+    })
+    if (!collapsed) {
+      gsap.from(scope.querySelectorAll('.brand-text, .nav-collapse span'), {
+        opacity: 0,
+        x: -4,
+        duration: 0.18,
+        ease: MOTION_EASE,
+        stagger: 0.02,
+        clearProps: 'opacity,transform',
+      })
+    }
+  }, [collapsed])
 
   return (
-    <aside className="sidebar" data-collapsed={collapsed}>
+    <aside className="sidebar" data-collapsed={collapsed} ref={sidebarRef}>
       <div className="sidebar-brand">
         <span className="brand-mark">
           <Icon name="logo" size={18} />
         </span>
         {!collapsed && (
           <span className="brand-text">
-            <strong>HJZL MCP</strong>
+            <strong>jumcp</strong>
             <small>治理面 · 管理台</small>
           </span>
         )}
@@ -41,8 +67,10 @@ export function Sidebar({
           <NavLink
             key={item.to}
             to={item.to}
+            end={item.to === '/'}
             data-label={item.label}
             className={({ isActive }) => (isActive ? 'nav-link nav-link-active' : 'nav-link')}
+            onClick={onNavigate}
           >
             <span className="nav-icon">
               <Icon name={item.icon} size={20} />
@@ -65,9 +93,6 @@ export function Sidebar({
           <Icon name="sidebar" size={20} />
           {!collapsed && <span>{collapseLabel}</span>}
         </button>
-        {!collapsed && (
-          <p className="sidebar-note">只读视图：写操作未接通，变更须经 admin API 落审计。</p>
-        )}
       </div>
     </aside>
   )

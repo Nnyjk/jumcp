@@ -2,9 +2,9 @@
 .SYNOPSIS
   一键本地测试：后端静态检查 + 单元/契约测试 + 前端类型检查/构建/lint + 端到端冒烟。
 .DESCRIPTION
-  用法：pwsh scripts/test-all.ps1 [-SkipE2E] [-PgDsn <dsn>] [-NoClean]
+  用法：pwsh scripts/test-all.ps1 [-SkipE2E] [-ClickHouseDsn <dsn>] [-NoClean]
     -SkipE2E   只跑静态检查与测试，不做端到端冒烟
-    -PgDsn     设置 HJZL_TEST_PG_DSN，并额外跑 #[ignore] 的真库用例
+    -ClickHouseDsn 设置 JUMCP_TEST_CLICKHOUSE_DSN，并额外跑 #[ignore] 的真库用例
     -NoClean   保留临时数据目录（含服务日志）便于排查
   退出码：0 = 全部通过；1 = 有步骤失败；2 = 参数错误。
   要求 PowerShell 7+；检测到 5.1 时会明确提示并尽量兼容运行。
@@ -12,7 +12,7 @@
 [CmdletBinding()]
 param(
   [switch]$SkipE2E,
-  [string]$PgDsn,
+  [string]$ClickHouseDsn,
   [switch]$NoClean,
   [switch]$Help
 )
@@ -39,14 +39,20 @@ $PolicyFile = Join-Path $RepoRoot 'config/policy.toml'
 
 $AdminTokens = 'alice:tok_alice_000000000,bob:tok_bob_00000000000'
 $AliceToken = 'tok_alice_000000000'
-# E2E 监听地址；默认 127.0.0.1，可用 HJZL_TEST_E2E_HOST 覆盖（如 WSL 里访问 Windows 宿主）
+# /mcp 的 per-request 身份（agent_id:role:token）；E2E 用 analyst 主体取工具清单
+$AgentTokens = 'agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001'
+$AnalystAgentToken = 'tok_agent_analyst_0001'
+# E2E 访问地址；默认 127.0.0.1，可用 JUMCP_TEST_E2E_HOST 覆盖（如 WSL 里访问 Windows 宿主）
 $E2EHost = '127.0.0.1'
-if ($env:HJZL_TEST_E2E_HOST) { $E2EHost = $env:HJZL_TEST_E2E_HOST }
+if ($env:JUMCP_TEST_E2E_HOST) { $E2EHost = $env:JUMCP_TEST_E2E_HOST }
+# 监听地址；默认 0.0.0.0，可用 JUMCP_TEST_BIND_HOST 覆盖
+$BindHost = '0.0.0.0'
+if ($env:JUMCP_TEST_BIND_HOST) { $BindHost = $env:JUMCP_TEST_BIND_HOST }
 
 $script:Steps = New-Object System.Collections.ArrayList
 $script:PassCount = 0
 $script:FailCount = 0
-$script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hjzl-testall-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+$script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("jumcp-testall-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $script:TempDir | Out-Null
 $script:ServerProc = $null
 $script:CheckLog = Join-Path $script:TempDir 'checks.log'
@@ -206,8 +212,9 @@ try {
   Invoke-Step 'backend: cargo fmt --check' $BackendDir { & cargo fmt --check } | Out-Null
   Invoke-Step 'backend: cargo clippy -D warnings' $BackendDir { & cargo clippy --all-targets -- -D warnings } | Out-Null
   Invoke-Step 'backend: cargo test --workspace' $BackendDir { & cargo test --workspace } | Out-Null
-  if ($PgDsn) {
-    $env:HJZL_TEST_PG_DSN = $PgDsn
+  if ($ClickHouseDsn) {
+    $env:JUMCP_TEST_CLICKHOUSE_DSN = $ClickHouseDsn
+    Invoke-Step 'backend: build connector agent' $BackendDir { & cargo build -p jumcp-connector-clickhouse } | Out-Null
     Invoke-Step 'backend: cargo test --ignored (真库)' $BackendDir { & cargo test --workspace -- --ignored } | Out-Null
   }
 
@@ -224,10 +231,10 @@ try {
     exit 0
   }
 
-  Invoke-Step 'e2e: build hjzl-server' $BackendDir { & cargo build --bin hjzl-server } | Out-Null
+  Invoke-Step 'e2e: build jumcp-server' $BackendDir { & cargo build --bin jumcp-server } | Out-Null
 
-  $exeName = 'hjzl-server'
-  if ($env:OS -eq 'Windows_NT') { $exeName = 'hjzl-server.exe' }
+  $exeName = 'jumcp-server'
+  if ($env:OS -eq 'Windows_NT') { $exeName = 'jumcp-server.exe' }
   $serverBin = Join-Path $BackendDir ("target/debug/$exeName")
   if (-not (Test-Path $serverBin)) {
     Add-Step 'e2e: 启动服务' 'FAIL' 0 ''
@@ -240,7 +247,7 @@ try {
   # 顺序探测空闲端口（不使用固定端口）
   $port = $null
   for ($p = 18100; $p -lt 18200; $p++) {
-    & node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),"127.0.0.1",()=>s.close(()=>process.exit(0)))' $p | Out-Null
+    & node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),process.argv[2],()=>s.close(()=>process.exit(0)))' $p $BindHost | Out-Null
     if ($LASTEXITCODE -eq 0) { $port = $p; break }
   }
   if ($null -eq $port) {
@@ -251,18 +258,19 @@ try {
     exit 1
   }
 
-  Write-Host ("==> e2e: 启动服务 (127.0.0.1:{0})" -f $port)
+  Write-Host ("==> e2e: 启动服务（监听 {0}:{1}，E2E 访问 http://{2}:{1}）" -f $BindHost, $port, $E2EHost)
   $serverLog = Join-Path $script:TempDir 'server.log'
   $errLog = Join-Path $script:TempDir 'server.err.log'
   $saved = @{}
   $vars = @{
-    HJZL_MCP_TRANSPORT      = 'streamable-http'
-    HJZL_MCP_HOST          = $E2EHost
-    HJZL_MCP_PORT          = "$port"
-    HJZL_MCP_CONFIG_FILE   = $PolicyFile
-    HJZL_MCP_REGISTRY_PATH = (Join-Path $script:TempDir 'registry.sqlite3')
-    HJZL_MCP_AUDIT_PATH    = (Join-Path $script:TempDir 'audit.sqlite3')
-    HJZL_ADMIN_TOKENS      = $AdminTokens
+    JUMCP_MCP_TRANSPORT      = 'streamable-http'
+    JUMCP_MCP_HOST          = $BindHost
+    JUMCP_MCP_PORT          = "$port"
+    JUMCP_MCP_CONFIG_FILE   = $PolicyFile
+    JUMCP_MCP_REGISTRY_PATH = (Join-Path $script:TempDir 'registry.sqlite3')
+    JUMCP_MCP_AUDIT_PATH    = (Join-Path $script:TempDir 'audit.sqlite3')
+    JUMCP_ADMIN_TOKENS      = $AdminTokens
+    JUMCP_AGENT_TOKENS      = $AgentTokens
   }
   foreach ($k in $vars.Keys) {
     $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
@@ -333,7 +341,7 @@ try {
   $initFile = Join-Path $script:TempDir 'mcp_init.json'
   $toolsFile = Join-Path $script:TempDir 'mcp_tools.json'
   $initBody = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["db.read.core"]}}}}'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $initFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data $initBody "$base/mcp" 2>$null | Out-String).Trim()
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $initFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AnalystAgentToken" --data $initBody "$base/mcp" 2>$null | Out-String).Trim()
   if ($code -ne '200') {
     $sw.Stop()
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds '' ("POST /mcp initialize 期望 200，实际 {0}" -f $code)
@@ -344,7 +352,7 @@ try {
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds $script:CheckLog 'initialize 响应缺少 result.serverInfo'
   }
   $listBody = '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $toolsFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data $listBody "$base/mcp" 2>$null | Out-String).Trim()
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $toolsFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AnalystAgentToken" --data $listBody "$base/mcp" 2>$null | Out-String).Trim()
   if ($code -ne '200') {
     $sw.Stop()
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds '' ("POST /mcp tools/list 期望 200，实际 {0}" -f $code)
@@ -365,12 +373,57 @@ try {
     $sw.Stop()
     Fail-E2E 'e2e: admin /admin/audit-events' $sw.Elapsed.TotalSeconds '' ("GET /admin/audit-events 期望 200，实际 {0}" -f $code)
   }
-  $ok = Invoke-NodeCheck $auditFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof d.total!=="number"||d.total<1){console.error("audit-events total="+JSON.stringify(d.total));process.exit(1)}'
+  $ok = Invoke-NodeCheck $auditFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof d.total!=="number"||d.total<1){console.error("audit-events total="+JSON.stringify(d.total));process.exit(1)}if(d.order!=="desc"){console.error("audit-events 默认 order 应为 desc，实际 "+JSON.stringify(d.order));process.exit(1)}const K=["action","approval","changes","correlation_id","data","error_code","error_message","from_status","object_id","object_type","outcome","reason","schema_version","to_status"].sort().join(",");const LEG=["diff","approval_id","capability_id","before_hash","after_hash","version"];for(const e of d.events||[]){const p=e.payload||{};if(p.schema_version!==1){console.error("payload.schema_version="+JSON.stringify(p.schema_version)+" event="+e.event_id);process.exit(1)}if(Object.keys(p).sort().join(",")!==K){console.error("payload 键集不是 14 键: "+Object.keys(p).join(","));process.exit(1)}if(LEG.some(k=>k in p)){console.error("payload 残留旧字段: "+e.event_id);process.exit(1)}if(!p.object_type||!p.object_id||!p.action||!p.outcome){console.error("四件套缺失: "+e.event_id);process.exit(1)}}'
   $sw.Stop()
   if (-not $ok) {
-    Fail-E2E 'e2e: admin /admin/audit-events' $sw.Elapsed.TotalSeconds $script:CheckLog 'audit-events total < 1'
+    Fail-E2E 'e2e: admin /admin/audit-events' $sw.Elapsed.TotalSeconds $script:CheckLog 'audit-events 断言失败：total<1 / 默认 order 非 desc / payload 非 14 键 / schema_version≠1 / 残留旧字段 / 四件套缺失'
   }
   Add-Step 'e2e: admin /admin/audit-events' 'PASS' $sw.Elapsed.TotalSeconds $serverLog
+
+  # 4e. 平台 token：创建（仅 db.read.core + 两项内置工具）→ tools/list 过滤 → 撤销后拒绝
+  Write-Host '==> e2e: admin token create + mcp tools/list filter'
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $tokenFile = Join-Path $script:TempDir 'token_create.json'
+  $tokenBody = '{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data $tokenBody "$base/admin/tokens" 2>$null | Out-String).Trim()
+  if ($code -ne '201') {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens 期望 201，实际 {0}" -f $code)
+  }
+  $ok = Invoke-NodeCheck $tokenFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=d.token||"";if(!t.startsWith("jumcp_")||t.length!==70){console.error("token 明文形状非法");process.exit(1)}const i=d.item||{};if(i.status!=="active"){console.error("item.status="+i.status);process.exit(1)}if((i.builtin_tools||[]).length!==2){console.error("builtin_tools 不符");process.exit(1)}if(i.token!==undefined||i.token_hash!==undefined){console.error("item 泄露明文/hash");process.exit(1)}'
+  if (-not $ok) {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog '创建响应契约不符'
+  }
+  $tokenJson = Get-Content -Raw -Path $tokenFile | ConvertFrom-Json
+  $platformToken = $tokenJson.token
+  $platformTokenId = $tokenJson.item.id
+  $platformTools = Join-Path $script:TempDir 'platform_tools.json'
+  & $curl -sS --connect-timeout 2 --max-time 5 -o $platformTools -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $platformToken" --data $listBody "$base/mcp" 2>$null | Out-Null
+  $ok = Invoke-NodeCheck $platformTools 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}'
+  if (-not $ok) {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog 'allowlist 过滤失败'
+  }
+  $revokeFile = Join-Path $script:TempDir 'token_revoke.json'
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $revokeFile -w '%{http_code}' -X POST -H "Authorization: Bearer $AliceToken" "$base/admin/tokens/$platformTokenId/revoke" 2>$null | Out-String).Trim()
+  if ($code -ne '200') {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens/{id}/revoke 期望 200，实际 {0}" -f $code)
+  }
+  $ok = Invoke-NodeCheck $revokeFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(d.status!=="revoked"||!d.revoked_at){console.error("撤销响应非 item/revoked");process.exit(1)}if(d.item!==undefined){console.error("撤销响应不得再包 item");process.exit(1)}'
+  if (-not $ok) {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog '撤销响应契约不符'
+  }
+  $afterRevoke = Join-Path $script:TempDir 'platform_tools_revoked.json'
+  & $curl -sS --connect-timeout 2 --max-time 5 -o $afterRevoke -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $platformToken" --data $listBody "$base/mcp" 2>$null | Out-Null
+  $ok = Invoke-NodeCheck $afterRevoke 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const code=(((d.error||{}).data)||{}).mcp_code;if(code!=="MCP_UNAUTHORIZED"){console.error("撤销后应拒绝，实际 mcp_code="+code);process.exit(1)}'
+  $sw.Stop()
+  if (-not $ok) {
+    Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog '撤销后仍可用'
+  }
+  Add-Step 'e2e: admin token create + mcp tools/list filter' 'PASS' $sw.Elapsed.TotalSeconds $serverLog
 
   Write-Summary
   Stop-Server

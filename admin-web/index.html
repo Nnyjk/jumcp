@@ -4,12 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <title>HJZL MCP 管理台</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>jumcp 管理台</title>
     <script>
       // 首帧前解析主题（localStorage 覆盖 > 系统偏好）并写 data-theme；CSS 只维护一份 token，避免浅色闪屏。
       (function () {
         try {
-          var stored = window.localStorage.getItem('hjzl-admin-theme')
+          var stored = window.localStorage.getItem('jumcp-admin-theme')
           var preference = stored === 'light' || stored === 'dark' ? stored : 'system'
           var dark =
             preference === 'dark' ||

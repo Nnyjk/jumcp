@@ -15,7 +15,7 @@ export function Card({
   children,
 }: {
   title?: string
-  subtitle?: string
+  subtitle?: string | undefined
   actions?: ReactNode
   footer?: ReactNode
   flush?: boolean

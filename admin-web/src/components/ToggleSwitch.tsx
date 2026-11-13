@@ -3,12 +3,15 @@ export function ToggleSwitch({
   checked,
   disabled = false,
   label,
+  title,
   ariaLabel,
   onChange,
 }: {
   checked: boolean
   disabled?: boolean
   label?: string
+  /** 后端字段名等契约信息：中文标签之外补充悬停提示。 */
+  title?: string
   ariaLabel?: string
   onChange?: (next: boolean) => void
 }) {
@@ -19,11 +22,16 @@ export function ToggleSwitch({
         type="checkbox"
         role="switch"
         checked={checked}
+        aria-checked={checked}
         disabled={disabled}
         aria-label={ariaLabel ?? label}
         onChange={(event) => onChange?.(event.target.checked)}
       />
-      {label !== undefined && <span className="toggle-label">{label}</span>}
+      {label !== undefined && (
+        <span className="toggle-label" title={title}>
+          {label}
+        </span>
+      )}
     </label>
   )
 }

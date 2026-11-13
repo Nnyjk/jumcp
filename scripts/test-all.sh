@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 一键本地测试：后端静态检查 + 单元/契约测试 + 前端类型检查/构建/lint + 端到端冒烟。
 #
-# 用法：scripts/test-all.sh [--skip-e2e] [--pg-dsn <dsn>] [--no-clean]
+# 用法：scripts/test-all.sh [--skip-e2e] [--clickhouse-dsn <dsn>] [--no-clean]
 #   --skip-e2e        只跑静态检查与测试，不做端到端冒烟
-#   --pg-dsn <dsn>    设置 HJZL_TEST_PG_DSN，并额外跑 #[ignore] 的真库用例
+#   --clickhouse-dsn <dsn> 设置 JUMCP_TEST_CLICKHOUSE_DSN，并额外跑 #[ignore] 的真库用例
 #   --no-clean        保留临时数据目录（含服务日志）便于排查
 #
 # 退出码：0 = 全部通过；1 = 有步骤失败；2 = 参数错误。
@@ -23,12 +23,17 @@ POLICY_FILE="$REPO_ROOT/config/policy.toml"
 
 ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"
 ALICE_TOKEN="tok_alice_000000000"
-# E2E 监听地址；默认 127.0.0.1，可用 HJZL_TEST_E2E_HOST 覆盖（如 WSL 里访问 Windows 宿主）
-E2E_HOST="${HJZL_TEST_E2E_HOST:-127.0.0.1}"
+# /mcp 的 per-request 身份（agent_id:role:token）；E2E 用 analyst 主体取工具清单
+AGENT_TOKENS="agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001"
+ANALYST_AGENT_TOKEN="tok_agent_analyst_0001"
+# E2E 访问地址；默认 127.0.0.1，可用 JUMCP_TEST_E2E_HOST 覆盖（如 WSL 里访问 Windows 宿主）
+E2E_HOST="${JUMCP_TEST_E2E_HOST:-127.0.0.1}"
+# 监听地址；默认 0.0.0.0，可用 JUMCP_TEST_BIND_HOST 覆盖
+BIND_HOST="${JUMCP_TEST_BIND_HOST:-0.0.0.0}"
 
 SKIP_E2E=0
 NO_CLEAN=0
-PG_DSN=""
+CLICKHOUSE_DSN=""
 
 usage() {
   sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -38,12 +43,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --skip-e2e) SKIP_E2E=1 ;;
     --no-clean) NO_CLEAN=1 ;;
-    --pg-dsn)
+    --clickhouse-dsn)
       shift
-      [ $# -gt 0 ] || { echo "错误：--pg-dsn 需要一个参数" >&2; exit 2; }
-      PG_DSN="$1"
+      [ $# -gt 0 ] || { echo "错误：--clickhouse-dsn 需要一个参数" >&2; exit 2; }
+      CLICKHOUSE_DSN="$1"
       ;;
-    --pg-dsn=*) PG_DSN="${1#*=}" ;;
+    --clickhouse-dsn=*) CLICKHOUSE_DSN="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "错误：未知参数 '$1'" >&2; usage >&2; exit 2 ;;
   esac
@@ -160,9 +165,9 @@ run_step() {
 }
 
 # ---------------------------------------------------------------- 0. 参数后准备
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hjzl-testall.XXXXXX")"
-if [ -n "$PG_DSN" ]; then
-  export HJZL_TEST_PG_DSN="$PG_DSN"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jumcp-testall.XXXXXX")"
+if [ -n "$CLICKHOUSE_DSN" ]; then
+  export JUMCP_TEST_CLICKHOUSE_DSN="$CLICKHOUSE_DSN"
 fi
 
 # ---------------------------------------------------------------- 1. 环境探测
@@ -206,7 +211,8 @@ cat "$ENV_LOG"
 run_step "backend: cargo fmt --check" "$BACKEND_DIR" cargo fmt --check
 run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --all-targets -- -D warnings
 run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace
-if [ -n "$PG_DSN" ]; then
+if [ -n "$CLICKHOUSE_DSN" ]; then
+  cargo build --manifest-path "$BACKEND_DIR/Cargo.toml" -p jumcp-connector-clickhouse >/dev/null 2>&1 || true
   run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace -- --ignored
 fi
 
@@ -223,12 +229,12 @@ if [ "$SKIP_E2E" = "1" ]; then
   exit 0
 fi
 
-run_step "e2e: build hjzl-server" "$BACKEND_DIR" cargo build --bin hjzl-server
+run_step "e2e: build jumcp-server" "$BACKEND_DIR" cargo build --bin jumcp-server
 
-SERVER_BIN="$BACKEND_DIR/target/debug/hjzl-server"
+SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server"
 # Windows 工具链（如 WSL 里跑 Windows 版 cargo）产出的是 .exe
-if [ ! -x "$SERVER_BIN" ] && [ -x "$BACKEND_DIR/target/debug/hjzl-server.exe" ]; then
-  SERVER_BIN="$BACKEND_DIR/target/debug/hjzl-server.exe"
+if [ ! -x "$SERVER_BIN" ] && [ -x "$BACKEND_DIR/target/debug/jumcp-server.exe" ]; then
+  SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server.exe"
 fi
 if [ ! -x "$SERVER_BIN" ]; then
   record "e2e: 启动服务" "FAIL" "0" ""
@@ -240,7 +246,7 @@ fi
 PORT=""
 candidate=18100
 while [ "$candidate" -lt 18200 ]; do
-  if node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),"127.0.0.1",()=>s.close(()=>process.exit(0)))' "$candidate" >/dev/null 2>&1; then
+  if node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),process.argv[2],()=>s.close(()=>process.exit(0)))' "$candidate" "$BIND_HOST" >/dev/null 2>&1; then
     PORT="$candidate"
     break
   fi
@@ -251,18 +257,19 @@ if [ -z "$PORT" ]; then
   echo "18100-18199 范围内没有空闲端口"
   fail_step "e2e: 选端口" ""
 fi
-echo "==> e2e: 启动服务 (127.0.0.1:$PORT)"
+echo "==> e2e: 启动服务（监听 $BIND_HOST:$PORT，E2E 访问 http://$E2E_HOST:$PORT）"
 SERVER_LOG="$TMP_DIR/server.log"
 CHECK_LOG="$TMP_DIR/checks.log"
 (
   cd "$REPO_ROOT" || exit 1
-  export HJZL_MCP_TRANSPORT=streamable-http
-  export HJZL_MCP_HOST="$E2E_HOST"
-  export HJZL_MCP_PORT="$PORT"
-  export HJZL_MCP_CONFIG_FILE="$POLICY_FILE"
-  export HJZL_MCP_REGISTRY_PATH="$TMP_DIR/registry.sqlite3"
-  export HJZL_MCP_AUDIT_PATH="$TMP_DIR/audit.sqlite3"
-  export HJZL_ADMIN_TOKENS="$ADMIN_TOKENS"
+  export JUMCP_MCP_TRANSPORT=streamable-http
+  export JUMCP_MCP_HOST="$BIND_HOST"
+  export JUMCP_MCP_PORT="$PORT"
+  export JUMCP_MCP_CONFIG_FILE="$POLICY_FILE"
+  export JUMCP_MCP_REGISTRY_PATH="$TMP_DIR/registry.sqlite3"
+  export JUMCP_MCP_AUDIT_PATH="$TMP_DIR/audit.sqlite3"
+  export JUMCP_ADMIN_TOKENS="$ADMIN_TOKENS"
+  export JUMCP_AGENT_TOKENS="$AGENT_TOKENS"
   exec "$SERVER_BIN"
 ) >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
@@ -323,7 +330,7 @@ MCP_START="$(now_ms)"
 INIT_FILE="$TMP_DIR/mcp_init.json"
 TOOLS_FILE="$TMP_DIR/mcp_tools.json"
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["db.read.core"]}}}}'
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$INIT_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' --data "$INIT_BODY" "$BASE_URL/mcp" 2>/dev/null || echo 000)"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$INIT_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ANALYST_AGENT_TOKEN" --data "$INIT_BODY" "$BASE_URL/mcp" 2>/dev/null || echo 000)"
 if [ "$code" != "200" ]; then
   record "e2e: mcp initialize + tools/list" "FAIL" "$(( $(now_ms) - MCP_START ))" ""
   echo "POST /mcp initialize 期望 200，实际 $code"
@@ -334,7 +341,7 @@ if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf
   fail_step "e2e: mcp initialize + tools/list（initialize 响应异常）" "$CHECK_LOG" "$SERVER_LOG"
 fi
 LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOOLS_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' --data "$LIST_BODY" "$BASE_URL/mcp" 2>/dev/null || echo 000)"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOOLS_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ANALYST_AGENT_TOKEN" --data "$LIST_BODY" "$BASE_URL/mcp" 2>/dev/null || echo 000)"
 if [ "$code" != "200" ]; then
   record "e2e: mcp initialize + tools/list" "FAIL" "$(( $(now_ms) - MCP_START ))" ""
   echo "POST /mcp tools/list 期望 200，实际 $code"
@@ -356,11 +363,53 @@ if [ "$code" != "200" ]; then
   echo "GET /admin/audit-events 期望 200，实际 $code"
   fail_step "e2e: admin /admin/audit-events" ""
 fi
-if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof d.total!=="number"||d.total<1){console.error("audit-events total="+JSON.stringify(d.total));process.exit(1)}' "$AUDIT_FILE" >>"$CHECK_LOG" 2>&1; then
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof d.total!=="number"||d.total<1){console.error("audit-events total="+JSON.stringify(d.total));process.exit(1)}if(d.order!=="desc"){console.error("audit-events 默认 order 应为 desc，实际 "+JSON.stringify(d.order));process.exit(1)}const K=["action","approval","changes","correlation_id","data","error_code","error_message","from_status","object_id","object_type","outcome","reason","schema_version","to_status"].sort().join(",");const LEG=["diff","approval_id","capability_id","before_hash","after_hash","version"];for(const e of d.events||[]){const p=e.payload||{};if(p.schema_version!==1){console.error("payload.schema_version="+JSON.stringify(p.schema_version)+" event="+e.event_id);process.exit(1)}if(Object.keys(p).sort().join(",")!==K){console.error("payload 键集不是 14 键: "+Object.keys(p).join(","));process.exit(1)}if(LEG.some(k=>k in p)){console.error("payload 残留旧字段: "+e.event_id);process.exit(1)}if(!p.object_type||!p.object_id||!p.action||!p.outcome){console.error("四件套缺失: "+e.event_id);process.exit(1)}}' "$AUDIT_FILE" >>"$CHECK_LOG" 2>&1; then
   record "e2e: admin /admin/audit-events" "FAIL" "$(( $(now_ms) - AUDIT_START ))" "$CHECK_LOG"
-  fail_step "e2e: admin /admin/audit-events（total < 1）" "$CHECK_LOG" "$SERVER_LOG"
+  fail_step "e2e: admin /admin/audit-events（total/order/payload 契约断言失败）" "$CHECK_LOG" "$SERVER_LOG"
 fi
 record "e2e: admin /admin/audit-events" "PASS" "$(( $(now_ms) - AUDIT_START ))" "$SERVER_LOG"
+
+# 4e. 平台 token：创建（仅 db.read.core + 两项内置工具）→ tools/list 过滤 → 撤销后拒绝
+echo "==> e2e: admin token create + mcp tools/list filter"
+TOKEN_START="$(now_ms)"
+TOKEN_FILE="$TMP_DIR/token_create.json"
+TOKEN_BODY='{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data "$TOKEN_BODY" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
+if [ "$code" != "201" ]; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
+  echo "POST /admin/tokens 期望 201，实际 $code"
+  fail_step "e2e: admin token create + mcp tools/list filter" ""
+fi
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=d.token||"";if(!t.startsWith("jumcp_")||t.length!==70){console.error("token 明文形状非法: "+t.slice(0,8));process.exit(1)}const i=d.item||{};if(i.status!=="active"){console.error("item.status="+i.status);process.exit(1)}if((i.builtin_tools||[]).length!==2){console.error("builtin_tools="+JSON.stringify(i.builtin_tools));process.exit(1)}if(i.token!==undefined||i.token_hash!==undefined){console.error("item 泄露明文/hash");process.exit(1)}' "$TOKEN_FILE" >>"$CHECK_LOG" 2>&1; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
+  fail_step "e2e: admin token create + mcp tools/list filter（创建响应契约不符）" "$CHECK_LOG" "$SERVER_LOG"
+fi
+PLATFORM_TOKEN="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).token)' "$TOKEN_FILE")"
+PLATFORM_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).item.id)' "$TOKEN_FILE")"
+PLATFORM_TOOLS="$TMP_DIR/platform_tools.json"
+curl -sS --connect-timeout 2 --max-time 5 -o "$PLATFORM_TOOLS" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $PLATFORM_TOKEN" --data "$LIST_BODY" "$BASE_URL/mcp" >/dev/null 2>&1 || true
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(",")+" names="+names.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}' "$PLATFORM_TOOLS" >>"$CHECK_LOG" 2>&1; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
+  fail_step "e2e: admin token create + mcp tools/list filter（allowlist 过滤失败）" "$CHECK_LOG" "$SERVER_LOG"
+fi
+REVOKE_FILE="$TMP_DIR/token_revoke.json"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$REVOKE_FILE" -w "%{http_code}" -X POST -H "Authorization: Bearer $ALICE_TOKEN" "$BASE_URL/admin/tokens/$PLATFORM_TOKEN_ID/revoke" 2>/dev/null || echo 000)"
+if [ "$code" != "200" ]; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
+  echo "POST /admin/tokens/{id}/revoke 期望 200，实际 $code"
+  fail_step "e2e: admin token create + mcp tools/list filter" ""
+fi
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(d.status!=="revoked"||!d.revoked_at){console.error("撤销响应非 revoked/item: "+JSON.stringify(d).slice(0,200));process.exit(1)}if(d.item!==undefined){console.error("撤销响应不得再包 item");process.exit(1)}' "$REVOKE_FILE" >>"$CHECK_LOG" 2>&1; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
+  fail_step "e2e: admin token create + mcp tools/list filter（撤销响应契约不符）" "$CHECK_LOG" "$SERVER_LOG"
+fi
+AFTER_REVOKE="$TMP_DIR/platform_tools_revoked.json"
+curl -sS --connect-timeout 2 --max-time 5 -o "$AFTER_REVOKE" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $PLATFORM_TOKEN" --data "$LIST_BODY" "$BASE_URL/mcp" >/dev/null 2>&1 || true
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const code=(((d.error||{}).data)||{}).mcp_code;if(code!=="MCP_UNAUTHORIZED"){console.error("撤销后应拒绝，实际 mcp_code="+code);process.exit(1)}' "$AFTER_REVOKE" >>"$CHECK_LOG" 2>&1; then
+  record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
+  fail_step "e2e: admin token create + mcp tools/list filter（撤销后仍可用）" "$CHECK_LOG" "$SERVER_LOG"
+fi
+record "e2e: admin token create + mcp tools/list filter" "PASS" "$(( $(now_ms) - TOKEN_START ))" "$SERVER_LOG"
 
 print_summary
 if [ "$FAILED" -gt 0 ]; then

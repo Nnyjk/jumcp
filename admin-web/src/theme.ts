@@ -8,7 +8,7 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 
 export type ResolvedTheme = 'light' | 'dark'
 
-const STORAGE_KEY = 'hjzl-admin-theme'
+const STORAGE_KEY = 'jumcp-admin-theme'
 const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 /** 读取持久化偏好；无记录或存储不可用时回落到 system。 */

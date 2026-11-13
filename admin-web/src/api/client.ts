@@ -3,23 +3,25 @@
  * 页面层不得直接调用 fetch，统一经此模块换取类型化结果或 ApiError。
  */
 
-/** 后端错误统一形态：HTTP 状态 + 业务错误码 + 可读消息。 */
+/** 后端错误统一形态：HTTP 状态 + 业务错误码 + 可读消息 + 结构化 data（如 409 的 capability_count）。 */
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
+  readonly data: unknown
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, data?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.data = data
   }
 }
 
 export type QueryParams = Record<string, string | number | boolean | undefined>
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | undefined
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | undefined
   params?: QueryParams | undefined
   body?: unknown | undefined
   signal?: AbortSignal | undefined
@@ -56,6 +58,7 @@ function buildUrl(path: string, params?: QueryParams): string {
 function errorFromResponse(status: number, bodyText: string): ApiError {
   let code = `HTTP_${status}`
   let message = bodyText.trim() || `请求失败（HTTP ${status}）`
+  let data: unknown
   try {
     const parsed: unknown = JSON.parse(bodyText)
     if (parsed && typeof parsed === 'object') {
@@ -71,11 +74,12 @@ function errorFromResponse(status: number, bodyText: string): ApiError {
         (typeof outer.error === 'string' ? outer.error : undefined)
       if (typeof rawCode === 'string' && rawCode !== '') code = rawCode
       if (typeof rawMessage === 'string' && rawMessage !== '') message = rawMessage
+      data = outer.data ?? inner?.data
     }
   } catch {
     // 非 JSON 错误体（如反向代理的 HTML 错误页）保留原始文本作为消息。
   }
-  return new ApiError(status, code, message)
+  return new ApiError(status, code, message, data)
 }
 
 /** 发起请求并返回解析后的 JSON；失败一律抛 ApiError。 */

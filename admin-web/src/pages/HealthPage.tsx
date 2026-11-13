@@ -4,8 +4,10 @@ import type { AuditChainState, HealthDatasource } from '../api/types'
 import { Badge, type BadgeTone } from '../components/Badge'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
+import { DetailField, DetailGrid } from '../components/DetailGrid'
 import { InfoBar } from '../components/InfoBar'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../components/PageShell'
+import { formatDateTime } from '../format'
 import { HEALTH_STATUS_LABEL } from '../labels'
 
 const CHAIN_LABEL: Record<AuditChainState, string> = {
@@ -34,13 +36,21 @@ const DATASOURCE_COLUMNS: Array<DataTableColumn<HealthDatasource>> = [
 ]
 
 export default function HealthPage() {
-  const { data, error, isPending, isError } = useQuery({
+  const { data, error, isPending, isError, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['health'],
     queryFn: ({ signal }) => fetchHealth(signal),
   })
+  const updatedLabel =
+    dataUpdatedAt > 0 ? formatDateTime(new Date(dataUpdatedAt).toISOString()) : '—'
 
   const chain = data?.audit_chain
   const chainDetail = data?.audit_chain_detail
+  const chainDetailText =
+    chainDetail === undefined
+      ? undefined
+      : typeof chainDetail === 'string'
+        ? chainDetail
+        : JSON.stringify(chainDetail)
 
   return (
     <PageShell>
@@ -53,30 +63,45 @@ export default function HealthPage() {
               ? '某条审计记录的 prev_hash / hash 与内容不一致：追加日志可能被绕过应用层改写，须立即排查写入路径与数据库权限。'
               : '链校验过程报错，当前无法确认审计日志完整性；该结论不等同于「完整」。'
           }
-          meta={chainDetail === undefined ? undefined : `audit_chain_detail：${chainDetail}`}
+          meta={chainDetailText === undefined ? undefined : `审计链明细：${chainDetailText}`}
         />
       )}
 
-      <Card title="运行状态" subtitle="GET /health · 免鉴权端点">
+      <Card
+        title="运行状态"
+        actions={
+          <>
+            <span className="dash-updated">数据更新于 {updatedLabel}</span>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+            >
+              {isFetching ? '刷新中…' : '刷新'}
+            </button>
+          </>
+        }
+      >
         {isPending && <LoadingState rows={4} label="正在读取健康状态" />}
         {isError && <ErrorState error={error} />}
         {data !== undefined && chain !== undefined && (
           <>
             <div className="stat-grid">
               <div className="stat">
-                <span className="stat-label">status</span>
+                <span className="stat-label">状态</span>
                 <div className="stat-value" title={data.status}>
                   {HEALTH_STATUS_LABEL[data.status] ?? data.status}
                 </div>
               </div>
               <div className="stat">
-                <span className="stat-label">version</span>
+                <span className="stat-label">版本</span>
                 <div className="stat-value">
                   <span className="mono">{data.version}</span>
                 </div>
               </div>
               <div className="stat">
-                <span className="stat-label">audit_chain</span>
+                <span className="stat-label">审计链</span>
                 <div className="stat-value">
                   <Badge tone={CHAIN_TONE[chain]} dot>
                     {CHAIN_LABEL[chain]}
@@ -84,13 +109,14 @@ export default function HealthPage() {
                 </div>
               </div>
             </div>
-            {data.audit_chain_detail !== undefined && (
-              <dl className="detail-list detail-block">
-                <dt>audit_chain_detail</dt>
-                <dd>
-                  <code>{data.audit_chain_detail}</code>
-                </dd>
-              </dl>
+            {chainDetailText !== undefined && (
+              <div className="detail-block">
+                <DetailGrid>
+                  <DetailField label="审计链明细" mono title={chainDetailText}>
+                    {chainDetailText}
+                  </DetailField>
+                </DetailGrid>
+              </div>
             )}
           </>
         )}

@@ -1,4 +1,5 @@
-/* 外壳：左侧 NavigationView + 顶部 TitleBar + 居中内容区（24px 留白、16px 栅格）。 */
+/* 外壳：左侧 NavigationView + 顶部 TitleBar + 铺满可用宽度的内容区（24px gutter、16px 栅格）。
+ * 主区域不再设 max-width / margin:auto：卡片、表格与图表随窗口伸展，仅纯文本段落限制行宽。 */
 
 .skip-link {
   position: fixed;
@@ -232,13 +233,6 @@
   gap: 0;
 }
 
-.sidebar-note {
-  padding: 0 14px var(--space-1);
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--text-tertiary);
-}
-
 /* -------------------------------- 主区域 -------------------------------- */
 
 .shell-main {
@@ -259,12 +253,10 @@
 
 .titlebar-inner {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
   width: 100%;
-  max-width: var(--content-max);
-  margin: 0 auto;
   padding: 18px var(--space-5) 14px;
 }
 
@@ -276,14 +268,6 @@
   font-size: var(--fs-28);
   line-height: 34px;
   letter-spacing: -0.01em;
-}
-
-.titlebar-text p {
-  margin-top: 2px;
-  max-width: 780px;
-  color: var(--text-secondary);
-  font-size: var(--fs-14);
-  line-height: 20px;
 }
 
 .titlebar-actions {
@@ -305,9 +289,13 @@
   flex-direction: column;
   gap: var(--space-4);
   width: 100%;
-  max-width: var(--content-max);
-  margin: 0 auto;
+  min-width: 0;
   padding: var(--space-5);
+}
+
+/* 跳转链接把焦点送到这里；main 不是交互控件，焦点描边反而像页面抖动。 */
+.content:focus {
+  outline: none;
 }
 
 .page {
@@ -318,17 +306,106 @@
 }
 
 @media (max-width: 900px) {
+  /* 保持单行：标题左、主题切换右；只有极窄（≤520px）才允许换行堆叠。 */
   .titlebar-inner {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-wrap: wrap;
     gap: var(--space-3);
   }
 
   .titlebar-actions {
+    margin-left: auto;
     padding-bottom: 0;
   }
 
   .content {
     padding: var(--space-4);
+  }
+}
+
+@media (max-width: 520px) {
+  .titlebar-inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .titlebar-actions {
+    margin-left: 0;
+  }
+}
+
+/* 窄屏：侧栏固定为图标栏，导航文字隐藏但保留 data-label tooltip；内容区吃满剩余宽度。
+ * 断点与看板栅格同步取 1100px：否则 1024 视口会被 260px 侧栏压到 716px，比 900 视口还窄。 */
+@media (max-width: 1100px) {
+  .shell,
+  .shell[data-collapsed='true'] {
+    grid-template-columns: var(--nav-width-collapsed) minmax(0, 1fr);
+  }
+
+  .sidebar,
+  .sidebar[data-collapsed='true'] {
+    padding-left: var(--space-1);
+    padding-right: var(--space-1);
+  }
+
+  .sidebar .sidebar-brand,
+  .sidebar[data-collapsed='true'] .sidebar-brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .brand-text,
+  .nav-label,
+  .nav-collapse span {
+    display: none;
+  }
+
+  .sidebar .nav-link {
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .sidebar .nav-link::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 50%;
+    z-index: 40;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-strong);
+    box-shadow: var(--shadow-pop);
+    color: var(--text-primary);
+    font-size: var(--fs-12);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%);
+    transition: opacity 90ms ease;
+  }
+
+  .sidebar .nav-link:hover::after,
+  .sidebar .nav-link:focus-visible::after {
+    opacity: 1;
+  }
+
+  .sidebar .nav-collapse {
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  .titlebar-inner {
+    padding: 14px var(--space-4) 12px;
+  }
+
+  .titlebar-text h1 {
+    font-size: var(--fs-20);
+    line-height: 26px;
+  }
+
+  .content {
+    padding: var(--space-3);
   }
 }

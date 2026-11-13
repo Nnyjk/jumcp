@@ -2,20 +2,21 @@
 .SYNOPSIS
   一键启动本地开发环境：后端（streamable-http）+ 前端（Vite dev）。
 .DESCRIPTION
-  用法：pwsh scripts/dev.ps1 [-BackendPort 8000] [-WebPort 5173] [-PgDsn <dsn>] [-ResetData] [-NoWeb]
+  用法：pwsh scripts/dev.ps1 [-BackendPort 8000] [-WebPort 5173] [-ClickHouseDsn <dsn>] [-ResetData] [-NoWeb]
     -BackendPort  后端 HTTP 端口（默认 8000）
     -WebPort      前端 Vite 端口（默认 5173，被占用时自动 +1 顺延）
-    -PgDsn        可选。给了就生成 .dev-data/policy.toml（追加 dev-pg 数据源）并注入 HJZL_DEV_PG_DSN
+    -ClickHouseDsn 可选。给了就生成 .dev-data/policy.toml（追加 dev-clickhouse 数据源）并注入 JUMCP_DEV_CLICKHOUSE_DSN；
+                  形如 http://<user>:<password>@<host>:<port>，凭证只经环境变量传递
     -ResetData    启动前清空 .dev-data/（默认保留，便于连续试用）
     -NoWeb        只起后端
   Ctrl+C（或关窗）会同时停掉前后端子进程；日志在 .dev-data/logs/。
-  前端代理目标用 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 HJZL_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
+  前端代理目标用 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 JUMCP_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
 #>
 [CmdletBinding()]
 param(
   [int]$BackendPort = 8000,
   [int]$WebPort = 5173,
-  [string]$PgDsn = '',
+  [string]$ClickHouseDsn = '',
   [switch]$ResetData,
   [switch]$NoWeb
 )
@@ -32,6 +33,8 @@ $LogDir = Join-Path $DataDir 'logs'
 $BasePolicy = Join-Path $RepoRoot 'config/policy.toml'
 
 $AdminTokens = 'alice:tok_alice_000000000,bob:tok_bob_00000000000'
+# /mcp 的 per-request 身份：agent_id:role:token（role 必须在 config/policy.toml 的 [roles] 里）
+$AgentTokens = 'agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001'
 $AliceToken = 'tok_alice_000000000'
 $BobToken = 'tok_bob_00000000000'
 
@@ -47,21 +50,56 @@ function Resolve-Tool {
   return $null
 }
 
+# 监听地址：后端跟随 JUMCP_MCP_HOST（默认 0.0.0.0），前端固定 0.0.0.0（本机访问仍用 127.0.0.1）
+$BackendHost = if ($env:JUMCP_MCP_HOST) { $env:JUMCP_MCP_HOST } else { '0.0.0.0' }
+$WebHost = '0.0.0.0'
+
 function Test-PortFree {
-  # 端口未被占用返回 $true（node 试绑一下）
-  param([int]$Port)
-  & node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),"127.0.0.1",()=>s.close(()=>process.exit(0)))' $Port | Out-Null
+  # 端口在 $BindHost 上未被占用返回 $true（node 试绑一下；必须按实际监听地址探测，否则会漏判通配绑定）
+  param([int]$Port, [string]$BindHost = '0.0.0.0')
+  & node -e 'const net=require("net");const s=net.createServer();s.once("error",()=>process.exit(1));s.listen(Number(process.argv[1]),process.argv[2],()=>s.close(()=>process.exit(0)))' $Port $BindHost | Out-Null
   return ($LASTEXITCODE -eq 0)
 }
 
+function Test-PortListening {
+  # 端口已有监听者返回 $true。Windows 优先 Get-NetTCPConnection，其次 Test-NetConnection，最后 node 试绑
+  param([int]$Port, [string]$BindHost = '0.0.0.0')
+  if ($env:OS -eq 'Windows_NT') {
+    if (Get-Command -Name Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+      return (@(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).Count -gt 0)
+    }
+    if (Get-Command -Name Test-NetConnection -ErrorAction SilentlyContinue) {
+      try { return [bool](Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -InformationLevel Quiet -ErrorAction Stop) } catch { }
+    }
+  }
+  return (-not (Test-PortFree $Port $BindHost))
+}
+
+function Get-PortOwnerPids {
+  # 取出监听该端口的进程 pid（仅 Windows 的 Get-NetTCPConnection 能给出）
+  param([int]$Port)
+  if ($env:OS -ne 'Windows_NT') { return @() }
+  return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })
+}
+
+function Show-LogTail {
+  param([string]$Path, [int]$Lines = 30)
+  if (Test-Path $Path) { Get-Content $Path -Tail $Lines -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ } }
+}
+
 function Wait-Http {
-  # 等待 URL 在 $Seconds 秒内返回 200；成功返回响应体，失败返回 $null
-  param([string]$Url, [int]$Seconds, [string]$Curl)
+  # 等待 URL 在 $Seconds 秒内返回 200；成功返回响应体，失败返回 $null。
+  # 给了 -Proc 时，一旦该进程退出立即返回 $null（避免把别人的服务当成自己的）
+  param([string]$Url, [int]$Seconds, [string]$Curl, [System.Diagnostics.Process]$Proc)
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
-    $body = Join-Path $env:TEMP ("hjzl-dev-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    if ($null -ne $Proc -and $Proc.HasExited) { return $null }
+    $body = Join-Path $env:TEMP ("jumcp-dev-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
     $code = (& $Curl -sS --connect-timeout 2 --max-time 3 -o $body -w '%{http_code}' $Url 2>$null | Out-String).Trim()
     if ($code -eq '200') {
+      # 命中前再确认进程还活着：进程已死说明响应来自别的进程
+      if ($null -ne $Proc -and $Proc.HasExited) { Remove-Item $body -Force -ErrorAction SilentlyContinue; return $null }
       $text = ''
       if (Test-Path $body) { $text = (Get-Content $body -Raw -ErrorAction SilentlyContinue) }
       Remove-Item $body -Force -ErrorAction SilentlyContinue
@@ -106,6 +144,9 @@ $script:CancelHandler = [System.ConsoleCancelEventHandler] {
 [Console]::add_CancelKeyPress($script:CancelHandler)
 
 try {
+  # ------------------------------------------------------------ 参数校验：单一主数据源
+  # 后端启动时只接受一个 readonly 数据源，这里不再需要互斥判定；保留 try 结构便于收尾。
+
   # ------------------------------------------------------------ 准备数据目录
   if ($ResetData -and (Test-Path $DataDir)) {
     Write-Host "==> 清空 $DataDir"
@@ -127,52 +168,74 @@ try {
     exit 1
   }
 
-  # ------------------------------------------------------------ 配置：可选 PG 数据源
+  # ------------------------------------------------------------ 配置：可选 ClickHouse 数据源
   $policyFile = $BasePolicy
   $backendEnv = @{}
-  if ($PgDsn -ne '') {
+  if ($ClickHouseDsn -ne '') {
     $policyFile = Join-Path $DataDir 'policy.toml'
     Copy-Item $BasePolicy $policyFile -Force
     $dsnBlock = @"
 
 [[datasources]]
-name = "dev-pg"
-engine = "postgres"
+name = "dev-clickhouse"
+engine = "clickhouse"
 readonly = true
-allowed_schemas = ["public"]
+allowed_schemas = []
 statement_timeout_ms = 15000
-dsn_env = "HJZL_DEV_PG_DSN"
+dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
 "@
     Add-Content -Path $policyFile -Value $dsnBlock -Encoding utf8
-    $backendEnv['HJZL_DEV_PG_DSN'] = $PgDsn
-    Write-Host "==> 已生成临时数据源配置：$policyFile（数据源 dev-pg，DSN 走 HJZL_DEV_PG_DSN）"
+    $backendEnv['JUMCP_DEV_CLICKHOUSE_DSN'] = $ClickHouseDsn
+    Write-Host "==> 已生成临时数据源配置：$policyFile（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
   } else {
-    Write-Host '==> 未提供 -PgDsn：使用 config/policy.toml 原样（db_query_readonly 会返回 MCP_NOT_IMPLEMENTED，属预期）'
+    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（db_query_readonly 会返回 MCP_STORE_ERROR，属预期）'
   }
 
   # ------------------------------------------------------------ 后端
-  $exeName = 'hjzl-server'
-  if ($env:OS -eq 'Windows_NT') { $exeName = 'hjzl-server.exe' }
-  $serverBin = Join-Path $BackendDir ("target/debug/$exeName")
-  if (-not (Test-Path $serverBin)) {
-    Write-Host '==> 首次运行：cargo build --bin hjzl-server'
-    Push-Location $BackendDir
-    try { & cargo build --bin hjzl-server } finally { Pop-Location }
-    if (-not (Test-Path $serverBin)) {
-      Write-Host '后端二进制构建失败' -ForegroundColor Red
-      exit 1
+  # 1) 端口守卫：端口已有监听者说明多半是上一次遗留的旧后端；它会让新进程 bind 失败，
+  #    而 /health 又会命中旧进程，从而被误判为“就绪”。这里直接失败，不自动杀进程。
+  if (Test-PortListening $BackendPort $BackendHost) {
+    Write-Host ("错误：后端端口 {0} 已被占用，疑似上一次遗留的旧后端仍在运行（继续启动会被误判为就绪）。" -f $BackendPort) -ForegroundColor Red
+    $owners = @(Get-PortOwnerPids $BackendPort)
+    if ($owners.Count -gt 0) {
+      Write-Host ("监听该端口的 pid：{0}（Get-Process -Id <pid> 查看详情）" -f ($owners -join ', '))
     }
+    if ($env:OS -eq 'Windows_NT') {
+      Write-Host ("排查：netstat -ano | findstr :{0}    然后  Get-Process -Id <pid>" -f $BackendPort)
+    } else {
+      Write-Host ("排查：lsof -i :{0}   或   ss -lptn（再 kill <pid>）" -f $BackendPort)
+    }
+    Write-Host ("请先停止旧后端，或改用 -BackendPort <其他端口>（例如 -BackendPort {0}）。脚本不会自动杀进程。" -f ($BackendPort + 1))
+    exit 1
+  }
+
+  # 2) 每次启动都增量构建：二进制存在不代表是最新代码
+  $exeName = 'jumcp-server'
+  if ($env:OS -eq 'Windows_NT') { $exeName = 'jumcp-server.exe' }
+  $serverBin = Join-Path $BackendDir ("target/debug/$exeName")
+  Write-Host '==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse（增量构建，避免运行过期二进制）'
+  Push-Location $BackendDir
+  $buildCode = 1
+  try { & cargo build --bin jumcp-server --bin jumcp-connector-clickhouse; $buildCode = $LASTEXITCODE } finally { Pop-Location }
+  if ($buildCode -ne 0) {
+    Write-Host ("后端构建失败（cargo build 退出码 {0}）" -f $buildCode) -ForegroundColor Red
+    exit 1
+  }
+  if (-not (Test-Path $serverBin)) {
+    Write-Host ("构建后仍找不到后端二进制：{0}" -f $serverBin) -ForegroundColor Red
+    exit 1
   }
 
   $backendLog = Join-Path $LogDir 'backend.log'
   $backendErr = Join-Path $LogDir 'backend.err.log'
-  $backendEnv['HJZL_MCP_TRANSPORT'] = 'streamable-http'
-  $backendEnv['HJZL_MCP_HOST'] = '127.0.0.1'
-  $backendEnv['HJZL_MCP_PORT'] = "$BackendPort"
-  $backendEnv['HJZL_MCP_CONFIG_FILE'] = $policyFile
-  $backendEnv['HJZL_MCP_REGISTRY_PATH'] = (Join-Path $DataDir 'registry.sqlite3')
-  $backendEnv['HJZL_MCP_AUDIT_PATH'] = (Join-Path $DataDir 'audit.sqlite3')
-  $backendEnv['HJZL_ADMIN_TOKENS'] = $AdminTokens
+  $backendEnv['JUMCP_MCP_TRANSPORT'] = 'streamable-http'
+  $backendEnv['JUMCP_MCP_HOST'] = $BackendHost
+  $backendEnv['JUMCP_MCP_PORT'] = "$BackendPort"
+  $backendEnv['JUMCP_MCP_CONFIG_FILE'] = $policyFile
+  $backendEnv['JUMCP_MCP_REGISTRY_PATH'] = (Join-Path $DataDir 'registry.sqlite3')
+  $backendEnv['JUMCP_MCP_AUDIT_PATH'] = (Join-Path $DataDir 'audit.sqlite3')
+  $backendEnv['JUMCP_ADMIN_TOKENS'] = $AdminTokens
+  $backendEnv['JUMCP_AGENT_TOKENS'] = $AgentTokens
 
   $saved = @{}
   foreach ($k in $backendEnv.Keys) {
@@ -188,12 +251,24 @@ dsn_env = "HJZL_DEV_PG_DSN"
   [void]$script:Children.Add([pscustomobject]@{ Name = 'backend'; Id = $backendProc.Id })
   Write-Host ("==> 后端已启动（pid {0}）：http://127.0.0.1:{1}" -f $backendProc.Id, $BackendPort)
 
-  # 等 /health（最多 30s）
-  $healthBody = Wait-Http "http://127.0.0.1:$BackendPort/health" 30 $curl
+  # 等 /health（最多 30s）；进程一退出立即判失败，避免把别人的 /health 当成就绪
+  $healthBody = Wait-Http "http://127.0.0.1:$BackendPort/health" 30 $curl -Proc $backendProc
+  if ($backendProc.HasExited) {
+    Write-Host ("后端进程已退出（exit code {0}），多半是端口 {1} 在启动瞬间被抢占或配置非法。" -f $backendProc.ExitCode, $BackendPort) -ForegroundColor Red
+    Write-Host '---- backend.err.log 尾部 ----'
+    Show-LogTail $backendErr
+    Write-Host '---- backend.log 尾部 ----'
+    Show-LogTail $backendLog
+    Write-Host '----------------------'
+    Stop-Children
+    exit 1
+  }
   if ($null -eq $healthBody) {
     Write-Host "后端未在 30s 内就绪（端口 $BackendPort 是否被占用？）" -ForegroundColor Red
     Write-Host '---- backend.log 尾部 ----'
-    if (Test-Path $backendLog) { Get-Content $backendLog -Tail 30 | ForEach-Object { Write-Host $_ } }
+    Show-LogTail $backendLog
+    Write-Host '---- backend.err.log 尾部 ----'
+    Show-LogTail $backendErr
     Write-Host '----------------------'
     Stop-Children
     exit 1
@@ -208,7 +283,7 @@ dsn_env = "HJZL_DEV_PG_DSN"
   $webPortUsed = 0
   if (-not $NoWeb) {
     $candidate = $WebPort
-    while ($candidate -lt ($WebPort + 20) -and -not (Test-PortFree $candidate)) { $candidate++ }
+    while ($candidate -lt ($WebPort + 20) -and -not (Test-PortFree $candidate $WebHost)) { $candidate++ }
     if ($candidate -ge ($WebPort + 20)) {
       Write-Host ("找不到可用前端端口（{0}-{1}）" -f $WebPort, ($WebPort + 19)) -ForegroundColor Red
       Stop-Children
@@ -219,17 +294,18 @@ dsn_env = "HJZL_DEV_PG_DSN"
     }
     $webPortUsed = $candidate
 
-    # 前端代理目标由 HJZL_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
-    $viteArgs = @('run', 'dev', '--', '--host', '127.0.0.1', '--port', "$webPortUsed")
+    # 前端代理目标由 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
+    # 监听 0.0.0.0（本机访问用 127.0.0.1，容器/WSL/局域网用宿主 IP）
+    $viteArgs = @('run', 'dev', '--', '--host', $WebHost, '--port', "$webPortUsed")
     $apiTarget = "http://127.0.0.1:$BackendPort"
     Write-Host ("==> 前端代理目标：{0}" -f $apiTarget)
 
     $webLog = Join-Path $LogDir 'web.log'
     $webErr = Join-Path $LogDir 'web.err.log'
-    $savedToken = [Environment]::GetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', 'Process')
-    $savedTarget = [Environment]::GetEnvironmentVariable('HJZL_DEV_API_TARGET', 'Process')
-    [Environment]::SetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', $AliceToken, 'Process')
-    [Environment]::SetEnvironmentVariable('HJZL_DEV_API_TARGET', $apiTarget, 'Process')
+    $savedToken = [Environment]::GetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', 'Process')
+    $savedTarget = [Environment]::GetEnvironmentVariable('JUMCP_DEV_API_TARGET', 'Process')
+    [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', $AliceToken, 'Process')
+    [Environment]::SetEnvironmentVariable('JUMCP_DEV_API_TARGET', $apiTarget, 'Process')
     try {
       if ($env:OS -eq 'Windows_NT') {
         $webProc = Start-Process -FilePath 'cmd.exe' -ArgumentList (@('/c', 'npm') + $viteArgs) `
@@ -239,11 +315,11 @@ dsn_env = "HJZL_DEV_PG_DSN"
           -WorkingDirectory $WebDir -RedirectStandardOutput $webLog -RedirectStandardError $webErr -PassThru -NoNewWindow
       }
     } finally {
-      [Environment]::SetEnvironmentVariable('HJZL_DEV_ADMIN_TOKEN', $savedToken, 'Process')
-      [Environment]::SetEnvironmentVariable('HJZL_DEV_API_TARGET', $savedTarget, 'Process')
+      [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', $savedToken, 'Process')
+      [Environment]::SetEnvironmentVariable('JUMCP_DEV_API_TARGET', $savedTarget, 'Process')
     }
     [void]$script:Children.Add([pscustomobject]@{ Name = 'web'; Id = $webProc.Id })
-    Write-Host ("==> 前端已启动（pid {0}）：http://127.0.0.1:{1}" -f $webProc.Id, $webPortUsed)
+    Write-Host ("==> 前端已启动（pid {0}）：监听 0.0.0.0:{1}，本机访问 http://127.0.0.1:{1}" -f $webProc.Id, $webPortUsed)
 
     $index = Wait-Http "http://127.0.0.1:$webPortUsed/" 20 $curl
     if ($null -eq $index) {
@@ -257,7 +333,7 @@ dsn_env = "HJZL_DEV_PG_DSN"
   }
 
   # ------------------------------------------------------------ 横幅
-  $webLine = "管理台   http://127.0.0.1:$webPortUsed"
+  $webLine = "管理台   http://127.0.0.1:$webPortUsed （监听 0.0.0.0:$webPortUsed）"
   if ($NoWeb) { $webLine = '管理台   （未启动：-NoWeb）' }
   Write-Host ''
   Write-Host '================ 开发环境已就绪 ================'

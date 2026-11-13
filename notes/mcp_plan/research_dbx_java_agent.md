@@ -312,7 +312,7 @@ if (driverPaths != null && !driverPaths.isEmpty()) {
 
 ## 7. 对我们可借鉴
 
-我们的场景：Rust MCP server + 配置驱动 `[[datasources]]`（多数据源、每源独立 DSN 环境变量、只读/写账号分离、能力注册表）。
+我们的场景：Rust MCP server + 配置驱动 `[[datasources]]`（多数据源、每源独立 DSN 环境变量、单一只读账号、能力注册表）。
 
 **可直接借鉴（设计层面，与 DBX 的 Java Agent 无关）**
 
@@ -322,8 +322,8 @@ if (driverPaths != null && !driverPaths.isEmpty()) {
 4. **元数据缓存键 = (数据源 id, 库)**，并用 DDL 分类做失效信号（https://github.com/t8y2/dbx/blob/main/crates/dbx-core/src/query/object_cache.rs#L31-L38 、 #L41-L63 ）。我们的每个源独立 DSN，缓存键必须带数据源维度，不能只按库名。
 5. **元数据/业务资源隔离**：DBX 用 `metadataReserve=2` 给元数据查询预留物理连接额度（https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/JdbcConnectionPoolRegistry.java#L896-L897 ）。我们的每个源若共用一个池，同样该给"看表结构"这类元数据操作留独立额度，别让长查询把元数据饿死。
 6. **握手 + 能力协商**：即使我们不引入子进程，也值得借鉴"先握手声明协议版本与能力，再进入业务调用"的做法（https://github.com/t8y2/dbx/blob/main/agents/common/src/main/java/com/dbx/agent/AgentProtocol.java#L468-L491 ），以及"能力集可协商、按能力开关工具"。
-7. **只读/写账号分离的落点**：DBX 把只读判定完全放在**宿主**，数据库账号权限是硬上限（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L402-L404 ）。我们已有"只读/写账号分离"，DBX 的做法是让**账号权限成为不可逾越的上限**，配置层只能收紧不能放宽——这是可以直接抄的策略语义。
-8. **运行期只读开关**：`DBX_MCP_ALLOW_WRITES=0` 一次性把本次运行钉成只读，且明确"只能收紧不能放宽"（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L471 ）。对应我们的"部署期强制只读"开关语义。
+7. **账号权限即硬上限**：DBX 把只读判定完全放在**宿主**，数据库账号权限是不可逾越的上限（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L402-L404 ）。本项目只有单一只读账号，不存在"只读/写账号分离"；可直接抄的策略语义是"账号权限是硬上限，配置层只能收紧不能放宽"。
+8. **运行期只读开关**：`DBX_MCP_ALLOW_WRITES=0` 一次性把本次运行钉成只读，且明确"只能收紧不能放宽"（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L471 ）。本项目不需要该开关：只读是产品不变量（根本没有写能力），不是部署期可切换项。
 9. **审计记录字段**：时间/接入方式/客户端名与版本/工具/目标数据源/判定级别/是否经确认/耗时/请求响应摘要（https://github.com/t8y2/dbx/blob/main/docs/content/docs/mcp.cn.mdx#L462-L464 ）。我们做 MCP 调用审计可以直接用这份字段表。
 10. **能力位声明式化**。DBX 把每个数据库的能力写在一份 YAML 的 `capabilities{}`（queryExecution / metadataBrowse / objectBrowser / objectSource / schemaSearch / tableDataEdit / sqlFileExecution…）里，未声明的按 `supportLevel` 兜底推导 —— https://github.com/t8y2/dbx/blob/main/plugins/connection-types/dameng.yaml#L26-L42 、 https://github.com/t8y2/dbx/blob/main/crates/dbx-types/src/database_manifest.rs#L100-L114 、 #L153-L180 。我们的"能力注册表"正是这个东西：**能力属于数据源声明，而不是散落在工具白名单里**。
 11. **数据源参数 schema 也是声明式的**：`PluginFormFieldDefinition{key,label,type,description,placeholder,required,default}` —— https://github.com/t8y2/dbx/blob/main/crates/dbx-plugin-runtime/src/plugins/manifest.rs#L414-L426 ，配合连接能力位 `test/connect/disconnect`（#L744-L750 ）。我们的 `[[datasources]]` 里每个源的连接参数可以照此逐字段声明类型与必填。

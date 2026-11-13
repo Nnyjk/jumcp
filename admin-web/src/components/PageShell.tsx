@@ -1,14 +1,31 @@
 import type { ReactNode } from 'react'
+import { gsap } from 'gsap'
 import { ApiError } from '../api/client'
 import { Icon } from './Icon'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../motion/useGsap'
 
-/** 页面内容容器：只负责 16px 栅格与最小宽度。 */
+/** 页面内容容器：16px 栅格；进入时对直接子块做一次性透明度/位移 stagger。 */
 export function PageShell({ children }: { children: ReactNode }) {
-  return <div className="page">{children}</div>
+  const pageRef = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope.children, {
+      opacity: 0,
+      y: 10,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      stagger: 0.04,
+      clearProps: 'opacity,transform',
+    })
+  })
+
+  return (
+    <div className="page" ref={pageRef}>
+      {children}
+    </div>
+  )
 }
 
 const STATUS_HINT: Record<number, string> = {
-  401: '管理面按 Bearer token 判定身份。前端不持有凭证：请确认网关/BFF 已注入 Authorization，本地开发用 HJZL_DEV_ADMIN_TOKEN 启动。',
+  401: '管理面按 Bearer token 判定身份。前端不持有凭证：请确认网关/BFF 已注入 Authorization，本地开发用 JUMCP_DEV_ADMIN_TOKEN 启动。',
   403: '当前主体没有该 admin 接口的角色授权；拒绝已写入 policy_decision 审计。',
 }
 
@@ -71,20 +88,6 @@ export function LoadingState({ rows = 5, label = '正在加载' }: { rows?: numb
         ))}
       </div>
     </div>
-  )
-}
-
-/** 占位操作按钮：显式标注未接通，避免被误认为可用。 */
-export function DisabledAction({ label, compact = false }: { label: string; compact?: boolean }) {
-  return (
-    <button
-      type="button"
-      className={compact ? 'btn btn-secondary btn-sm' : 'btn btn-secondary'}
-      disabled
-      title="写操作尚未接通：变更须经 admin API 落审计"
-    >
-      {label}（未接通）
-    </button>
   )
 }
 

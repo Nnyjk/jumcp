@@ -1,6 +1,6 @@
 # MCP 计划：评审理由、被否决方案与外部约束
 
-配套文档：`docs/plan/hjzl-mcp-server-preview.md`（只放当前结论）。本文件保存结论背后的理由，避免同一议题反复提案。
+配套文档：`docs/plan/jumcp-preview.md`（只放当前结论）。本文件保存结论背后的理由，避免同一议题反复提案。
 
 ## 外部约束（不可违反）
 
@@ -34,6 +34,7 @@
 | 状态化会话 / 显式事务（DBX 式 `open_session` + `begin/commit`） | 模板路径必须无状态；开放会话状态等于开放 `USE`/`SET` 语义，与只读 + 版本钉住冲突（`research_dbx.md`） |
 | 把桌面 UI 操作做成 MCP 工具（`open_table` 类） | 本服务无桌面端，UI 回写会成为第二条调用通道 |
 | 用 `max_rows` 夹紧语义处理 token 超限 | 行数/单格字符是载荷整形，可夹紧回显；token 是预算约束，必须显式失败或摘要模式，混用即静默降级 |
+| 业务数据写路径（agent 改接入数据源） | 与产品边界冲突：全部 tool 对数据源只读；agent 只能维护本项目的能力注册表（`decisions_write_scope.md`） |
 
 ## 评审处置记录
 

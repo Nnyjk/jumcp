@@ -1,5 +1,7 @@
 import { useId, type ReactNode } from 'react'
+import { gsap } from 'gsap'
 import { Icon, type IconName } from './Icon'
+import { MOTION_EASE, useGsapScope } from '../motion/useGsap'
 
 export type InfoBarSeverity = 'info' | 'success' | 'warning' | 'danger'
 
@@ -31,9 +33,19 @@ export function InfoBar({
   const titleId = useId()
   const detailId = useId()
   const hasDetail = description !== undefined || meta !== undefined || children !== undefined
+  const barRef = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: -6,
+      duration: 0.22,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [severity, title])
 
   return (
     <div
+      ref={barRef}
       className={`infobar infobar-${severity}`}
       role={severity === 'danger' ? 'alert' : 'status'}
       aria-labelledby={titleId}

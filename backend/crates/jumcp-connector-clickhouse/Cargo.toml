@@ -1,0 +1,24 @@
+[package]
+name = "jumcp-connector-clickhouse"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "jumcp-connector-clickhouse"
+path = "src/main.rs"
+
+[lib]
+name = "jumcp_connector_clickhouse"
+path = "src/lib.rs"
+
+[dependencies]
+jumcp-connector-protocol = { path = "../jumcp-connector-protocol" }
+clickhouse = "0.15.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "time", "sync"] }
+url = "2"
+percent-encoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "time", "sync", "process"] }
