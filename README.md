@@ -2,7 +2,7 @@
 
 **jumcp**（jump + mcp）是面向 agent 的 MCP **聚合 router**：一个 `/mcp` 端点同时暴露内置工具与动态接入的上游 MCP server，统一做入口裁剪（§4.1）、渐进发现（§4.2）、只读分发（§4.3）与治理审计（§4.4）。架构见 `docs/plan/jumcp-preview.md`。
 
-> 品牌说明：产品对外名称统一为 **jumcp**；crate/包名、`JUMCP_*` 环境变量与数据路径一律使用 `jumcp` 前缀。令牌前缀为 `jumcp_`（新签发与重签发），明文只在创建/重签发响应中出现一次。
+> 品牌说明：产品对外名称统一为 **jumcp**；crate/包名与 `JUMCP_*` 环境变量统一使用 `jumcp` 前缀；本地数据路径保持 `.dev-data/` 的运行约定（不随品牌改名）；令牌前缀为 `jumcp_`（新签发与重签发），明文只在创建/重签发响应中出现一次。
 
 仓库地址：<https://github.com/Nnyjk/jumcp>　克隆：`git clone https://github.com/Nnyjk/jumcp.git`
 
