@@ -1,0 +1,331 @@
+//! 维护通道（`admin_*`）的授权、前置检查与四个写/读工具的 dispatch 实现。
+
+use super::*;
+
+impl McpServer {
+    /// admin 工具的统一授权：只看服务端 scope，不看请求参数与客户端清单。
+    ///
+    /// 非 admin 组直接与"不存在"同构（`MCP_CAPABILITY_NOT_FOUND`），并写 policy_decision——
+    /// 探测维护通道本身就是一个需要被审计的事件。
+    pub(super) fn authorize_admin(
+        &self,
+        id: &Value,
+        actor: &Actor,
+        scope: &EffectiveScope,
+        tool: &str,
+    ) -> Option<Value> {
+        if crate::discovery::admin_enabled(scope) {
+            return None;
+        }
+        let e = McpError::new("MCP_CAPABILITY_NOT_FOUND", json!({"tool": tool}));
+        Some(self.reject(
+            id,
+            actor,
+            &e,
+            json!({
+                "tool": tool,
+                "required_group": crate::discovery::ADMIN_GROUP,
+                "surface": "mcp/admin"
+            }),
+        ))
+    }
+
+    fn require_store(&self) -> Result<&CapabilityStore, McpError> {
+        self.service.store.as_deref().ok_or_else(|| {
+            McpError::new(
+                "MCP_STORE_ERROR",
+                json!({"hint": "能力注册表未注入（CapabilityStore 未就绪）"}),
+            )
+        })
+    }
+
+    /// 维护通道写工具的 fail-closed 前置：**审计未启用就不写**。
+    ///
+    /// `Service::audit_event` 在 `audit: None` 时是 no-op，写工具若照常落库就成了
+    /// "写成功但无痕迹"——治理面不可静默失效，因此任何落库动作之前先在这里拒绝。
+    /// 拒绝本身也走 `reject`（写 policy_decision）；无审计时那条审计同样是 no-op，
+    /// 这是可接受的：首要目标是不写。
+    fn require_audit(&self, id: &Value, actor: &Actor, tool: &str) -> Option<Value> {
+        if self.service.audit.is_some() {
+            return None;
+        }
+        let e = McpError::new(
+            "MCP_AUDIT_ERROR",
+            json!({"hint": "审计未启用，维护通道拒绝写入"}),
+        );
+        Some(self.reject(id, actor, &e, json!({"tool": tool})))
+    }
+
+    /// 维护工具调用的收尾：写一条 `tool_call` 审计后原样返回结果。
+    ///
+    /// 为什么在这里统一写：4 个 admin 工具走同一分支，逐处写必有一处遗漏——而管理台的
+    /// 工具台账只认 `tool_call`，漏写就等于该工具永远 calls=0/health=unknown。
+    /// 拒绝路径（未授权、审计缺失、builtin 不可写、参数非法）由调用方一并交进来，记
+    /// `outcome=error` + `mcp_code`；成功则用 `estimate_tokens(结果)` 记 tokens。
+    pub(super) fn finish_admin_call(
+        &self,
+        id: &Value,
+        tool: &str,
+        args: &Value,
+        result: Value,
+        actor: &Actor,
+    ) -> Value {
+        let content = result
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .unwrap_or(&result);
+        let payload = match content.get("error") {
+            Some(error) => {
+                let mut base = audit_base("tool", tool, "invoke", "error");
+                base.insert(
+                    "error_code".into(),
+                    error
+                        .get("code")
+                        .and_then(|c| c.as_str())
+                        .map_or(Value::Null, |c| json!(c)),
+                );
+                base.insert(
+                    "error_message".into(),
+                    error
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .map_or(Value::Null, |m| json!(m)),
+                );
+                audit_data(base, json!({"arguments": args}))
+            }
+            None => audit_data(
+                audit_base("tool", tool, "invoke", "ok"),
+                json!({"arguments": args, "tokens": estimate_tokens(content)}),
+            ),
+        };
+        // 审计写失败必须上抛（与其它入口同一约定），不吞成"调用成功"。
+        if let Err(e) = self.service.audit_event("tool_call", payload, actor) {
+            return err_tool(id, &e);
+        }
+        result
+    }
+
+    /// `admin_register_template`：定义原文 → `TemplateDef::parse` 门禁 + 编译 → 落 draft。
+    ///
+    /// 只产草案：`review → published` 必须走 HTTP 管理面的人工审批，agent 无法自我发布。
+    pub(super) fn admin_register_template(&self, id: &Value, args: &Value, actor: &Actor) -> Value {
+        const TOOL: &str = "admin_register_template";
+        // 审计未启用 → 任何编译/落库之前就拒绝（见 `require_audit`）。
+        if let Some(denied) = self.require_audit(id, actor, TOOL) {
+            return denied;
+        }
+        let Some(definition) = args.get("definition").filter(|v| v.is_object()).cloned() else {
+            return self.reject(
+                id,
+                actor,
+                &McpError::validation("definition 必须是模板定义对象".to_string()),
+                json!({"tool": TOOL}),
+            );
+        };
+        let Some(registry) = self.service.templates.as_ref() else {
+            return err_tool(
+                id,
+                &McpError::new(
+                    "MCP_STORE_ERROR",
+                    json!({"hint": "模板注册表未注入（TemplateRegistry 未就绪）"}),
+                ),
+            );
+        };
+        // 组必须先存在（配置 policy 组或管理组），否则不落库。
+        let group = definition
+            .get("group")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Err(e) = self.service.ensure_group_exists(group) {
+            return self.reject(id, actor, &e, json!({"tool": TOOL, "group": group}));
+        }
+        // registry.register = TemplateDef::parse（校验门禁）+ 编译 + store 落 draft。
+        let compiled = match registry.register(&definition) {
+            Ok(c) => c,
+            Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+        };
+        let record = match registry.store().get(&compiled.def.template_id) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return err_tool(
+                    id,
+                    &McpError::store(format!("register 后记录缺失: {}", compiled.def.template_id)),
+                );
+            }
+            Err(e) => return err_tool(id, &e),
+        };
+        // 审计失败必须上抛：draft 已落库而审计缺行，属"不可见但无痕迹"的残留风险
+        // （draft 既不 discoverable 也不 callable，不会泄露给任何 agent，故不需回滚）。
+        let mut payload = audit_base("capability", &record.capability_id, "create", "ok");
+        payload.insert("to_status".into(), json!("draft"));
+        payload.insert(
+            "changes".into(),
+            json!(jumcp_core::registry::definition_changes(
+                &json!({}),
+                &record.definition
+            )),
+        );
+        payload.insert(
+            "data".into(),
+            json!({
+                "definition_hash_before": Value::Null,
+                "definition_hash_after": record.definition_hash,
+                "version": record.version
+            }),
+        );
+        if let Err(e) = self
+            .service
+            .audit_event("admin_change", Value::Object(payload), actor)
+        {
+            return err_tool(id, &e);
+        }
+        ok(
+            id,
+            json!({
+                "content": {
+                    "id": record.capability_id,
+                    "status": record.status,
+                    "version": record.version,
+                    "definition_hash": record.definition_hash
+                },
+                "isError": false
+            }),
+        )
+    }
+
+    /// `admin_review_queue`：只读审核队列（draft/review）。
+    pub(super) fn admin_review_queue(&self, id: &Value, actor: &Actor) -> Value {
+        const TOOL: &str = "admin_review_queue";
+        let store = match self.require_store() {
+            Ok(s) => s,
+            Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+        };
+        let records = match store.review_queue() {
+            Ok(r) => r,
+            Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+        };
+        let items: Vec<Value> = records.iter().map(crate::admin::queue_item).collect();
+        ok(
+            id,
+            json!({
+                "content": {"items": items, "total": items.len()},
+                "isError": false
+            }),
+        )
+    }
+
+    /// `admin_audit_queries`：只读审计查询，limit 夹紧在 1..=200（与 HTTP 管理面同一上限）。
+    pub(super) fn admin_audit_queries(&self, id: &Value, args: &Value, actor: &Actor) -> Value {
+        const TOOL: &str = "admin_audit_queries";
+        let filter = match args.get("filter") {
+            None | Some(Value::Null) => None,
+            Some(v) if v.is_object() => Some(v.clone()),
+            Some(_) => {
+                return self.reject(
+                    id,
+                    actor,
+                    &McpError::validation("filter 必须是对象".to_string()),
+                    json!({"tool": TOOL}),
+                );
+            }
+        };
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(50)
+            .clamp(1, crate::admin::MAX_LIMIT);
+        let offset = args
+            .get("offset")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .max(0);
+        let order = match args.get("order").and_then(|v| v.as_str()) {
+            None => jumcp_core::audit::Order::Desc,
+            Some(raw) => match jumcp_core::audit::Order::parse(raw) {
+                Ok(o) => o,
+                Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+            },
+        };
+        let Some(log) = self.service.audit.as_ref() else {
+            return err_tool(
+                id,
+                &McpError::new("MCP_AUDIT_ERROR", json!({"hint": "审计未启用"})),
+            );
+        };
+        let (events, total) = match log.query_page(filter.as_ref(), limit, offset, order) {
+            Ok(r) => r,
+            // 非法过滤键属于"请求被拒"，按契约写 policy_decision。
+            Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+        };
+        ok(
+            id,
+            json!({
+                "content": {"events": events, "total": total, "limit": limit, "offset": offset, "order": if order == jumcp_core::audit::Order::Asc { "asc" } else { "desc" }},
+                "isError": false
+            }),
+        )
+    }
+
+    /// `admin_set_visibility`：只改双布尔，不改定义；`admin_change` 由 store 写入
+    /// （before/after 同为当前 definition_hash，diff 记字段变更）。
+    pub(super) fn admin_set_visibility(&self, id: &Value, args: &Value, actor: &Actor) -> Value {
+        const TOOL: &str = "admin_set_visibility";
+        // 审计未启用 → 任何落库之前就拒绝（见 `require_audit`）。
+        if let Some(denied) = self.require_audit(id, actor, TOOL) {
+            return denied;
+        }
+        let Some(capability_id) = args
+            .get("capability_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            return self.reject(
+                id,
+                actor,
+                &McpError::validation("capability_id 必填".to_string()),
+                json!({"tool": TOOL}),
+            );
+        };
+        let discoverable = args.get("discoverable").and_then(|v| v.as_bool());
+        let callable = args.get("callable").and_then(|v| v.as_bool());
+        if discoverable.is_none() && callable.is_none() {
+            return self.reject(
+                id,
+                actor,
+                &McpError::validation(
+                    "discoverable/callable 至少要指定一个（无变更的可见性写入不产生审计价值）"
+                        .to_string(),
+                ),
+                json!({"tool": TOOL, "capability_id": capability_id}),
+            );
+        }
+        let store = match self.require_store() {
+            Ok(s) => s,
+            Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
+        };
+        let record = match store.set_visibility(capability_id, discoverable, callable, actor) {
+            Ok(r) => r,
+            Err(e) => {
+                return self.reject(
+                    id,
+                    actor,
+                    &e,
+                    json!({"tool": TOOL, "capability_id": capability_id}),
+                );
+            }
+        };
+        ok(
+            id,
+            json!({
+                "content": {
+                    "id": record.capability_id,
+                    "discoverable": record.discoverable,
+                    "callable": record.callable,
+                    "version": record.version,
+                    "last_changed_at": record.updated_at
+                },
+                "isError": false
+            }),
+        )
+    }
+}

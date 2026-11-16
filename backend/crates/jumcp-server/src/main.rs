@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
         CapabilityStore::open(&settings.registry_path, audit.clone())
             .map_err(|e| anyhow::anyhow!("打开注册表失败: {e}"))?,
     );
-    // 兼容旧 dev/e2e：表为空且仍配置 JUMCP_AGENT_TOKENS 时，把静态 token 一次性导入为
+    // 引导导入：表为空且配置了 JUMCP_AGENT_TOKENS 时，把静态 token 一次性导入为
     // active 记录（明文值的 sha256），之后 /mcp 只认数据库。已有记录则绝不重导。
     if store
         .access_token_total()
@@ -210,7 +210,7 @@ async fn run_http(
     };
     let admin_app = jumcp_server::admin::router(admin);
     let app = admin_app.merge(jumcp_server::mcp::http_router(server));
-    // 管理台静态托管：`JUMCP_MCP_WEB_DIR` 为空即不挂（行为与旧版一致）；
+    // 管理台静态托管：`JUMCP_MCP_WEB_DIR` 为空即不挂；
     // 非空时目录/产物不合法直接拒绝启动，绝不静默降级成 404。
     let app = jumcp_server::web::attach(app, &settings.web_dir)
         .map_err(|e| anyhow::anyhow!("启动配置非法: {e}"))?;

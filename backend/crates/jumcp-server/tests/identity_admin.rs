@@ -737,9 +737,9 @@ async fn admin_read_tools_serve_queue_and_audit_pages() {
     );
 }
 
-/// §4.1.6 通道优先级：Header > `_meta` 会话 scope > 角色默认。
+/// 通道优先级：Header > `_meta` 会话 scope > 角色默认。
 ///
-/// 关键是 HTTP 入口不再把 header 解析结果当成唯一来源：无 header 时必须用 `initialize`
+/// 关键是 HTTP 入口不把 header 解析结果当成唯一来源：无 header 时必须用 `initialize`
 /// 声明的 `_meta` 组，且两者同时存在时 header 赢（不求交集）。
 #[tokio::test]
 async fn meta_scope_applies_when_header_absent() {
@@ -1101,7 +1101,7 @@ async fn admin_tool_calls_are_counted_in_stats() {
 
 /// 通用分发入口（`tools/call` 按 name 路由）产生的 `tool_call` 必须能回放原始入参。
 ///
-/// `invoke_capability` 在本仓库只有文档规划、尚无实现；内置 basic 组也不再直连数据源，
+/// `invoke_capability` 未实现；内置 basic 组不直连数据源，
 /// 当前仍有"任意 MCP 工具名分发"的入口是维护工具分支，这里端到端验证该路径的 calls 明细。
 #[tokio::test]
 async fn generic_dispatch_call_audits_arguments() {

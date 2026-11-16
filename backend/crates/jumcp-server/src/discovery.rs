@@ -312,7 +312,7 @@ pub fn visible_capabilities(
 
 /// 调用面集合：`published ∧ callable ∧ group ∈ scope`。
 ///
-/// 与可见集**不是**同一个集合（§4.4.1 D3：`discoverable=false, callable=true` 是合法的
+/// 与可见集**不是**同一个集合（`discoverable=false, callable=true` 是合法的
 /// "系统直调"状态）。两条谓词共用 `CapabilityStore::visible` / `CapabilityStore::callable`
 /// 背后的同一处 SQL 拼装，因此不会各写一份 WHERE。
 pub fn callable_capabilities(

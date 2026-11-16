@@ -96,7 +96,7 @@ impl McpError {
     pub fn validation(error: String) -> Self {
         Self::detailed("MCP_VALIDATION_ERROR", error)
     }
-    /// 超时/取消：结果未知，调用方不得重试或重放（§6.3）。
+    /// 超时/取消：结果未知，调用方不得重试或重放。
     pub fn timeout(detail: String) -> Self {
         Self::with_message(
             "MCP_EXEC_TIMEOUT",

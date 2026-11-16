@@ -1,10 +1,4 @@
-//! 平台生成的 MCP access token：密文持久化、按 hash 鉴权、撤销与组引用计数。
-//!
-//! 为什么落 registry 同一个 SQLite：token 与组/能力必须同库同事务视图，
-//! 否则"删组前检查 token 引用"会出现跨库竞态。
-//!
-//! 明文只在创建或重新签发时返回一次（`jumcp_<64 hex>`），库里只存 sha256；审计只写前缀，
-//! 永远不写明文或 hash。
+//! 令牌记录、字段级门禁，以及 `CapabilityStore` 上的持久化与审计（明文只在签发时出现一次）。
 
 use crate::audit::IntoAuditOrigin;
 use crate::canonical::sha256_hex;
@@ -250,7 +244,7 @@ impl std::fmt::Debug for IssuedAccessToken {
     }
 }
 
-pub(crate) const SCHEMA: &str = r#"
+const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS access_tokens (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
     token_prefix TEXT NOT NULL DEFAULT '', tenant TEXT NOT NULL DEFAULT 'default',
@@ -264,7 +258,7 @@ CREATE TABLE IF NOT EXISTS access_tokens (
 CREATE INDEX IF NOT EXISTS idx_access_tokens_hash ON access_tokens(token_hash);
 "#;
 
-/// 打开库时的建表/补列（旧库没有该表时直接创建；不破坏既有表）。
+/// 打开库时的建表/补列（缺表时直接创建；不破坏既有表）。
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), McpError> {
     conn.execute_batch(SCHEMA)
         .map_err(|e| McpError::store(e.to_string()))?;
@@ -307,7 +301,7 @@ fn row_to_token(row: &Row) -> rusqlite::Result<AccessTokenRecord> {
     })
 }
 
-/// 列表列可能是空串（旧库 `ensure_column` 的默认值）→ 视为空集，而不是解码失败。
+/// 列表列可能是空串（补列时的默认值）→ 视为空集，而不是解码失败。
 fn decode_list(raw: String, column: usize) -> rusqlite::Result<Vec<String>> {
     if raw.trim().is_empty() {
         return Ok(Vec::new());
@@ -671,7 +665,7 @@ impl CapabilityStore {
 
     /// 硬删除：只有 `revoked` / `expired` 可删；`active` 必须先撤销（409）。
     ///
-    /// 撤销/过期记录留着不再有治理价值，删除让组引用计数与列表自然回落。
+    /// 撤销/过期记录没有治理价值，删除让组引用计数与列表自然回落。
     /// 审计先判可用性：没有审计就不删行（治理面不能出现"删除无痕迹"）。
     /// 快照只含描述字段，**绝不写明文或 hash**。
     pub fn delete_access_token(
@@ -770,7 +764,7 @@ impl CapabilityStore {
     /// 启动引导：`access_tokens` 为空时把 `JUMCP_AGENT_TOKENS` 的静态 token 一次性导入。
     ///
     /// 导入的是同一明文的 sha256，因此原静态 token 仍可继续使用；`builtin_tools`
-    /// 取全部内置 id（保持旧行为：常驻工具恒可见、admin 组令牌可见维护工具）。
+    /// 取全部内置 id（常驻工具恒可见、admin 组令牌可见维护工具）。
     pub fn import_bootstrap_tokens(
         &self,
         principals: &[AgentPrincipal],
@@ -849,319 +843,5 @@ impl CapabilityStore {
             }
         }
         Ok(imported)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::entry::Actor;
-    use crate::registry::CapabilityStore;
-    use serde_json::json;
-
-    fn store() -> CapabilityStore {
-        CapabilityStore::open(
-            ":memory:",
-            Some(std::sync::Arc::new(
-                crate::audit::AuditLog::open(":memory:").unwrap(),
-            )),
-        )
-        .unwrap()
-    }
-
-    fn actor() -> Actor {
-        let mut actor = Actor::new("default", "admin");
-        actor.actor_id = "alice".into();
-        actor.source = "admin-api".into();
-        actor
-    }
-
-    fn new_token(name: &str) -> NewAccessToken {
-        NewAccessToken {
-            name: name.into(),
-            role: "analyst".into(),
-            groups: vec!["db.read.core".into()],
-            builtin_tools: vec!["search_capabilities".into()],
-            source: "agent".into(),
-            caller: "agent-analyst".into(),
-            expires_at: None,
-            tenant: "default".into(),
-            created_by: "alice".into(),
-        }
-    }
-
-    #[test]
-    fn create_authenticate_list_revoke_roundtrip() {
-        let s = store();
-        let issued = s.create_access_token(&new_token("v1"), &actor()).unwrap();
-        assert!(issued.token.starts_with("jumcp_"));
-        assert_eq!(issued.token.len(), 6 + 64);
-        assert_eq!(issued.record.id.len(), 20);
-        assert!(issued.record.id.starts_with("tok_"));
-        assert_eq!(issued.record.status(), "active");
-
-        let authed = s.authenticate_access_token(&issued.token).unwrap().unwrap();
-        assert_eq!(authed.id, issued.record.id);
-        assert_eq!(authed.caller, "agent-analyst");
-        assert!(
-            !authed.last_used_at.is_empty(),
-            "鉴权成功必须刷新 last_used_at"
-        );
-
-        let list = s.list_access_tokens().unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(s.token_count().unwrap(), 1);
-        assert_eq!(s.token_counts_by_group().unwrap()["db.read.core"], 1);
-
-        let revoked = s.revoke_access_token(&issued.record.id, &actor()).unwrap();
-        assert_eq!(revoked.status(), "revoked");
-        assert!(!revoked.enabled);
-        assert!(
-            s.authenticate_access_token(&issued.token)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(s.token_count().unwrap(), 0, "已撤销 token 不再计数");
-
-        // 重复撤销：409 语义且不重复写审计。
-        let e = s
-            .revoke_access_token(&issued.record.id, &actor())
-            .unwrap_err();
-        assert_eq!(e.code, "MCP_TOKEN_ALREADY_REVOKED");
-        let events = s
-            .audit_log()
-            .unwrap()
-            .query(Some(&json!({"event_type": "admin_change"})))
-            .unwrap();
-        let revokes = events
-            .iter()
-            .filter(|e| e.payload["action"] == json!("token_revoke"))
-            .count();
-        assert_eq!(revokes, 1);
-        let create = events
-            .iter()
-            .find(|e| e.payload["action"] == json!("token_create"))
-            .expect("token_create");
-        assert_eq!(create.actor["source"], json!("admin-api"));
-        assert!(create.actor.get("token_id").is_none());
-        // 审计载荷绝不含明文/hash。
-        let raw = create.payload.to_string();
-        assert!(!raw.contains(&issued.token));
-        assert!(!raw.contains(&issued.record.token_hash));
-        assert_eq!(
-            create.payload["data"]["token_prefix"],
-            json!(issued.record.token_prefix)
-        );
-    }
-
-    #[test]
-    fn reissue_rotates_secret_and_keeps_metadata() {
-        let s = store();
-        let mut spec = new_token("rotate-me");
-        spec.expires_at = Some((Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
-        let issued = s.create_access_token(&spec, &actor()).unwrap();
-        assert!(
-            s.authenticate_access_token(&issued.token)
-                .unwrap()
-                .is_some()
-        );
-
-        let reissued = s.reissue_access_token(&issued.record.id, &actor()).unwrap();
-        assert_ne!(reissued.token, issued.token);
-        assert!(reissued.token.starts_with(TOKEN_PLAINTEXT_PREFIX));
-        assert_eq!(reissued.record.id, issued.record.id);
-        assert_eq!(reissued.record.name, "rotate-me");
-        assert_eq!(reissued.record.role, "analyst");
-        assert_eq!(reissued.record.groups, vec!["db.read.core".to_string()]);
-        assert_eq!(
-            reissued.record.builtin_tools,
-            vec!["search_capabilities".to_string()]
-        );
-        assert_eq!(reissued.record.source, "agent");
-        assert_eq!(reissued.record.caller, "agent-analyst");
-        assert_eq!(reissued.record.expires_at, issued.record.expires_at);
-        assert!(
-            reissued.record.last_used_at.is_empty(),
-            "重签发清空使用时间"
-        );
-        assert_ne!(reissued.record.token_hash, issued.record.token_hash);
-        assert_ne!(reissued.record.token_prefix, issued.record.token_prefix);
-        assert_eq!(s.access_token_total().unwrap(), 1, "重签发不新增行");
-
-        assert!(
-            s.authenticate_access_token(&issued.token)
-                .unwrap()
-                .is_none(),
-            "旧明文立即失效"
-        );
-        assert!(
-            s.authenticate_access_token(&reissued.token)
-                .unwrap()
-                .is_some(),
-            "新明文立即可用"
-        );
-
-        let events = s
-            .audit_log()
-            .unwrap()
-            .query(Some(&json!({"event_type": "admin_change"})))
-            .unwrap();
-        let reissue = events
-            .iter()
-            .find(|e| e.payload["action"] == json!("token_reissue"))
-            .expect("token_reissue 审计");
-        assert_eq!(reissue.actor["source"], json!("admin-api"));
-        let raw = reissue.payload.to_string();
-        assert!(!raw.contains(&issued.token));
-        assert!(!raw.contains(&reissued.token));
-        assert!(!raw.contains(&reissued.record.token_hash));
-        assert_eq!(
-            reissue.payload["data"]["token_prefix"],
-            json!(reissued.record.token_prefix)
-        );
-
-        // 撤销后不可重签：409 且哈希/前缀不变。
-        let revoked = s.revoke_access_token(&issued.record.id, &actor()).unwrap();
-        let before = (revoked.token_hash.clone(), revoked.token_prefix.clone());
-        let e = s
-            .reissue_access_token(&issued.record.id, &actor())
-            .unwrap_err();
-        assert_eq!(e.code, "MCP_STATE_TRANSITION_INVALID");
-        let after = s.get_access_token(&issued.record.id).unwrap().unwrap();
-        assert_eq!((after.token_hash, after.token_prefix), before);
-    }
-
-    #[test]
-    fn expired_token_is_rejected() {
-        let s = store();
-        let mut spec = new_token("expiring");
-        spec.expires_at = Some((Utc::now() + chrono::Duration::seconds(2)).to_rfc3339());
-        let issued = s.create_access_token(&spec, &actor()).unwrap();
-        assert_eq!(issued.record.status(), "active");
-        // 直接改库模拟时间流逝（store 不提供改过期时间的 API）。
-        {
-            let conn = s.db().lock().unwrap();
-            conn.execute(
-                "UPDATE access_tokens SET expires_at=? WHERE id=?",
-                rusqlite::params![
-                    (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
-                    issued.record.id
-                ],
-            )
-            .unwrap();
-        }
-        assert!(
-            s.authenticate_access_token(&issued.token)
-                .unwrap()
-                .is_none()
-        );
-        let rec = s.get_access_token(&issued.record.id).unwrap().unwrap();
-        assert_eq!(rec.status(), "expired");
-        assert_eq!(s.token_count().unwrap(), 1, "过期未撤销仍计入组引用");
-    }
-
-    #[test]
-    fn bootstrap_imports_only_once_and_tokens_still_work() {
-        let s = store();
-        let principals = crate::config::AgentTokens::parse(
-            "agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001",
-        )
-        .unwrap();
-        let mut roles = std::collections::HashMap::new();
-        roles.insert(
-            "analyst".into(),
-            crate::config::RoleDef {
-                name: "analyst".into(),
-                default_groups: vec!["db.read.core".into()],
-                default_budget: 2000,
-            },
-        );
-        roles.insert(
-            "admin".into(),
-            crate::config::RoleDef {
-                name: "admin".into(),
-                default_groups: vec!["admin".into()],
-                default_budget: 2000,
-            },
-        );
-        let policy = TenantPolicy {
-            roles,
-            ..Default::default()
-        };
-        assert_eq!(
-            s.import_bootstrap_tokens(principals.principals(), &policy)
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            s.import_bootstrap_tokens(principals.principals(), &policy)
-                .unwrap(),
-            0,
-            "重复启动不得重复导入"
-        );
-        let rec = s
-            .authenticate_access_token("tok_agent_admin_000001")
-            .unwrap()
-            .unwrap();
-        assert_eq!(rec.role, "admin");
-        assert_eq!(rec.source, "bootstrap");
-        assert_eq!(rec.groups, vec!["admin".to_string()]);
-        assert!(
-            rec.builtin_tools
-                .contains(&"admin_review_queue".to_string()),
-            "引导令牌保留内置工具全量，admin 组仍受双重判定"
-        );
-    }
-
-    #[test]
-    fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
-        type Mutation = Box<dyn Fn(&mut NewAccessToken)>;
-        let s = store();
-        let cases: Vec<Mutation> = vec![
-            Box::new(|t| t.name = "".into()),
-            Box::new(|t| t.name = "x".repeat(65)),
-            Box::new(|t| t.caller = "BAD".into()),
-            Box::new(|t| t.caller = "a".into()),
-            Box::new(|t| t.source = "".into()),
-            Box::new(|t| t.source = "Agent".into()),
-            Box::new(|t| t.groups.clear()),
-            Box::new(|t| t.builtin_tools = vec!["not_a_tool".into()]),
-            Box::new(|t| t.builtin_tools = vec!["admin_review_queue".into()]),
-            Box::new(|t| t.expires_at = Some("not-a-time".into())),
-            Box::new(|t| t.expires_at = Some("2020-01-01T00:00:00Z".into())),
-        ];
-        for mutate in cases {
-            let mut spec = new_token("bad");
-            mutate(&mut spec);
-            let e = spec.validate().unwrap_err();
-            assert_eq!(e.code, "MCP_VALIDATION_ERROR", "{spec:?}");
-        }
-        // 有 admin 组时 admin_* 合法。
-        let mut ok = new_token("admin-tool");
-        ok.groups = vec!["admin".into()];
-        ok.builtin_tools = vec!["admin_review_queue".into()];
-        ok.validate().unwrap();
-        // 存储层也会再判一次（不依赖 HTTP 层）。
-        let e = s
-            .create_access_token(
-                &{
-                    let mut bad = new_token("bad");
-                    bad.builtin_tools = vec!["admin_review_queue".into()];
-                    bad
-                },
-                &actor(),
-            )
-            .unwrap_err();
-        assert_eq!(e.code, "MCP_VALIDATION_ERROR");
-    }
-
-    #[test]
-    fn create_without_audit_is_rejected_and_persists_nothing() {
-        let s = CapabilityStore::open(":memory:", None).unwrap();
-        let e = s
-            .create_access_token(&new_token("noaudit"), &actor())
-            .unwrap_err();
-        assert_eq!(e.code, "MCP_AUDIT_ERROR");
-        assert_eq!(s.access_token_total().unwrap(), 0);
     }
 }

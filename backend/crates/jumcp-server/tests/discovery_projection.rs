@@ -1,4 +1,4 @@
-//! 发现面契约（W6）：单一可见集 = builtin ∪ 注册表可见行；管理面发布后无需重启即可见。
+//! 发现面契约：单一可见集 = builtin ∪ 注册表可见行；管理面发布后无需重启即可见。
 //!
 //! 装配真实 `CapabilityStore`（`:memory:`）+ `TemplateRegistry`，只把执行器换成 fake，
 //! 因此这里验证的是"注册表 → 发现面"这条真实链路，而不是内存目录的替身。
@@ -215,7 +215,7 @@ async fn published_template_becomes_visible_without_restart() {
     h.registry
         .register(&template_value())
         .expect("register draft");
-    // draft 不可见（§4.4 审核前不暴露）。
+    // draft 不可见（审核前不暴露）。
     assert!(
         search(&h.server, "order.daily_summary").await.is_empty(),
         "draft 能力不得出现在发现面"
@@ -304,8 +304,8 @@ async fn published_template_becomes_visible_without_restart() {
     );
 }
 
-/// §4.4.1 / D3：`published ∧ discoverable=false ∧ callable=true` 是合法的系统直调状态——
-/// 不可见不等于不可调用。MCP 面不再有模板直调通道，这里锁 store 的状态语义与发现面投影。
+/// `published ∧ discoverable=false ∧ callable=true` 是合法的系统直调状态——
+/// 不可见不等于不可调用。MCP 面没有模板直调通道，这里锁 store 的状态语义与发现面投影。
 #[tokio::test]
 async fn hidden_but_callable_template_stays_invisible_but_callable() {
     let h = harness();
