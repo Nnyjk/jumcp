@@ -19,8 +19,11 @@ use jumcp_core::registry::{CapabilityRecord, CapabilityStore, McpUpstream, Upstr
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
-/// builtin 能力的保留组名：常驻工具不属于任何业务组，恒可见（不被 `scope.groups` 收窄）。
-pub const BUILTIN_GROUP: &str = "builtin";
+/// `basic` 组：常驻内置工具与"逐工具开放的上游工具"的公共基础通道。
+///
+/// 它不是可授权组：`scope.groups` 里永远不需要（也不应该）出现 `basic`，
+/// 成员恒可见，只受 token 的 `builtin_tools` allowlist 与上游自身开关约束。
+pub const BASIC_GROUP: &str = jumcp_core::config::BASIC_GROUP_NAME;
 
 /// 维护通道的组名：内置 admin 工具只在 `scope.groups` 含它时可见可调。
 ///
@@ -79,7 +82,7 @@ fn project_builtin(def: &Value, group: &str, category: &str) -> Option<Capabilit
 /// builtin 能力投影：直接复用 `mcp::tool_definitions()` / `mcp::admin_tool_definitions()`
 /// （`tools/list` 的同一份定义），不在这里再写一份 schema，否则同一工具会有两个定义源。
 ///
-/// 分组规则（唯一实现）：`group == BUILTIN_GROUP` 的常驻工具恒在；维护工具属于
+/// 分组规则（唯一实现）：`group == BASIC_GROUP` 的常驻工具恒在；维护工具属于
 /// `ADMIN_GROUP`，只有 `scope.groups` 含 admin 时才进可见集/调用集。
 pub fn builtin_capabilities(scope: &EffectiveScope) -> Vec<Capability> {
     let mut out: Vec<Capability> = tool_definitions()
@@ -91,7 +94,7 @@ pub fn builtin_capabilities(scope: &EffectiveScope) -> Vec<Capability> {
         })
         .filter_map(|def| {
             let id = def.get("name").and_then(|n| n.as_str())?;
-            project_builtin(def, BUILTIN_GROUP, builtin_category(id))
+            project_builtin(def, BASIC_GROUP, builtin_category(id))
         })
         .collect();
     if admin_enabled(scope) {
@@ -146,12 +149,18 @@ pub fn project_record(rec: &CapabilityRecord) -> Capability {
 /// 上游 `tools/list` 的一条工具 → 发现面能力。
 ///
 /// 名由 manager 先按 `<server_id>__<tool>` 规则规范化并查重；这里只做投影。
-pub fn project_upstream(upstream: &McpUpstream, tool: &UpstreamTool, exposed: &str) -> Capability {
+/// `group` 是**生效组**：默认是上游注册时的 `group`，被逐工具覆盖到 `basic` 时由调用方传入。
+pub fn project_upstream(
+    upstream: &McpUpstream,
+    tool: &UpstreamTool,
+    exposed: &str,
+    group: &str,
+) -> Capability {
     let text = tool.description.clone();
     Capability {
         id: exposed.to_string(),
         kind: "tool".into(),
-        group: upstream.group.clone(),
+        group: group.to_string(),
         // 非只读上游是人工审批放行的高风险能力，沿用闭集里最保守的标签。
         risk: if upstream.read_only {
             "read"
@@ -467,7 +476,7 @@ mod tests {
             "非 admin scope 只应看到常驻工具"
         );
         assert!(
-            analyst.iter().all(|c| c.group == BUILTIN_GROUP),
+            analyst.iter().all(|c| c.group == BASIC_GROUP),
             "非 admin scope 不得出现 admin 组能力"
         );
         assert!(

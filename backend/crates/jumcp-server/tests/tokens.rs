@@ -819,7 +819,7 @@ async fn options_lists_roles_groups_and_builtin_labels() {
             .unwrap_or_else(|| panic!("缺少 {id}"))
     };
     assert_eq!(by_name("search_capabilities")["label"], json!("检索能力"));
-    assert_eq!(by_name("search_capabilities")["group"], json!("builtin"));
+    assert_eq!(by_name("search_capabilities")["group"], json!("basic"));
     assert_eq!(by_name("admin_set_visibility")["label"], json!("改可见性"));
     assert_eq!(by_name("admin_set_visibility")["group"], json!("admin"));
 }

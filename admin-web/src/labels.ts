@@ -57,6 +57,7 @@ export const OBJECT_TYPE_LABEL: Record<AuditObjectType, string> = {
   catalog: '目录',
   request: '请求',
   token: '访问令牌',
+  upstream: '上游接入',
 }
 
 export const ACTION_LABEL: Record<AuditAction, string> = {
@@ -79,6 +80,8 @@ export const ACTION_LABEL: Record<AuditAction, string> = {
   describe: '查看描述',
   list_tools: '下发工具列表',
   deny: '拒绝',
+  refresh: '刷新上游',
+  update_tool_groups: '调整基础工具',
 }
 
 export const OUTCOME_LABEL: Record<AuditOutcome, string> = {
@@ -135,6 +138,9 @@ export const ERROR_CODE_LABEL: Record<string, string> = {
   MCP_UNSUPPORTED_COLUMN_TYPE: '不支持的列类型',
   MCP_USE_DB_RUN_TEMPLATE: '请改用模板执行',
   MCP_VERSION_CONFLICT: '版本冲突',
+  MCP_UPSTREAM_TOOL_UNKNOWN: '上游工具不存在或已变更',
+  MCP_UPSTREAM_TOOL_NOT_READ_ONLY: '写工具不能归入基础组',
+  MCP_UPSTREAM_TOOL_NOT_ELIGIBLE: '工具不满足基础组条件',
 }
 
 /** 定义/可见性变更的字段名 → 中文。未知字段原样展示。 */
@@ -196,10 +202,11 @@ export const TOOL_CACHE_LABEL: Record<string, string> = {
   miss: '未命中',
 }
 
-/** 组来源：policy 由 config/policy.toml 提供，managed 由管理台维护。 */
+/** 组来源：policy 由 config/policy.toml 提供，managed 由管理台维护，builtin 是后端合成组。 */
 export const GROUP_SOURCE_LABEL: Record<GroupSource, string> = {
   policy: '策略组',
   managed: '受管组',
+  builtin: '内置',
 }
 
 /** 访问令牌状态：expired 由到期时间派生，revoked 为手工撤销。 */
@@ -226,6 +233,16 @@ export const UPSTREAM_CATEGORY_LABEL: Record<UpstreamCategory, string> = {
 /** 工具台账与上游共用同一套分类中文名；旧数据缺 category 时显示破折号。 */
 export const TOOL_CATEGORY_LABEL: Record<string, string> = {
   ...UPSTREAM_CATEGORY_LABEL,
+}
+
+/**
+ * 工具的生效组展示名：backend 的常驻内置工具现在挂在 basic（基础）组；
+ * 旧数据里可能残留 builtin 分组，仍兼容显示“内置”；其余 code 回退到组清单 name。
+ */
+export function toolGroupLabel(code: string, fallback?: string): string {
+  if (code === 'basic') return '基础'
+  if (code === 'builtin') return '内置'
+  return fallback ?? code
 }
 
 /** 上游探测状态：unknown 表示尚未探测，不冒充正常。 */

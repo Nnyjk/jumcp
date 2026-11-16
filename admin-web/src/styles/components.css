@@ -954,6 +954,59 @@ button.inline-link {
   align-items: center;
 }
 
+/* 只读语义：内置行不渲染禁用按钮，改用文字说明为什么不能编辑。 */
+.row-note {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.basic-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.basic-tools-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.basic-tools-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.basic-tools-meta {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.basic-tools-counters {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.basic-tools-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.basic-tools-reason {
+  color: var(--warning);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
 .create-form {
   display: grid;
   gap: var(--space-3);

@@ -71,6 +71,9 @@
 | `deprecate` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `reject` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `group_create` / `group_update` / `group_delete` | `group{name,priority,min_budget,roles}` |
+| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`enabled` |
+| `refresh`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`tool_count`、`status`；失败时事件顶层另有 `error_code`/`error_message` |
+| `update_tool_groups`（`object_type="upstream"`） | `basic_total` |
 | `token_create` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`；**绝不含明文 token 或 hash** |
 | `token_revoke` | `name`、`role`、`groups`、`source`、`caller`、`token_prefix`、`revoked_at` |
 | `token_reissue` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`token_prefix`（新前缀）；**绝不含明文 token 或 hash** |
@@ -84,7 +87,7 @@
 
 ## 3. `object_type` 与 `action`
 
-`object_type` 闭集：`capability`、`group`、`tool`、`template`、`catalog`、`request`、`token`。
+`object_type` 闭集：`capability`、`group`、`tool`、`template`、`catalog`、`request`、`token`、`upstream`。
 
 | object_type | 典型 action |
 |---|---|
@@ -95,6 +98,13 @@
 | `template` | `invoke`（模板执行） |
 | `catalog` | `search`、`list_tools` |
 | `request` | `deny`（策略拒绝，`object_id` 为被拒工具/模板/能力 id，均不可判定时用 `request`） |
+| `upstream` | `create`、`update`、`delete`、`refresh`、`update_tool_groups`（`object_id` 为上游 id） |
+
+`upstream` 的 `changes` 只含真实变化的字段（env/headers 只输出键与脱敏值，`changed_keys`
+指出真正变了的键）；`update_tool_groups` 的每条 `changes` 是
+`{field:"tool_group", tool:<原始工具名>, before:<原组或 null>, after:<"basic" 或 null>}`。
+上游调用本身不走 `admin_change`：它是 `object_type="tool"`、`action="call"` 的 `tool_call`，
+`object_id` 为暴露名 `<server_id>__<tool>`。
 
 `action` 与 `object_type` 的组合决定 `changes`/`data` 的形状，消费方应按 `action` 分支。
 
@@ -307,13 +317,19 @@ GET /admin/roles
 
 ```
 GET /admin/groups?q=&source=&role=
-200: { items: [{ code, name, source: "policy"|"managed", priority, min_budget,
-                roles: [code], capability_count, token_count }], total }
+200: { items: [{ code, name, source: "builtin"|"policy"|"managed", priority, min_budget,
+                roles: [code], grantable, capability_count, token_count }], total }
 ```
 
-- `q` 对 code/name 做不区分大小写的包含匹配；`source` 只接受 `policy`|`managed`（其他值 400 `MCP_VALIDATION_ERROR`）；`role` 是角色 code，精确匹配条目的 `roles`；
+- `basic` 是代码内置组，固定出现在列表首位（`source:"builtin"`、`name:"基础工具"`、
+  `priority:0`、`min_budget:800`、`roles:[]`、`grantable:false`、`token_count:0`）；
+  `capability_count` 是常驻内置工具数（5）加当前逐工具加入 `basic` 的上游工具数；
+- `q` 对 code/name 做不区分大小写的包含匹配；`source` 只接受 `policy`|`managed`|`builtin`
+  （其他值 400 `MCP_VALIDATION_ERROR`）；`role` 是角色 code，精确匹配条目的 `roles`；
 - 三层过滤同时生效，`total` 是过滤后的条数；
-- 配置组的 `roles` 由 `policy.roles[*].default_groups` 反查（角色 code）；管理组用其 `roles` 列表。
+- 配置组的 `roles` 由 `policy.roles[*].default_groups` 反查（角色 code）；管理组用其 `roles` 列表；
+- `grantable` 表示该组能否出现在令牌 `groups` / 角色 `default_groups` 里：只有 `policy` 与
+  `managed` 组为 `true`，`basic` 为 `false`（`GET /admin/tokens/options` 的 `groups` 也不含它）。
 
 ```
 POST /admin/groups            { code, name, priority, min_budget, roles: [code] }
@@ -322,7 +338,8 @@ DELETE /admin/groups/{code}
 ```
 
 - `code` 建成后不可改：路径即 code，PUT body 里出现 `code` 一律 400；
-- `name` 只做展示：trim 后 1..64 字符；code 仍要求 `^[a-z0-9._-]+$`、≤64 字符、保留名 `admin`/`builtin` 拒绝（409 `MCP_GROUP_RESERVED`）；
+- `name` 只做展示：trim 后 1..64 字符；code 仍要求 `^[a-z0-9._-]+$`、≤64 字符、保留名 `basic`/`builtin`/`admin` 拒绝（409 `MCP_GROUP_RESERVED`）；
+- `config/policy.toml` 的 `[[groups]]` 不得定义 `basic` 或 `builtin`（启动校验失败）；`admin` 仍允许作为配置组存在；
 - 配置组只读：POST 重名 / PUT / DELETE 返回 409 `MCP_GROUP_CONFLICT`；
 - 组被能力或 token 引用时删除返回 409 `MCP_GROUP_IN_USE`，`error.data` 同时给 `capability_count` 与 `token_count`；
 - 管理组表沿用 `groups.name` 列存 code，展示名存 `groups.display_name`（`ensure_column` 补列；旧行空串时 API 回退 code），编辑只改展示列。

@@ -109,6 +109,36 @@ pub fn exposed_tool_name(server_id: &str, tool: &str) -> String {
     )
 }
 
+/// 单工具能否进 `basic`（公共基础通道）：只读、非 admin 类别、名字不是 `admin_` 前缀。
+///
+/// 三条限制合起来回答同一个问题："这个工具能不能成为所有 token 都能看见的只读入口"。
+/// 写工具、审计类工具与 `admin_*` 维护工具都必须留在上游组里按组授权，
+/// 否则 `basic` 会变成绕过 admin 的旁路。
+pub fn basic_eligible(def: &McpUpstream, tool: &UpstreamTool) -> bool {
+    def.read_only
+        && def.category != crate::catalog::CATEGORY_ADMIN
+        && !tool.name.starts_with("admin_")
+        && is_upstream_tool_name(&exposed_tool_name(&def.id, &tool.name))
+}
+
+/// 工具在本次投影里的**生效组**：显式覆盖到 `basic` 且仍 eligible 时是 `basic`，
+/// 否则继承上游注册时的组。`eligible` 当场复核，因此上游后来改成可写/改成 admin 类别时，
+/// 覆盖行不会继续把一个不合规的工具暴露在公共通道上。
+fn effective_group<'a>(
+    def: &'a McpUpstream,
+    tool: &UpstreamTool,
+    overrides: &'a HashMap<String, HashMap<String, String>>,
+) -> &'a str {
+    match overrides
+        .get(&def.id)
+        .and_then(|tools| tools.get(&tool.name))
+        .filter(|group| group.as_str() == discovery::BASIC_GROUP && basic_eligible(def, tool))
+    {
+        Some(group) => group.as_str(),
+        None => &def.group,
+    }
+}
+
 struct Pooled {
     generation: String,
     client: Arc<UpstreamClient>,
@@ -206,16 +236,56 @@ impl UpstreamManager {
     /// 名字是否落在某个"会参与路由"的上游前缀上：纯 SQLite 判定，**不建连、不拉取**。
     ///
     /// 供调用面的 allowlist 预检使用——被拒绝的名字不应产生任何上游连接/工具拉取。
+    /// 上游组不在 scope 时，只有显式覆盖到 `basic` 的工具名仍可能被路由（逐工具通道），
+    /// 因此这里也认这些名字，否则 allowlist 的拒绝会被 `resolve` 绕到"可调用"路径上。
     pub fn matches_upstream(&self, scope: &EffectiveScope, name: &str) -> bool {
         let Ok(defs) = self.store.upstreams() else {
             return false;
         };
+        let overrides = self.tool_group_overrides();
         defs.iter().any(|def| {
-            def.enabled
-                && scope.groups.contains(&def.group)
-                && (def.read_only || self.write_allowed)
-                && name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id))
+            if !def.enabled || !(def.read_only || self.write_allowed) {
+                return false;
+            }
+            if !name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id)) {
+                return false;
+            }
+            if scope.groups.contains(&def.group) {
+                return true;
+            }
+            // 覆盖行的 key 是上游**原始**工具名，`name` 是清洗后的暴露名，
+            // 因此必须按 `exposed_tool_name` 比较，不能拿暴露名后缀直接查表。
+            overrides.get(&def.id).is_some_and(|tools| {
+                tools.iter().any(|(raw, group)| {
+                    group.as_str() == discovery::BASIC_GROUP
+                        && exposed_tool_name(&def.id, raw) == name
+                })
+            })
         })
+    }
+
+    /// 逐工具组覆盖的索引形态：`upstream_id → tool_name → group_code`（读失败按无覆盖处理，
+    /// 只会让"上游组不在 scope"的工具更少可见，不会放宽任何授权）。
+    fn tool_group_overrides(&self) -> HashMap<String, HashMap<String, String>> {
+        let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+        if let Ok(rows) = self.store.upstream_tool_groups() {
+            for row in rows {
+                out.entry(row.upstream_id)
+                    .or_default()
+                    .insert(row.tool_name, row.group_code);
+            }
+        }
+        out
+    }
+
+    /// 缓存里的上游工具（管理面读视图用）：**不触网**，从未拉取过时返回空。
+    pub fn cached_tools(&self, id: &str) -> Vec<UpstreamTool> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .tools
+            .get(id)
+            .map(|entry| entry.tools.clone())
+            .unwrap_or_default()
     }
 
     async fn client_for(
@@ -393,20 +463,28 @@ impl UpstreamManager {
         }
     }
 
-    /// 一次请求内的上游视图：只含启用且组在 scope 内的上游，**并行**拉取、逐台上游独立超时。
+    /// 一次请求内的上游视图：只含"上游组在 scope 内"或"有逐工具 basic 覆盖"的启用上游，
+    /// **并行**拉取、逐台上游独立超时。
+    ///
+    /// 组门是**工具级**的：
+    /// - 上游组在 scope 内 → 全部工具都在（覆盖到 basic 的工具生效组变成 basic）；
+    /// - 上游组不在 scope 内 → 只保留"覆盖到 basic 且 eligible"的工具。
+    ///
+    /// 这样单个只读工具可以进公共通道，而同一台上游的其他工具仍然按组授权。
     async fn projection(
         self: &Arc<Self>,
         scope: &EffectiveScope,
     ) -> Vec<(McpUpstream, Vec<UpstreamTool>)> {
+        let overrides = self.tool_group_overrides();
         let defs: Vec<McpUpstream> = match self.store.upstreams() {
             Ok(rows) => rows
                 .into_iter()
                 .filter(|d| {
                     d.enabled
-                        && scope.groups.contains(&d.group)
                         // 写上游的准入是部署开关：DB 里残留的 read_only=false 在开关关闭时
                         // 既不投影也不可调（不能只靠写入期校验）。
                         && (d.read_only || self.write_allowed)
+                        && (scope.groups.contains(&d.group) || overrides.contains_key(&d.id))
                 })
                 .collect(),
             Err(_) => return Vec::new(),
@@ -421,8 +499,19 @@ impl UpstreamManager {
         }
         let mut out = Vec::new();
         while let Some(joined) = set.join_next().await {
-            if let Ok(pair) = joined {
-                out.push(pair);
+            let Ok((def, tools)) = joined else {
+                continue;
+            };
+            if scope.groups.contains(&def.group) {
+                out.push((def, tools));
+                continue;
+            }
+            let tools: Vec<UpstreamTool> = tools
+                .into_iter()
+                .filter(|tool| effective_group(&def, tool, &overrides) == discovery::BASIC_GROUP)
+                .collect();
+            if !tools.is_empty() {
+                out.push((def, tools));
             }
         }
         out.sort_by(|a, b| a.0.id.cmp(&b.0.id));
@@ -431,6 +520,7 @@ impl UpstreamManager {
 
     /// 本次 scope 可见的上游工具投影（失败的上游返回空工具，不阻塞其他上游）。
     pub async fn capabilities(self: &Arc<Self>, scope: &EffectiveScope) -> Vec<Capability> {
+        let overrides = self.tool_group_overrides();
         let mut out = Vec::new();
         for (def, tools) in self.projection(scope).await {
             for tool in &tools {
@@ -439,7 +529,8 @@ impl UpstreamManager {
                 if !discovery::tool_allowed(scope, &exposed) {
                     continue;
                 }
-                out.push(discovery::project_upstream(&def, tool, &exposed));
+                let group = effective_group(&def, tool, &overrides).to_string();
+                out.push(discovery::project_upstream(&def, tool, &exposed, &group));
             }
         }
         out
@@ -449,6 +540,8 @@ impl UpstreamManager {
     ///
     /// 前缀回退是"客户端缓存了旧 `tools/list`"的兜底：不要求该工具在本次缓存里，
     /// 但要求上游本身启用且组在 scope 内（授权不因缓存陈旧而放宽）。
+    /// 上游组**不在** scope 时只允许 `basic` 成员：此时投影里只剩这些工具，
+    /// 因此回退必须命中投影里的真实工具名，不能拿任意 suffix 去调上游。
     pub async fn resolve(
         self: &Arc<Self>,
         scope: &EffectiveScope,
@@ -475,10 +568,15 @@ impl UpstreamManager {
             if suffix.is_empty() {
                 continue;
             }
-            let tool = tools
+            let known = tools
                 .iter()
-                .find(|t| exposed_tool_name(&def.id, &t.name) == name)
-                .map_or_else(|| suffix.to_string(), |t| t.name.clone());
+                .find(|t| exposed_tool_name(&def.id, &t.name) == name);
+            if !scope.groups.contains(&def.group) && known.is_none() {
+                continue;
+            }
+            let tool = known
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| suffix.to_string());
             return Some(UpstreamCall {
                 upstream_id: def.id.clone(),
                 definition_hash: def.definition_hash(),

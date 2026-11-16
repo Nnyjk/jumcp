@@ -281,8 +281,8 @@ export function CapabilityDossier({
             <DetailField label="组">
               {group === ''
                 ? DASH
-                : group === 'builtin'
-                  ? '内置'
+                : group === 'basic'
+                  ? '基础'
                   : (groupInfo?.name ?? group)}
             </DetailField>
             <DetailField label="版本" mono>
@@ -449,7 +449,7 @@ function OverviewTab({
         <Card title="生效范围">
           {group === '' ? (
             <p className="muted">该对象没有组归属。</p>
-          ) : readOnly && source === 'builtin' && group === 'builtin' ? (
+          ) : readOnly && source === 'builtin' && group === 'basic' ? (
             <InfoBar
               severity="info"
               title="基础内置工具不按管理组授权"

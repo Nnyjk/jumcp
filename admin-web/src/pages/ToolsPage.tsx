@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createCapability, fetchToolStats } from '../api/admin'
 import { groupLabel, indexGroups, indexRoles, roleLabel, useGroupsQuery, useRolesQuery } from '../api/queries'
-import type { CapabilityRisk, GroupItem, ToolHealth, ToolSource, ToolStatsRow } from '../api/types'
+import type { CapabilityRisk, ToolHealth, ToolSource, ToolStatsRow } from '../api/types'
 import {
   CategoryBadge,
   HealthBadge,
@@ -25,7 +25,7 @@ import {
   PageShell,
 } from '../components/PageShell'
 import { formatDateTime } from '../format'
-import { TOOL_CATEGORY_LABEL, TOOL_KIND_LABEL, UPSTREAM_CATEGORY_LABEL, visibilityText } from '../labels'
+import { TOOL_CATEGORY_LABEL, TOOL_KIND_LABEL, UPSTREAM_CATEGORY_LABEL, toolGroupLabel as groupCodeLabel, visibilityText } from '../labels'
 import { useAdminView } from '../viewStack'
 
 const DASH = '—'
@@ -48,11 +48,6 @@ const CATEGORY_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'admin', label: UPSTREAM_CATEGORY_LABEL.admin },
   { value: 'custom', label: UPSTREAM_CATEGORY_LABEL.custom },
 ]
-
-/** 内置工具不归属管理台维护的组：组列只显示「内置」，不露出 builtin code。 */
-function toolGroupLabel(index: Map<string, GroupItem>, code: string): string {
-  return code === 'builtin' ? '内置' : groupLabel(index, code)
-}
 
 /** null / undefined 一律显示破折号，避免把“无数据”误读成 0。 */
 function dash(value: string | number | null | undefined): string {
@@ -113,7 +108,7 @@ export default function ToolsPage({
           needle === '' ||
           row.id.toLowerCase().includes(needle) ||
           row.group.toLowerCase().includes(needle) ||
-          toolGroupLabel(groupIndex, row.group).toLowerCase().includes(needle) ||
+          groupCodeLabel(row.group, groupLabel(groupIndex, row.group)).toLowerCase().includes(needle) ||
           (TOOL_CATEGORY_LABEL[row.category ?? ''] ?? '').toLowerCase().includes(needle),
       )
       .sort((a, b) => b.calls - a.calls || a.id.localeCompare(b.id))
@@ -202,8 +197,8 @@ export default function ToolsPage({
         row.group === '' ? (
           DASH
         ) : (
-          <span title={toolGroupLabel(groupIndex, row.group)}>
-            {toolGroupLabel(groupIndex, row.group)}
+          <span title={groupCodeLabel(row.group, groupLabel(groupIndex, row.group))}>
+            {groupCodeLabel(row.group, groupLabel(groupIndex, row.group))}
           </span>
         ),
     },
@@ -345,7 +340,7 @@ export default function ToolsPage({
               </option>
               {groups.map((group) => (
                 <option key={group.code} value={group.code} title={group.code}>
-                  {group.name}
+                  {groupCodeLabel(group.code, group.name)}
                 </option>
               ))}
             </select>
