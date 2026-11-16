@@ -34,8 +34,11 @@ import type {
   ToolCallsPage,
   ToolStatsPayload,
   UpdatedCapabilityDefinition,
+  UpdatedBasicTools,
+  UpdateBasicToolsInput,
   UpstreamInput,
   UpstreamItem,
+  UpstreamToolsPayload,
 } from './types'
 
 /** 分页固定条数（后端默认 limit=50，上限 200）。 */
@@ -345,4 +348,32 @@ export async function refreshUpstream(id: string): Promise<UpstreamItem> {
   return request<UpstreamItem>(`/admin/upstreams/${encodeURIComponent(id)}/refresh`, {
     method: 'POST',
   })
+}
+
+/**
+ * 上游工具缓存：GET 不触网，无缓存时后端返回 status=unknown 与空 tools。
+ * 需要最新工具列表时先调用 refreshUpstream 触发探测。
+ */
+export async function fetchUpstreamTools(
+  id: string,
+  signal?: AbortSignal,
+): Promise<UpstreamToolsPayload> {
+  return request<UpstreamToolsPayload>(
+    `/admin/upstreams/${encodeURIComponent(id)}/tools`,
+    { signal },
+  )
+}
+
+/**
+ * 批量调整上游工具的基础组归属：只提交变更键。
+ * 404=上游不存在；409 为 UNKNOWN / NOT_READ_ONLY / NOT_ELIGIBLE；超过 64 键为 400。
+ */
+export async function updateUpstreamBasicTools(
+  id: string,
+  input: UpdateBasicToolsInput,
+): Promise<UpdatedBasicTools> {
+  return request<UpdatedBasicTools>(
+    `/admin/upstreams/${encodeURIComponent(id)}/tools/basic`,
+    { method: 'PUT', body: input },
+  )
 }

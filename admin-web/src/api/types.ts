@@ -31,6 +31,7 @@ export type AuditObjectType =
   | 'catalog'
   | 'request'
   | 'token'
+  | 'upstream'
 
 /** 审计动作：治理动作与运行期动作分开取值，但共用同一字段。 */
 export type AuditAction =
@@ -53,6 +54,8 @@ export type AuditAction =
   | 'describe'
   | 'list_tools'
   | 'deny'
+  | 'refresh'
+  | 'update_tool_groups'
 
 export type AuditOutcome = 'ok' | 'error' | 'denied' | 'summary'
 
@@ -368,8 +371,11 @@ export interface UpdatedCapabilityDefinition {
   last_changed_at: string | null
 }
 
-/** 组的来源：policy 来自 config/policy.toml（只读），managed 由管理台维护。 */
-export type GroupSource = 'policy' | 'managed'
+/**
+ * 组的来源：policy 来自 config/policy.toml（只读），managed 由管理台维护，
+ * builtin 是后端合成的只读组（代表一份固定的内置能力集合）。
+ */
+export type GroupSource = 'policy' | 'managed' | 'builtin'
 
 /** 组：`code` 是契约值（能力、令牌、审计都用它），`name` 只用于展示。 */
 export interface GroupItem {
@@ -379,6 +385,8 @@ export interface GroupItem {
   priority: number
   min_budget: number
   roles: string[]
+  /** false 表示该组不可授予（builtin 合成组）：不能改配置，也不能作为上游授权组。 */
+  grantable: boolean
   capability_count: number
   token_count: number
 }
@@ -496,7 +504,8 @@ export interface TokenGroupOption {
 export interface TokenBuiltinToolOption {
   name: string
   label: string
-  group: 'builtin' | 'admin'
+  /** 内置工具的分组：basic 为基础工具，admin 为维护类工具（admin_*）。 */
+  group: 'basic' | 'admin'
 }
 
 /** GET /admin/tokens/options：角色默认组、组来源与可选内置工具。 */
@@ -560,4 +569,61 @@ export interface UpstreamInput {
   read_only: boolean
   enabled: boolean
   timeout_ms: number
+}
+
+/** 上游工具的生效组来源：basic 表示已归入内置基础组，upstream 表示仍跟随上游授权组。 */
+export type UpstreamToolGroupSource = 'basic' | 'upstream'
+
+/** GET /admin/upstreams/{id}/tools 的单条工具；GET 只读缓存，不触网。 */
+export interface UpstreamToolItem {
+  /** 上游原始工具名：PUT 的变更键。 */
+  name: string
+  /** 暴露给调用方的工具名。 */
+  exposed_name: string
+  /** 生效组 code（basic 或上游授权组）。 */
+  group: string
+  group_source: UpstreamToolGroupSource
+  /** 当前是否归属基础组。 */
+  basic: boolean
+  /** 是否存在 basic 覆盖行（不一定当前生效：工具可能后来变成写工具/管理类）。 */
+  overridden: boolean
+  read_only: boolean
+  /** 后端判定是否满足归入基础组的条件（只读、非管理类等）。 */
+  eligible: boolean
+  /** 缓存里存在但上游已不再暴露的工具。 */
+  orphaned: boolean
+  description: string
+}
+
+/** GET /admin/upstreams/{id}/tools 的响应；无缓存时 status=unknown 且 tools 为空。 */
+export interface UpstreamToolsPayload {
+  status: UpstreamStatus
+  status_message: string
+  last_checked_at: string | null
+  tools: UpstreamToolItem[]
+  total: number
+  basic_total: number
+  orphaned_total: number
+}
+
+/**
+ * PUT /admin/upstreams/{id}/tools/basic 的 body。
+ * true=加入基础组，false=移出，null=清除覆盖（用于清理已从上游消失的工具）。
+ */
+export interface UpdateBasicToolsInput {
+  tools: Record<string, boolean | null>
+}
+
+/** 单条变更的前后值；null 表示没有覆盖。 */
+export interface BasicToolChange {
+  name: string
+  before: boolean | null
+  after: boolean | null
+}
+
+/** PUT /admin/upstreams/{id}/tools/basic 的响应：只回传实际变更项与最新工具清单。 */
+export interface UpdatedBasicTools {
+  changed: BasicToolChange[]
+  basic_total: number
+  tools: UpstreamToolItem[]
 }

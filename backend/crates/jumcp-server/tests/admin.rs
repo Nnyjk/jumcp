@@ -792,7 +792,17 @@ async fn routes_are_documented() {
             .iter()
             .any(|(_, path)| *path == "/admin/groups/{code}")
     );
-    assert_eq!(table.len(), 33);
+    assert!(
+        table
+            .iter()
+            .any(|(_, path)| *path == "/admin/upstreams/{id}/tools")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(_, path)| *path == "/admin/upstreams/{id}/tools/basic")
+    );
+    assert_eq!(table.len(), 35);
 }
 
 // ---------------------------- 能力列表 ----------------------------
@@ -1237,7 +1247,7 @@ async fn stats_lists_all_nine_builtin_ids() {
     let admin_only = find_tool(&body, "admin_register_template");
     assert_eq!(admin_only["group"], json!("admin"));
     let resident = find_tool(&body, "db_run_template");
-    assert_eq!(resident["group"], json!("builtin"));
+    assert_eq!(resident["group"], json!("basic"));
 
     // 三类职责的代表：basic 走查/取数、analysis 列表分析与变更提交、admin 仅审计查询。
     for (id, category) in [
@@ -2224,16 +2234,39 @@ async fn groups_crud_takes_effect_in_effective_policy() {
     let h = harness();
     let (status, body) = call(&h.app, Req::get("/admin/groups")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["total"], json!(1));
-    assert_eq!(body["items"][0]["code"], json!("db.read.core"));
+    assert_eq!(body["total"], json!(2), "内置 basic + 一个 policy 组");
     assert_eq!(
-        body["items"][0]["name"],
+        body["items"][0]["code"],
+        json!("basic"),
+        "内置组固定排在第一位"
+    );
+    assert_eq!(body["items"][0]["source"], json!("builtin"));
+    assert_eq!(body["items"][0]["name"], json!("基础工具"));
+    assert_eq!(body["items"][0]["priority"], json!(0));
+    assert_eq!(body["items"][0]["min_budget"], json!(800));
+    assert_eq!(body["items"][0]["roles"], json!([]));
+    assert_eq!(body["items"][0]["grantable"], json!(false));
+    assert_eq!(body["items"][0]["token_count"], json!(0));
+    assert_eq!(
+        body["items"][0]["capability_count"],
+        json!(5),
+        "没有上游覆盖时 basic 只含 5 个常驻内置工具"
+    );
+    let policy_item = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|i| i["code"] == json!("db.read.core"))
+        .expect("policy group");
+    assert_eq!(
+        policy_item["name"],
         json!("核心数据只读"),
         "组条目必须同时给 code 与中文展示名"
     );
-    assert_eq!(body["items"][0]["source"], json!("policy"));
+    assert_eq!(policy_item["source"], json!("policy"));
+    assert_eq!(policy_item["grantable"], json!(true));
     assert_eq!(
-        body["items"][0]["roles"],
+        policy_item["roles"],
         json!(["analyst"]),
         "policy 组角色从 roles 反查（角色 code）"
     );
@@ -2319,10 +2352,10 @@ async fn groups_crud_takes_effect_in_effective_policy() {
             .contains(&"db.read.new".to_string())
     );
 
-    // 列表合并 policy + managed。
+    // 列表合并 policy + managed（外加内置 basic）。
     let (status, body) = call(&h.app, Req::get("/admin/groups")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["total"], json!(2));
+    assert_eq!(body["total"], json!(3));
     let managed = body["items"]
         .as_array()
         .expect("items")
@@ -2406,9 +2439,9 @@ async fn groups_list_filters_by_q_source_and_role() {
     )
     .await;
 
-    // 不带过滤：全部 3 条。
+    // 不带过滤：全部 4 条（内置 basic + policy + 两个管理组）。
     let (_, body) = call(&h.app, Req::get("/admin/groups")).await;
-    assert_eq!(body["total"], json!(3));
+    assert_eq!(body["total"], json!(4));
 
     // q 对 code 做小写包含。
     let (_, body) = call(&h.app, Req::get("/admin/groups?q=ANALYTICS")).await;
@@ -2426,6 +2459,10 @@ async fn groups_list_filters_by_q_source_and_role() {
     assert_eq!(body["items"][0]["code"], json!("db.read.core"));
     let (_, body) = call(&h.app, Req::get("/admin/groups?source=managed")).await;
     assert_eq!(body["total"], json!(2));
+    let (_, body) = call(&h.app, Req::get("/admin/groups?source=builtin")).await;
+    assert_eq!(body["total"], json!(1), "内置组只有一个 basic");
+    assert_eq!(body["items"][0]["code"], json!("basic"));
+    assert_eq!(body["items"][0]["grantable"], json!(false));
 
     // role 过滤：角色 code 精确匹配授权角色。
     let (_, body) = call(&h.app, Req::get("/admin/groups?role=analyst")).await;
@@ -2469,7 +2506,7 @@ async fn roles_list_returns_code_and_chinese_name() {
 #[tokio::test]
 async fn groups_reject_reserved_policy_and_missing() {
     let h = harness();
-    for code in ["builtin", "admin"] {
+    for code in ["basic", "builtin", "admin"] {
         let (status, body) = call(
             &h.app,
             Req::post("/admin/groups").body(json!({

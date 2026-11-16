@@ -4,11 +4,17 @@
  */
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchGroups, fetchRoles } from './admin'
+import { fetchGroups, fetchRoles, fetchUpstreamTools } from './admin'
 import type { GroupItem, GroupPage, RoleItem, RolePage } from './types'
 
 export const GROUPS_KEY = ['groups'] as const
 export const ROLES_KEY = ['roles'] as const
+export const UPSTREAM_TOOLS_KEY = ['upstream-tools'] as const
+
+/** 单个上游的工具缓存；写操作后按该 key 精确失效。 */
+export function upstreamToolsQueryKey(id: string) {
+  return [...UPSTREAM_TOOLS_KEY, id] as const
+}
 
 /** 全量组清单：名称映射、下拉选项与审计对象名都取这一份。
  * 传 `limit` 时用独立 query key（同一 ['groups'] 前缀，写操作失效一次即可覆盖），
@@ -25,6 +31,18 @@ export function useRolesQuery() {
   return useQuery({
     queryKey: ROLES_KEY,
     queryFn: ({ signal }) => fetchRoles(signal),
+  })
+}
+
+/**
+ * 上游工具缓存：只读后端缓存，GET 不触网。
+ * `id` 为空时不发请求（弹层关闭），刷新按钮负责触发探测并失效该 key。
+ */
+export function useUpstreamToolsQuery(id: string | null) {
+  return useQuery({
+    queryKey: upstreamToolsQueryKey(id ?? ''),
+    queryFn: ({ signal }) => fetchUpstreamTools(id ?? '', signal),
+    enabled: id !== null,
   })
 }
 

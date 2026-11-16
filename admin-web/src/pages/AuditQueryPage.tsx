@@ -45,7 +45,7 @@ const EVENT_TYPES: AuditEventType[] = [
   'admin_change',
 ]
 
-const OBJECT_TYPES: AuditObjectType[] = ['capability', 'group', 'tool', 'template', 'catalog', 'request', 'token']
+const OBJECT_TYPES: AuditObjectType[] = ['capability', 'group', 'tool', 'template', 'catalog', 'request', 'token', 'upstream']
 
 type TimePreset = 'all' | '15m' | '1h' | '24h' | '7d' | 'custom'
 

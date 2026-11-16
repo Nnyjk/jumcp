@@ -785,7 +785,7 @@ function TokenForm({
   const [groups, setGroups] = useState<string[]>([])
   const [builtinTools, setBuiltinTools] = useState<string[]>(() =>
     options.builtin_tools
-      .filter((tool) => tool.group === 'builtin' && DEFAULT_BUILTIN_TOOLS.includes(tool.name))
+      .filter((tool) => tool.group === 'basic' && DEFAULT_BUILTIN_TOOLS.includes(tool.name))
       .map((tool) => tool.name),
   )
   const [expiresAt, setExpiresAt] = useState('')
@@ -794,6 +794,8 @@ function TokenForm({
 
   const selectedRole = roles.find((item) => item.code === role)
   const adminSelected = groups.includes('admin')
+  /** basic 等 grantable=false 组是内置通道，不能写进令牌 groups；UI 不提供勾选。 */
+  const selectableGroups = groupOptions.filter((group) => group.grantable !== false)
 
   const mutation = useMutation({
     mutationFn: (input: AccessTokenCreateInput) => createAccessToken(input),
@@ -807,7 +809,7 @@ function TokenForm({
   const pickRole = (nextRole: string) => {
     setRole(nextRole)
     const defaultGroups = roles.find((item) => item.code === nextRole)?.default_groups ?? []
-    const known = new Set(groupOptions.map((group) => group.code))
+    const known = new Set(selectableGroups.map((group) => group.code))
     setGroups(defaultGroups.filter((group) => known.has(group)))
   }
 
@@ -859,7 +861,7 @@ function TokenForm({
     })
   }
 
-  const builtinOptions = options.builtin_tools.filter((tool) => tool.group === 'builtin')
+  const builtinOptions = options.builtin_tools.filter((tool) => tool.group === 'basic')
   const adminOptions = options.builtin_tools.filter((tool) => tool.group === 'admin')
 
   return (
@@ -934,7 +936,7 @@ function TokenForm({
       <fieldset className="check-fieldset">
         <legend>组</legend>
         <div className="check-grid">
-          {groupOptions.map((group) => (
+          {selectableGroups.map((group) => (
             <label key={group.code} className="check-item" title={group.code}>
               <input
                 type="checkbox"

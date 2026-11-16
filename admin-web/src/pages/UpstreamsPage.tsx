@@ -6,14 +6,26 @@ import {
   fetchUpstreams,
   refreshUpstream,
   updateUpstream,
+  updateUpstreamBasicTools,
 } from '../api/admin'
-import { groupLabel, indexGroups, useGroupsQuery } from '../api/queries'
+import { ApiError } from '../api/client'
+import {
+  GROUPS_KEY,
+  groupLabel,
+  indexGroups,
+  upstreamToolsQueryKey,
+  useGroupsQuery,
+  useUpstreamToolsQuery,
+} from '../api/queries'
 import type {
   GroupItem,
+  UpdateBasicToolsInput,
   UpstreamCategory,
   UpstreamInput,
   UpstreamItem,
   UpstreamStatus,
+  UpstreamToolItem,
+  UpstreamToolsPayload,
   UpstreamTransport,
 } from '../api/types'
 import { Badge, CategoryBadge, type BadgeTone } from '../components/Badge'
@@ -27,8 +39,10 @@ import {
   LoadingState,
   PageShell,
 } from '../components/PageShell'
+import { ToggleSwitch } from '../components/ToggleSwitch'
 import { formatDateTime } from '../format'
 import {
+  toolGroupLabel,
   UPSTREAM_CATEGORY_LABEL,
   UPSTREAM_STATUS_LABEL,
   UPSTREAM_TRANSPORT_LABEL,
@@ -125,6 +139,7 @@ export default function UpstreamsPage() {
   const [editor, setEditor] = useState<EditorTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<UpstreamItem | null>(null)
   const [deleteError, setDeleteError] = useState<Notice | undefined>(undefined)
+  const [basicTarget, setBasicTarget] = useState<UpstreamItem | null>(null)
 
   const upstreamsQuery = useQuery({
     queryKey: ['upstreams'],
@@ -192,8 +207,8 @@ export default function UpstreamsPage() {
   })
 
   /**
-   * 列宽合计 1120px：名称 180 + 传输 64 + 状态 120 + 目标 220 + 授权组 120 +
-   * 分类 88 + 只读 64 + 操作 264，1440 视口下全部可见（操作列仍 sticky 兜底窄屏）。
+   * 列宽合计 1184px：名称 180 + 传输 64 + 状态 120 + 目标 220 + 授权组 120 +
+   * 分类 88 + 只读 64 + 操作 328，1440 视口下全部可见（操作列仍 sticky 兜底窄屏）。
    */
   const columns: Array<DataTableColumn<UpstreamItem>> = [
     {
@@ -267,7 +282,7 @@ export default function UpstreamsPage() {
     {
       key: 'actions',
       header: '操作',
-      width: '264px',
+      width: '328px',
       sticky: true,
       cell: (row) => {
         const refreshing = refreshMutation.isPending && refreshMutation.variables === row.id
@@ -282,6 +297,14 @@ export default function UpstreamsPage() {
               aria-label={`测试连接 ${row.id}`}
             >
               {refreshing ? '测试中…' : '测试连接'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setBasicTarget(row)}
+              aria-label={`管理 ${row.id} 的基础工具`}
+            >
+              基础工具
             </button>
             <button
               type="button"
@@ -386,7 +409,7 @@ export default function UpstreamsPage() {
             columns={columns}
             rows={rows}
             rowKey={(row) => row.id}
-            minWidth="1120px"
+            minWidth="1184px"
           />
         )}
       </Card>
@@ -421,6 +444,10 @@ export default function UpstreamsPage() {
             onError={setNotice}
           />
         </Modal>
+      )}
+
+      {basicTarget !== null && (
+        <BasicToolsModal upstream={basicTarget} onClose={() => setBasicTarget(null)} />
       )}
 
       {deleteTarget !== null && (
@@ -499,9 +526,14 @@ function UpstreamForm({
   const [timeoutMs, setTimeoutMs] = useState(String(existing?.timeout_ms ?? 30000))
   const [formError, setFormError] = useState<string | undefined>(undefined)
 
-  /** 编辑中的组若不在当前清单里（例如清单加载失败），以 code 兜底展示，避免保存时静默改组。 */
+  /**
+   * 只允许选择可授予的组：builtin 合成组（basic）不是上游级组，不能作为授权组。
+   * 编辑中的组若不在当前清单里（例如清单加载失败），以 code 兜底展示，避免保存时静默改组。
+   */
   const groupChoices = useMemo(() => {
-    const choices = groups.map((item) => ({ code: item.code, name: item.name }))
+    const choices = groups
+      .filter((item) => item.grantable !== false)
+      .map((item) => ({ code: item.code, name: item.name }))
     if (existing !== undefined && !choices.some((choice) => choice.code === existing.group)) {
       choices.push({ code: existing.group, name: existing.group })
     }
@@ -802,5 +834,358 @@ function UpstreamForm({
         </button>
       </div>
     </form>
+  )
+}
+
+/** 工具行的禁用原因：给出最具体的一条，管理员才能知道为什么不能加入基础组。 */
+function basicDisabledReason(tool: UpstreamToolItem): string | undefined {
+  if (tool.orphaned) {
+    return '上游已不再暴露该工具，只能清理基础组覆盖'
+  }
+  let reason: string | undefined
+  if (!tool.read_only) {
+    reason = '写工具不能加入基础组'
+  } else if (tool.group === 'admin' || tool.name.startsWith('admin_')) {
+    reason = '管理类工具不能加入基础组'
+  } else if (!tool.eligible) {
+    reason = '后端判定该工具不满足基础组条件'
+  }
+  // 覆盖还在但不满足条件：明确说是“已失效的覆盖”，不要让人误以为 basic 仍生效。
+  if (reason !== undefined && tool.overridden) {
+    return `基础组覆盖已失效：${reason}，可清理`
+  }
+  return reason
+}
+
+/** 409 的 unknown 列表要展开给人看，否则管理员只知道有工具失效，不知道该改哪个。 */
+function basicSaveError(error: unknown): Notice {
+  const base = noticeFromError(error, '保存基础工具失败')
+  if (!(error instanceof ApiError) || error.code !== 'MCP_UPSTREAM_TOOL_UNKNOWN') {
+    return base
+  }
+  const data: unknown = error.data
+  const rawUnknown =
+    typeof data === 'object' && data !== null && 'unknown' in data
+      ? (data as { unknown?: unknown }).unknown
+      : undefined
+  const unknown = Array.isArray(rawUnknown)
+    ? rawUnknown.filter((item): item is string => typeof item === 'string')
+    : []
+  if (unknown.length === 0) {
+    return base
+  }
+  return { ...base, description: `${base.description}（未知工具：${unknown.join('、')}）` }
+}
+
+function BasicToolsModal({
+  upstream,
+  onClose,
+}: {
+  upstream: UpstreamItem
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const toolsQuery = useUpstreamToolsQuery(upstream.id)
+  const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
+  const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
+  /** 只记录用户改动；提交时再和当前缓存对比，避免把未变更项发给后端。 */
+  const [desired, setDesired] = useState<Record<string, boolean | null>>({})
+  const [notice, setNotice] = useState<Notice | undefined>(undefined)
+  const payload: UpstreamToolsPayload | undefined = toolsQuery.data
+  const tools = useMemo(() => payload?.tools ?? [], [payload])
+  const toolIndex = useMemo(() => new Map(tools.map((tool) => [tool.name, tool])), [tools])
+
+  const changes = useMemo(() => {
+    const result: UpdateBasicToolsInput['tools'] = {}
+    for (const [name, value] of Object.entries(desired)) {
+      const tool = toolIndex.get(name)
+      if (tool === undefined) {
+        continue
+      }
+      if (value === tool.basic || (value === null && !tool.orphaned && !tool.overridden)) {
+        continue
+      }
+      result[name] = value
+    }
+    return result
+  }, [desired, toolIndex])
+  const changedCount = Object.keys(changes).length
+
+  const refreshMutation = useMutation({
+    mutationFn: () => refreshUpstream(upstream.id),
+    onSuccess: (item) => {
+      setDesired({})
+      const message = item.status_message.trim()
+      setNotice({
+        severity: item.status === 'ok' ? 'success' : 'warning',
+        title: '工具探测已刷新',
+        description: `${UPSTREAM_STATUS_LABEL[item.status]}，上游当前暴露 ${item.tool_count} 个工具。`,
+        meta: `${item.status}${message === '' ? '' : ` · ${message}`} · ${formatDateTime(item.last_checked_at)}`,
+      })
+      void queryClient.invalidateQueries({ queryKey: upstreamToolsQueryKey(upstream.id) })
+      void queryClient.invalidateQueries({ queryKey: ['upstreams'] })
+      void queryClient.invalidateQueries({ queryKey: ['tool-stats'] })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY })
+    },
+    onError: (error) => setNotice(noticeFromError(error, '刷新工具失败')),
+  })
+
+  const saveMutation = useMutation({
+    mutationFn: (input: UpdateBasicToolsInput) => updateUpstreamBasicTools(upstream.id, input),
+    onSuccess: (result) => {
+      const detail =
+        result.changed.length === 0
+          ? '没有实际变更。'
+          : result.changed
+              .map((item) => `${item.name}: ${String(item.before)} → ${String(item.after)}`)
+              .join(' · ')
+      setDesired({})
+      // 先写回最新清单，避免失效重取期间开关跳回旧值。
+      queryClient.setQueryData<UpstreamToolsPayload>(
+        upstreamToolsQueryKey(upstream.id),
+        (current) =>
+          current === undefined
+            ? current
+            : { ...current, tools: result.tools, basic_total: result.basic_total },
+      )
+      setNotice({
+        severity: 'success',
+        title: '基础工具已更新',
+        description: `提交 ${result.changed.length} 项变更，当前基础工具 ${result.basic_total} 个。`,
+        meta: detail,
+      })
+      void queryClient.invalidateQueries({ queryKey: upstreamToolsQueryKey(upstream.id) })
+      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['tool-stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['upstreams'] })
+    },
+    onError: (error) => {
+      // 失败回滚到后端已确认的状态；提示里保留原因，用户可重新勾选后重试。
+      setDesired({})
+      setNotice(basicSaveError(error))
+    },
+  })
+
+  const busy = refreshMutation.isPending || saveMutation.isPending
+  const status = payload?.status ?? upstream.status
+  const statusMessage = payload?.status_message.trim() ?? ''
+  const needsRefresh = payload === undefined ? false : payload.tools.length === 0
+
+  return (
+    <Modal
+      title={`基础工具 · ${upstream.name}`}
+      subtitle={`${upstream.id} · 勾选后这些工具会进入内置 basic 组（全局可用，组本身不可编辑）`}
+      size="xl"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saveMutation.isPending}>
+            关闭
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || changedCount === 0}
+            onClick={() => saveMutation.mutate({ tools: changes })}
+          >
+            {saveMutation.isPending ? '保存中…' : changedCount === 0 ? '保存变更' : `保存 ${changedCount} 项变更`}
+          </button>
+        </>
+      }
+    >
+      <div className="basic-tools">
+        {notice !== undefined && (
+          <InfoBar
+            severity={notice.severity}
+            title={notice.title}
+            description={notice.description}
+            meta={notice.meta}
+          />
+        )}
+
+        <div className="basic-tools-toolbar">
+          <div className="basic-tools-status">
+            <StatusBadge status={status} />
+            <span className="basic-tools-meta">
+              最近探测 {formatDateTime(payload?.last_checked_at ?? upstream.last_checked_at)}
+              {statusMessage === '' ? '' : ` · ${statusMessage}`}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => refreshMutation.mutate()}
+            disabled={busy}
+            title="调用上游重新探测工具清单；打开本面板本身不会触网"
+          >
+            {refreshMutation.isPending ? '刷新中…' : '刷新工具'}
+          </button>
+        </div>
+
+        {payload !== undefined && (
+          <p className="basic-tools-counters">
+            共 <strong className="mono">{payload.total}</strong> 个工具 · 基础{' '}
+            <strong className="mono">{payload.basic_total}</strong> · 孤儿{' '}
+            <strong className="mono">{payload.orphaned_total}</strong>
+          </p>
+        )}
+
+        {toolsQuery.isPending && <LoadingState label="正在读取工具缓存…" />}
+
+        {toolsQuery.isError && (
+          <>
+            <ErrorState error={toolsQuery.error} />
+            <InfoBar
+              severity="info"
+              title="缓存读取失败时不会自动访问上游"
+              description="可点击右上角“刷新工具”重新探测；如果上游不可达，错误会显示在上方提示中。"
+            />
+          </>
+        )}
+
+        {toolsQuery.isSuccess && needsRefresh && (
+          <InfoBar
+            severity="warning"
+            title={payload?.status === 'unknown' ? '还没有工具缓存' : '工具清单为空'}
+            description="请先点击“刷新工具”触发一次探测。读取接口本身不会访问上游，因此这里不会自动重试。"
+          />
+        )}
+
+        {toolsQuery.isSuccess && !needsRefresh && (
+          <DataTable
+            label={`${upstream.name} 的工具清单`}
+            meta={`共 ${tools.length} 个工具`}
+            columns={[
+              {
+                key: 'name',
+                header: '工具',
+                width: '240px',
+                wrap: true,
+                cell: (tool) => (
+                  <span className="cell-stack">
+                    <span className="mono">{tool.name}</span>
+                    <span className="cell-sub mono" title="暴露给模型的名字">
+                      {tool.exposed_name}
+                    </span>
+                  </span>
+                ),
+              },
+              {
+                key: 'group',
+                header: '生效组',
+                width: '150px',
+                cell: (tool) =>
+                  tool.group_source === 'basic' ? (
+                    <Badge tone="accent" title="来自内置 basic 组">
+                      基础
+                    </Badge>
+                  ) : (
+                    <Badge tone="neutral" title={`${tool.group} · 来自上游授权组`}>
+                      {toolGroupLabel(tool.group, groupLabel(groupIndex, tool.group))}
+                    </Badge>
+                  ),
+              },
+              {
+                key: 'flags',
+                header: '类型',
+                width: '170px',
+                cell: (tool) => (
+                  <span className="detail-badges">
+                    <Badge tone={tool.read_only ? 'neutral' : 'warning'} title={tool.read_only ? '只读工具' : '写工具'}>
+                      {tool.read_only ? '只读' : '写'}
+                    </Badge>
+                    {tool.orphaned && (
+                      <Badge tone="danger" title="上游已不再暴露该工具">
+                        孤儿
+                      </Badge>
+                    )}
+                    {!tool.orphaned && !tool.eligible && (
+                      <Badge
+                        tone="warning"
+                        title={
+                          tool.overridden
+                            ? '存在基础组覆盖但当前不生效，可清理'
+                            : '后端判定不满足基础组条件'
+                        }
+                      >
+                        {tool.overridden ? '已失效' : '不可归入'}
+                      </Badge>
+                    )}
+                  </span>
+                ),
+              },
+              {
+                key: 'basic',
+                header: '基础',
+                width: '120px',
+                cell: (tool) => {
+                  const reason = basicDisabledReason(tool)
+                  const pending = desired[tool.name]
+                  const checked = pending === undefined ? tool.basic : pending === true
+                  return (
+                    <span className="basic-tools-toggle">
+                      <ToggleSwitch
+                        checked={checked}
+                        disabled={busy || reason !== undefined}
+                        label="基础"
+                        title={reason ?? '加入内置 basic 组'}
+                        onChange={(next) =>
+                          setDesired((previous) => ({ ...previous, [tool.name]: next }))
+                        }
+                      />
+                      {(tool.orphaned || (tool.overridden && !tool.eligible)) && (
+                        <button
+                          type="button"
+                          className="btn btn-subtle btn-sm"
+                          disabled={busy}
+                          title={
+                            tool.orphaned
+                              ? '清除该工具遗留的基础组覆盖'
+                              : '清除已失效的基础组覆盖'
+                          }
+                          onClick={() =>
+                            setDesired((previous) => {
+                              const next = { ...previous }
+                              if (next[tool.name] === null) {
+                                delete next[tool.name]
+                              } else {
+                                next[tool.name] = null
+                              }
+                              return next
+                            })
+                          }
+                        >
+                          {desired[tool.name] === null ? '撤销' : '清理'}
+                        </button>
+                      )}
+                    </span>
+                  )
+                },
+              },
+              {
+                key: 'description',
+                header: '说明',
+                width: '300px',
+                wrap: true,
+                cell: (tool) => {
+                  const reason = basicDisabledReason(tool)
+                  return (
+                    <span className="cell-stack">
+                      {reason !== undefined && <span className="basic-tools-reason">{reason}</span>}
+                      <span className={reason === undefined ? '' : 'cell-sub'}>
+                        {tool.description.trim() === '' ? '—' : tool.description}
+                      </span>
+                    </span>
+                  )
+                },
+              },
+            ]}
+            rows={tools}
+            rowKey={(tool) => tool.name}
+            minWidth="980px"
+          />
+        )}
+      </div>
+    </Modal>
   )
 }

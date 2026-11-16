@@ -3,13 +3,13 @@
 **jumcp**（jump + mcp）是**聚合 router**：一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具。
 不存在 `/mcp/<upstream>` 透传端点——鉴权、scope、预算与审计只有这一层。
 
-## 1. 内置工具的三组分类
+## 1. 内置工具的分类与 `basic` 组
 
-分类按**职责**划分，只是 `tools/list` / 搜索 / `/admin/tools/stats` 上的展示与检索标签：
+分类按**职责**划分，是 `tools/list` / 搜索 / `/admin/tools/stats` 上的展示与检索标签：
 
 | category | 职责 | 工具 | 可见性判定 |
 |---|---|---|---|
-| `basic` | 基础查询、计算：走查工具目录 + 直接取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template` | 常驻；仅受 token 的 `builtin_tools` allowlist 约束 |
+| `basic` | 基础查询、计算：走查工具目录 + 直接取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
 | `analysis` | 工具列表分析、变更提交审计 | `admin_review_queue`、`admin_register_template`、`admin_set_visibility` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
 | `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
 
@@ -20,11 +20,30 @@
 `admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
 未声明时按上游 `read_only` 保守生成（`read_only=false` → `destructiveHint=true`、`readOnlyHint=false`）。
 
-分类**不是授权组**，不改变权限判定：`basic` / `analysis` 不是 `scope.groups` 的取值，
+### `basic` 是代码内置组，不是授权组
+
+`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻五件内置工具的 `group`
+就是 `basic`，上游可以把**个别**只读工具逐工具加入 `basic`（见 §2.1）。它不是配置组
+（`config/policy.toml` 不得定义）、不是管理组、也不是可授权组：
+
+- `GET /admin/groups` 固定返回一条合成条目：`{code:"basic", name:"基础工具", source:"builtin",
+  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 5 + 上游 basic 覆盖数,
+  token_count:0}`；`source` 过滤接受 `policy|managed|builtin`。
+- 创建/改名/删除组一律 409 `MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在
+  `RESERVED_GROUP_NAMES`）；`basic` 不能出现在令牌的 `groups` 里（`token_options.groups`
+  不含它，创建令牌传它会得到"未知组"）。配置文件中出现 `basic` 或 `builtin` 组 → 启动校验失败。
+- `builtin` 只作为**拒绝创建的保留名**存在，不再作为任何工具的 `group` 值。
+
+分类**不是授权组**，不改变权限判定：`analysis`/`admin` 这两类不是 `scope.groups` 的取值，
 `X-MCP-Tool-Groups` 收窄也不会改变常驻工具的可见性。常驻性由代码常量
 `RESIDENT_TOOL_NAMES` 判定（`basic` 的五件全是常驻工具）；`analysis` 与 `admin` 里的
 `admin_*` 一律要求组 `admin` 在 scope 内 **且** token allowlist 命中（`discovery::admin_enabled`
 与 allowlist 双重判定），分类标签既不放宽也不收紧这条规则。
+
+`basic` 组成员则相反：**不要求 `scope.groups` 含 `basic`（或含上游组）**，只要 allowlist
+命中、上游 `enabled`、`read_only`/写开关允许，就对所有 scope 可见/可调；`X-MCP-Tool-Groups`
+收窄不能隐藏它们。`basic` 只承载只读工具，且拒绝 `category=admin` 的上游与 `admin_` 前缀的
+工具，因此不会成为绕过维护通道（组 `admin`）的旁路。
 
 token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与上游暴露名
 （`<server_id>__<tool>`）：白名单是精确匹配，未列出的名字在 `tools/list`、发现面与
@@ -33,6 +52,8 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 
 `tools/list` 的每条内置工具带 `category`；`search_capabilities` 支持可选 `category` 过滤；
 `describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（托管能力归 `analysis`）。
+组索引（`list_groups` 与 `tools/list` 的 `groups`）只统计上游等非内置来源：没有上游工具
+加入 `basic` 时索引里没有 `basic`，有覆盖时按生效组计数（常驻内置工具不计入）。
 
 ## 2. 上游配置模型
 
@@ -47,7 +68,7 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 | `url` | `http` 必填，只允许 `http`/`https`、禁止 userinfo；`stdio` 必须为空 |
 | `command` / `args` | `stdio` 必填 command；`http` 的 command 必须为空；args 上限 64 |
 | `env` / `headers` | 值可为字面量或 `env:NAME` 引用；各上限 64 项，key/value 非空 |
-| `group` | 必须存在于 effective policy（配置组或管理组）；决定上游工具的授权范围 |
+| `group` | 必须存在于 effective policy（配置组或管理组）；决定上游工具的授权范围。**不得为 `basic`**：`POST`/`PUT` 返回 `400 MCP_UPSTREAM_INVALID`（`data.field="group"`），个别工具要走 §2.1 |
 | `category` | `basic` / `analysis` / `admin` / `custom` |
 | `read_only` | 默认 `true`；`false` 仅在 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 时允许注册 |
 | `enabled` | 默认 `true`；`false` 时不投影也不转发 |
@@ -56,6 +77,29 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 `env` / `headers` 的值允许两种形态：字面量，或 `env:NAME`（建连时从进程环境解析，
 变量缺失即建连失败，不静默空串）。两种传输都在建连时解析 `env` 引用：`http` 不使用 `env`，
 但写错的引用同样会失败（避免切换到 `stdio` 后才暴露配置错误）。
+
+### 2.1 逐工具加入 `basic`
+
+配置存在 registry 的 `mcp_upstream_tool_groups(upstream_id, tool_name, group_code, updated_at,
+PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继承 `upstreams.group`。
+`group_code` 目前只允许 `basic`；上游删除时同一事务级联删除；每台上游最多 64 个覆盖。
+
+- 生效组：有覆盖且工具**仍可加入**（`eligible`）→ `basic`；否则继承上游组。管理视图用
+  `overridden`（有覆盖行）与 `basic`（覆盖生效）两个独立字段区分"覆盖存在但已失效"，避免
+  上游配置漂移后静默丢失用户意图。`eligible` = 上游 `read_only=true` **且**上游 `category≠admin` **且**工具名
+  不以 `admin_` 开头（后两条保证 `basic` 不会变成维护通道旁路）。
+- `basic` 成员对所有 scope 可见/可调，不要求 `scope.groups` 含 `basic` 或上游组；但仍要求
+  token allowlist 命中、上游 `enabled`、`read_only`/写开关允许。
+- 覆盖是**合并**语义：`{"tools": {"<raw_tool_name>": true|false|null}}`，`true` 写入、
+  `false`/`null` 删除（回到继承）。幂等：无真实变化不写库、不写审计。
+- 校验是整请求粒度（不做部分写入）：未知工具 `409 MCP_UPSTREAM_TOOL_UNKNOWN`
+  （`data.unknown`）、写工具 `409 MCP_UPSTREAM_TOOL_NOT_READ_ONLY`、admin 类别或 `admin_`
+  前缀 `409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`（`data.reason=upstream_category_admin|admin_prefix`）、
+  单次超过 64 键 `400 MCP_VALIDATION_ERROR`、上游不存在 `404 MCP_UPSTREAM_NOT_FOUND`。
+- 上游改名/刷新失败导致覆盖行对不上当前缓存时：覆盖**保留**并在视图里标 `orphaned=true`
+  （`basic` 仍为 true），由管理面显式清除；不静默删用户配置，也不让孤行参与投影。
+- 工具缓存仍是进程内 30s TTL、无持久化：`GET .../tools` 只读缓存（与 `GET /admin/upstreams`
+  同一语义），需要最新清单时显式 `POST .../refresh`。
 
 ## 3. 命名与冲突
 
@@ -95,7 +139,11 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 
 ## 5. 可见性、预算与调用解析
 
-- 上游工具只对 `group ∈ scope.groups` 的请求可见/可调；组不在 scope 内时与"不存在"同构。
+- 上游工具默认只对 `group ∈ scope.groups` 的请求可见/可调；组不在 scope 内时与"不存在"同构。
+  例外是逐工具加入 `basic` 的成员：它们对所有 scope 可见/可调（见 §2.1），组门在**工具级**
+  生效而不是整台上游级——上游组不在 scope 时，只有 `basic` 覆盖且 `eligible` 的工具出现。
+- `tools/call` 的前缀回退同样受工具级组门约束：上游组不在 scope 且该 suffix 没有 `basic`
+  覆盖时，回退不会命中（`-32602`），不能借旧缓存绕过组门。
 - 上游工具**始终**出现在 `tools/list`（不受平铺阈值影响），并计入常驻预算；上游工具全部
   视为常驻项，`truncate` 溢出时保留它们、只裁 managed 平铺项。
 - 授权是"组 ∧ 工具名 allowlist"两道：`group` 决定该上游对谁可用，token 的
@@ -140,9 +188,13 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   `definition_hash` 与 `arguments`。`arguments` 按 key 递归脱敏（`authorization` /
   `token` / `password` / `secret` / `api_key` / `apikey` / `cookie` → `***`）。
 - 管理面写操作写 `admin_change`：`object_type="upstream"`，`action` ∈
-  `create|update|delete|refresh`；`changes` 只含真实变化的字段（env/headers 只输出键与
+  `create|update|delete|refresh|update_tool_groups`；`changes` 只含真实变化的字段（env/headers 只输出键与
   脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`group`/`category`/
-  `read_only`/`enabled`（refresh 另含 `tool_count`/`status`）。
+  `read_only`/`enabled`（refresh 另含 `tool_count`/`status`；`update_tool_groups` 另含
+  `basic_total`）。
+- 逐工具加入 `basic` 的 `changes` 每条是 `{field:"tool_group", tool:<原始工具名>,
+  before:<原组或 null>, after:<"basic" 或 null>}`（`after=null` 表示移出 `basic` 回到继承）；
+  无真实变化不写审计。
 - `definition_hash` 是对完整配置（含 env/headers 值）的 sha256，用于连接池失效与审计回溯；
   只输出哈希。
 - 审计、日志、GET 响应都不出现上游密钥明文。
@@ -159,6 +211,24 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 | `PUT /admin/upstreams/{id}` | `200 UpstreamItem`；`id` 不可改 |
 | `DELETE /admin/upstreams/{id}` | `200 {deleted:true}` |
 | `POST /admin/upstreams/{id}/refresh` | `200 UpstreamItem`（失败也是 200 + `status=error`） |
+| `GET /admin/upstreams/{id}/tools` | `200 UpstreamTools`；只读缓存、不触网 |
+| `PUT /admin/upstreams/{id}/tools/basic` | `200 {changed:[…], basic_total, tools:[UpstreamToolItem]}` |
+
+`GET .../tools` 响应：`{status, status_message, last_checked_at, total, basic_total,
+orphaned_total, tools:[UpstreamToolItem]}`；`UpstreamToolItem` = `name`（原始工具名）、
+`exposed_name`（`<server_id>__<tool>`）、`group`（生效组）、`group_source`
+（`basic|upstream`）、`basic`（覆盖且当前 `eligible` 的生效状态）、`overridden`（**存在**
+basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（是否**可以**加入 `basic`）、
+`orphaned`（有覆盖行但当前缓存无此工具）、`description`。
+
+`overridden=true, basic=false` 表示上游配置漂移导致旧覆盖失效（上游改成写、`category=admin`
+或工具名变成 `admin_` 前缀）：管理面据此展示该行并用 `null` 清理，服务端不会静默删除用户配置。
+
+`PUT .../tools/basic` 的 body 是 `{tools:{"<原始工具名>": true|false|null}}`（`true` 加入、
+`false`/`null` 移出），合并语义、幂等；`changed` 每条 `{name, before, after}`（组名或
+`null`）。校验整请求粒度：`409 MCP_UPSTREAM_TOOL_UNKNOWN`（`data.unknown`）、
+`409 MCP_UPSTREAM_TOOL_NOT_READ_ONLY`、`409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`
+（`data.reason`）、超过 64 键 `400 MCP_VALIDATION_ERROR`。
 
 `UpstreamInput` = `UpstreamItem` 去掉 `status`/`status_message`/`tool_count`/`last_checked_at`/
 `updated_at`。`PUT` 省略字段表示保留现有值。

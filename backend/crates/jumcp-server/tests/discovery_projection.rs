@@ -493,8 +493,8 @@ async fn tools_list_keeps_one_copy_of_each_builtin() {
     // 常驻工具不是业务组：即使可见集里只有 5 个 builtin，组索引也必须为空。
     let groups = list_groups(&h.server).await;
     assert!(
-        !groups.contains(&"builtin".to_string()),
-        "list_groups 不得出现 builtin 伪组：{groups:?}"
+        !groups.contains(&"basic".to_string()),
+        "list_groups 不得出现 basic 伪组：{groups:?}"
     );
     assert!(groups.is_empty(), "空注册表的组索引应为空：{groups:?}");
 }
