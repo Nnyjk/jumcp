@@ -94,7 +94,7 @@
 | `capability` | `create`、`submit`、`reject`、`publish`、`update_definition`、`visibility`、`deprecate`、`describe` |
 | `group` | `group_create`、`group_update`、`group_delete` |
 | `token` | `token_create`、`token_revoke`、`token_delete` |
-| `tool` | `invoke`（内置工具调用，如 `db_query_readonly`） |
+| `tool` | `invoke`（内置工具调用，如 `search_capabilities`） |
 | `template` | `invoke`（模板执行） |
 | `catalog` | `search`、`list_tools` |
 | `request` | `deny`（策略拒绝，`object_id` 为被拒工具/模板/能力 id，均不可判定时用 `request`） |
@@ -300,7 +300,7 @@ body: { name, role, groups: string[], builtin_tools: string[],
 - 角色与组都返回 `code` + `name`：`code` 是权限标识（token.role、token.groups、审计 actor.role 一律用它），`name` 只是中文展示名，**不参与**任何权限判定；
 - `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；旧的「name=code」语义已删除；
 - `groups` 是配置组 + 管理组合并（`Service::effective_policy`）后的结果，`token_count` 是该组被多少个**未撤销** token 引用；
-- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/只读查询/模板执行/登记模板草案/审核队列/审计查询/改可见性）。
+- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/登记模板草案/审核队列/审计查询/改可见性）。
 
 ### 7.11 角色与组的 code / name 双轨
 
@@ -323,7 +323,7 @@ GET /admin/groups?q=&source=&role=
 
 - `basic` 是代码内置组，固定出现在列表首位（`source:"builtin"`、`name:"基础工具"`、
   `priority:0`、`min_budget:800`、`roles:[]`、`grantable:false`、`token_count:0`）；
-  `capability_count` 是常驻内置工具数（5）加当前逐工具加入 `basic` 的上游工具数；
+  `capability_count` 是常驻内置工具数（3）加当前逐工具加入 `basic` 的上游工具数；
 - `q` 对 code/name 做不区分大小写的包含匹配；`source` 只接受 `policy`|`managed`|`builtin`
   （其他值 400 `MCP_VALIDATION_ERROR`）；`role` 是角色 code，精确匹配条目的 `roles`；
 - 三层过滤同时生效，`total` 是过滤后的条数；

@@ -1,5 +1,5 @@
 // 只读执行委托：默认报「未配置数据源」，绝不假执行（§2.10 错误必须显式）。
-// db_query_readonly 参数见 spec §4.3.2：sql/params/max_rows/max_tokens/cell_char_limit/cell_char_offset/allowed_schemas。
+// 入参形状沿用 spec §4.3.2 的自由查询契约：sql/params/max_rows/max_tokens/cell_char_limit/cell_char_offset/allowed_schemas。
 
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::errors::McpError;
@@ -11,7 +11,9 @@ use std::pin::Pin;
 /// 用 BoxFuture 而非 async-trait：仓库不引入宏 crate，签名仍保持零成本静态分发。
 pub type ExecFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, McpError>> + Send + 'a>>;
 
-/// db_query_readonly 入参（已过 schema 收窄校验与占位符风格校验）。
+/// 自由查询入参（已过 schema 收窄校验与占位符风格校验）。
+///
+/// 内置 basic 组不再暴露直连查询工具，这里保留供连接器/数据源健康检查与执行器契约使用。
 #[derive(Debug, Clone)]
 pub struct QueryParams {
     pub sql: String,
@@ -262,7 +264,7 @@ pub fn check_placeholders(sql: &str, param_count: usize) -> Result<(), McpError>
             if sql[i + 1..].starts_with("fields") {
                 return Err(McpError::new(
                     "MCP_PARAM_STYLE_UNSUPPORTED",
-                    json!({"hint": "`?fields` 只适用于 clickhouse crate 的 Row 派生，db_query_readonly 不支持"}),
+                    json!({"hint": "`?fields` 只适用于 clickhouse crate 的 Row 派生，自由查询不支持"}),
                 ));
             }
             count += 1;
@@ -286,7 +288,7 @@ pub fn check_placeholders(sql: &str, param_count: usize) -> Result<(), McpError>
                 return Err(McpError::new(
                     "MCP_PARAM_STYLE_UNSUPPORTED",
                     json!({
-                        "hint": "命名占位符只用于模板（注册期改写为 ?）；db_query_readonly 只接受 ? 位置占位符",
+                        "hint": "命名占位符只用于模板（注册期改写为 ?）；自由查询只接受 ? 位置占位符",
                         "placeholder": &sql[i..j]
                     }),
                 ));

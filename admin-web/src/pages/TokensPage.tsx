@@ -66,12 +66,11 @@ async function copyToClipboard(value: string): Promise<boolean> {
   }
 }
 
-/** 核心四项默认勾选；db_query_readonly 与 admin_* 需要管理员显式选择。 */
+/** 三个元工具默认勾选；admin_* 与上游工具按需选择。 */
 const DEFAULT_BUILTIN_TOOLS = [
   'search_capabilities',
   'describe_capability',
   'list_groups',
-  'db_run_template',
 ]
 
 const STATUS_TONE: Record<string, BadgeTone> = {

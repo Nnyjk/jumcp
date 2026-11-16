@@ -464,13 +464,13 @@ async fn reject_rejects_invalid_state_reason_and_unknown_id() {
     // builtin：ensure_mutable 先于取行判定，409 且不落库。
     let (status, body) = call(
         &h.app,
-        Req::post("/admin/capabilities/db_query_readonly/reject").body(json!({"reason": "原因"})),
+        Req::post("/admin/capabilities/search_capabilities/reject").body(json!({"reason": "原因"})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], json!("MCP_BUILTIN_IMMUTABLE"));
     assert!(
-        h.store.get("db_query_readonly").expect("get").is_none(),
+        h.store.get("search_capabilities").expect("get").is_none(),
         "builtin 不得被写入注册表"
     );
 
@@ -1027,7 +1027,7 @@ fn tool_call(log: &AuditLog, minutes: i64, session: &str, outcome: &str, tokens:
         session,
         json!({
             "object_type": "tool",
-            "object_id": "db_query_readonly",
+            "object_id": "search_capabilities",
             "action": "invoke",
             "outcome": outcome,
             "data": data
@@ -1159,7 +1159,7 @@ async fn stats_aggregates_calls_success_retries_and_token_samples() {
     assert!(tpl["last_call_at"].as_str().is_some());
     assert_eq!(tpl["health"], json!("failing"), "success_rate 0.5 < 0.80");
 
-    let builtin = find_tool(&body, "db_query_readonly");
+    let builtin = find_tool(&body, "search_capabilities");
     assert_eq!(builtin["kind"], json!("tool"));
     assert_eq!(builtin["lifecycle_status"], json!("published"));
     assert_eq!(builtin["risk"], json!("read"));
@@ -1229,11 +1229,11 @@ async fn stats_lists_registered_capability_without_calls_as_unknown() {
 }
 
 #[tokio::test]
-async fn stats_lists_all_nine_builtin_ids() {
+async fn stats_lists_all_builtin_ids() {
     let h = harness();
     let (status, body) = call(&h.app, Req::get("/admin/tools/stats")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 9);
+    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 7);
     for id in BUILTIN_CAPABILITY_IDS {
         let cap = find_tool(&body, id);
         assert_eq!(
@@ -1246,13 +1246,13 @@ async fn stats_lists_all_nine_builtin_ids() {
     }
     let admin_only = find_tool(&body, "admin_register_template");
     assert_eq!(admin_only["group"], json!("admin"));
-    let resident = find_tool(&body, "db_run_template");
+    let resident = find_tool(&body, "list_groups");
     assert_eq!(resident["group"], json!("basic"));
 
-    // 三类职责的代表：basic 走查/取数、analysis 列表分析与变更提交、admin 仅审计查询。
+    // 三类职责的代表：basic 目录走查、analysis 列表分析与变更提交、admin 仅审计查询。
     for (id, category) in [
         ("search_capabilities", "basic"),
-        ("db_query_readonly", "basic"),
+        ("describe_capability", "basic"),
         ("admin_review_queue", "analysis"),
         ("admin_audit_queries", "admin"),
     ] {
@@ -1280,7 +1280,7 @@ async fn stats_clamps_window_and_marks_limit_truncation() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["window"]["days"], json!(30), "上界夹紧到 30");
     assert_eq!(
-        find_tool(&body, "db_query_readonly")["calls"],
+        find_tool(&body, "search_capabilities")["calls"],
         json!(0),
         "窗口外的调用不计入"
     );
@@ -1305,8 +1305,8 @@ async fn stats_clamps_window_and_marks_limit_truncation() {
     );
     assert_eq!(
         body["tools"].as_array().expect("tools").len(),
-        11,
-        "9 个 builtin + 2 个注册能力"
+        9,
+        "7 个 builtin + 2 个注册能力"
     );
     assert_eq!(body["truncated"], json!(false));
 }
@@ -1528,12 +1528,12 @@ async fn create_capability_writes_draft_and_admin_change() {
     let (status, body) = call(
         &h.app,
         Req::post("/admin/capabilities")
-            .body(json!({"definition": template_definition("db_query_readonly")})),
+            .body(json!({"definition": template_definition("search_capabilities")})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], json!("MCP_BUILTIN_IMMUTABLE"));
-    assert!(h.store.get("db_query_readonly").expect("get").is_none());
+    assert!(h.store.get("search_capabilities").expect("get").is_none());
 }
 
 #[tokio::test]
@@ -1584,7 +1584,7 @@ async fn deprecate_capability_updates_status_and_writes_admin_change() {
     // builtin → 409；空 successor → 400（store 是唯一判定点）。
     let (status, body) = call(
         &h.app,
-        Req::post("/admin/capabilities/db_query_readonly/deprecate")
+        Req::post("/admin/capabilities/admin_set_visibility/deprecate")
             .body(json!({"successor_id": "cap.new"})),
     )
     .await;
@@ -2249,8 +2249,8 @@ async fn groups_crud_takes_effect_in_effective_policy() {
     assert_eq!(body["items"][0]["token_count"], json!(0));
     assert_eq!(
         body["items"][0]["capability_count"],
-        json!(5),
-        "没有上游覆盖时 basic 只含 5 个常驻内置工具"
+        json!(3),
+        "没有上游覆盖时 basic 只含 3 个常驻内置工具"
     );
     let policy_item = body["items"]
         .as_array()

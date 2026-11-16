@@ -347,7 +347,7 @@ if [ "$code" != "200" ]; then
   echo "POST /mcp tools/list 期望 200，实际 $code"
   fail_step "e2e: mcp initialize + tools/list" ""
 fi
-if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups","db_query_readonly","db_run_template"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}' "$TOOLS_FILE" >>"$CHECK_LOG" 2>&1; then
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}' "$TOOLS_FILE" >>"$CHECK_LOG" 2>&1; then
   record "e2e: mcp initialize + tools/list" "FAIL" "$(( $(now_ms) - MCP_START ))" "$CHECK_LOG"
   fail_step "e2e: mcp initialize + tools/list（工具清单不完整）" "$CHECK_LOG" "$SERVER_LOG"
 fi
@@ -388,7 +388,7 @@ PLATFORM_TOKEN="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(pro
 PLATFORM_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).item.id)' "$TOKEN_FILE")"
 PLATFORM_TOOLS="$TMP_DIR/platform_tools.json"
 curl -sS --connect-timeout 2 --max-time 5 -o "$PLATFORM_TOOLS" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $PLATFORM_TOKEN" --data "$LIST_BODY" "$BASE_URL/mcp" >/dev/null 2>&1 || true
-if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(",")+" names="+names.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}' "$PLATFORM_TOOLS" >>"$CHECK_LOG" 2>&1; then
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(",")+" names="+names.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}' "$PLATFORM_TOOLS" >>"$CHECK_LOG" 2>&1; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
   fail_step "e2e: admin token create + mcp tools/list filter（allowlist 过滤失败）" "$CHECK_LOG" "$SERVER_LOG"
 fi

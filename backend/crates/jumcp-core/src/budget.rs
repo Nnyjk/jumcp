@@ -127,8 +127,7 @@ impl BudgetLedger {
             || projected_tokens > self.caps.max_schema_tokens
         {
             let suggestions = vec![
-                "改用模板调用（db_run_template / invoke_capability），不新增 schema 注入"
-                    .to_string(),
+                "缩小 X-MCP-Tool-Groups 或分页/摘要，不新增 schema 注入".to_string(),
                 format!(
                     "当前 {} 个 schema/{} tokens 已达上限 {}/3000，可通过缩小 X-MCP-Tool-Groups 释放组索引预算",
                     l.schema_count, l.schema_tokens, MAX_SCHEMA_COUNT

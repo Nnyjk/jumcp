@@ -13,7 +13,6 @@ pub fn default_message(code: &str) -> &str {
         "MCP_CONTEXT_BUDGET_EXHAUSTED" => "会话上下文预算耗尽",
         "MCP_CAPABILITY_NOT_FOUND" => "能力不存在或不可见",
         "MCP_VERSION_CONFLICT" => "能力版本与会话绑定版本不一致",
-        "MCP_USE_DB_RUN_TEMPLATE" => "该能力应通过 db_run_template 调用",
         "MCP_NOT_IMPLEMENTED" => "能力尚未实现",
         "MCP_APPROVAL_REQUIRED" => "审批缺失（缺少 approval_id）",
         "MCP_IMMUTABLE_PUBLISHED" => "已发布定义不可原地修改",

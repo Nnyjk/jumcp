@@ -1,9 +1,9 @@
-//! 手写 JSON-RPC MCP 服务：tools/list（按 EffectiveScope 过滤 + 常驻预算）+ 元工具三件套 +
-//! db_query_readonly 完整链（sqlguard → 预算预检 → 执行 → 整形 → 审计 → 记账）。
+//! 手写 JSON-RPC MCP 服务：tools/list（按 EffectiveScope 过滤 + 常驻预算）+ 元工具三件套
+//! + 维护通道工具 + 上游工具转发。数据取数只走模板与上游链路，内置 basic 组不再直连数据源。
+//!
 //! 为什么手写：rmcp API 随版本漂移，任务允许退回且双传输必须同时支持。
 
 use crate::catalog::{self, Capability};
-use crate::executor::QueryParams;
 use crate::service::Service;
 use axum::Json;
 use axum::Router;
@@ -11,7 +11,6 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::post;
 use jumcp_core::budget::estimate_tokens;
-use jumcp_core::canonical::sha256_hex;
 use jumcp_core::entry::{Actor, EffectiveScope, GroupRequest, resolve_scope};
 use jumcp_core::errors::McpError;
 use jumcp_core::registry::CapabilityStore;
@@ -77,29 +76,6 @@ pub fn tool_definitions() -> Vec<Value> {
             "组索引：只含组名与计数，不含定义",
             json!({"type":"object","properties":{}}),
         ),
-        tool(
-            "db_run_template",
-            "模板入口：注册期已校验的固定查询路径（版本钉住 + 结果缓存）",
-            json!({"type":"object","properties":{
-                "template_id":{"type":"string"},
-                "params":{"type":"object"},
-                "version":{"type":"integer"}
-            },"required":["template_id"]}),
-        ),
-        tool(
-            "db_query_readonly",
-            "通用只读入口：只读查询校验 → 预算 → 只读执行 → 整形 → 审计",
-            json!({"type":"object","properties":{
-                "sql":{"type":"string","description":"单条只读 ClickHouse SQL（SELECT/WITH）"},
-                "params":{"type":"array","description":"位置参数（按 SQL 中 ? 的顺序绑定；只支持标量）"},
-                "max_rows":{"type":"integer","description":"默认 100，上限 1000"},
-                "max_tokens":{"type":"integer"},
-                "cell_char_limit":{"type":"integer","description":"默认 200，上限 4000"},
-                "cell_char_offset":{"type":"integer"},
-                "allowed_schemas":{"type":"array","description":"ClickHouse database 白名单，只能是连接声明的子集"},
-                "database":{"type":"string","description":"目标 ClickHouse database；给出时必须与白名单一致，省略则用连接默认库"}
-            },"required":["sql"]}),
-        ),
     ]
 }
 
@@ -114,9 +90,9 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 
 /// 内置工具的分类标签（唯一映射），按**职责**三组：
 ///
-/// - `basic`（基础查询、计算）：走查目录与直接取数的工具——`search_capabilities` /
-///   `describe_capability` / `list_groups` 回答"有什么"，`db_query_readonly` /
-///   `db_run_template` 取回数据本身。
+/// - `basic`（基础查询、计算）：走查目录的工具——`search_capabilities` /
+///   `describe_capability` / `list_groups` 回答"有什么、怎么调"。取数本身不在内置工具里：
+///   模板与上游工具各自按 `group_code` 归组，不占 `basic`。
 /// - `analysis`（工具列表分析、变更提交审计）：面向工具目录与变更流的观察/提交动作——
 ///   `admin_review_queue` 看队列、`admin_register_template` 提交草案、
 ///   `admin_set_visibility` 提交可见性变更；它们只读或写本项目自有元数据。
@@ -129,11 +105,7 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 pub fn builtin_category(id: &str) -> &'static str {
     use crate::catalog::{CATEGORY_ADMIN, CATEGORY_ANALYSIS, CATEGORY_BASIC, CATEGORY_CUSTOM};
     match id {
-        "search_capabilities"
-        | "describe_capability"
-        | "list_groups"
-        | "db_query_readonly"
-        | "db_run_template" => CATEGORY_BASIC,
+        "search_capabilities" | "describe_capability" | "list_groups" => CATEGORY_BASIC,
         "admin_review_queue" | "admin_register_template" | "admin_set_visibility" => {
             CATEGORY_ANALYSIS
         }
@@ -154,12 +126,6 @@ fn audit_base(
 
 fn audit_data(mut payload: serde_json::Map<String, Value>, data: Value) -> Value {
     payload.insert("data".into(), data);
-    Value::Object(payload)
-}
-
-fn audit_error(mut payload: serde_json::Map<String, Value>, e: &McpError) -> Value {
-    payload.insert("error_code".into(), json!(e.code));
-    payload.insert("error_message".into(), json!(e.message));
     Value::Object(payload)
 }
 
@@ -729,8 +695,6 @@ impl McpServer {
                 let counts = catalog::group_counts(&visible);
                 ok(id, json!({"content": counts, "isError": false}))
             }
-            "db_query_readonly" => self.tool_db_query_readonly(id, &args, scope, actor).await,
-            "db_run_template" => self.tool_db_run_template(id, &args, scope, actor).await,
             // 维护通道：可见性与调用权都由服务端 scope 判定（客户端是否看过清单不影响结果）。
             "admin_register_template"
             | "admin_review_queue"
@@ -1169,623 +1133,6 @@ impl McpServer {
             }),
         )
     }
-
-    /// `db_query_readonly` 的审计数据：原始入参、实际执行脚本、绑定值。
-    ///
-    /// 原文照录（不静默截断）：审计的价值在于可复现一次调用。
-    fn query_audit_context(q: &QueryParams, args: &Value) -> Value {
-        let mut context = json!({
-            "arguments": args,
-            "executed_script": q.sql,
-            "bound_params": q.params,
-        });
-        if let Some(obj) = context.as_object_mut() {
-            if let Some(database) = &q.database {
-                obj.insert("database".into(), json!(database));
-            }
-            if let Some(schemas) = args.get("allowed_schemas") {
-                obj.insert("allowed_schemas".into(), schemas.clone());
-            }
-        }
-        context
-    }
-
-    /// 把审计数据并入工具调用载荷的 `data`（同名键以本次调用的实际值为准）。
-    fn with_audit_context(mut payload: Value, context: &Value) -> Value {
-        if let (Some(map), Some(extra)) = (payload.as_object_mut(), context.as_object()) {
-            let data = map.entry("data").or_insert_with(|| json!({}));
-            if let Some(data) = data.as_object_mut() {
-                for (key, value) in extra {
-                    data.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        payload
-    }
-
-    /// 工具在“执行前”被拒绝时的唯一收尾：写 `tool_call` + 一条关联的 `policy_decision`。
-    ///
-    /// 顺序是契约的一部分：先写 `tool_call` 拿到 `event_id`，再让 `policy_decision` 的
-    /// `correlation_id` 指向它；两条事件因此可被 UI 串成同一次失败。
-    ///
-    /// **执行阶段已经写过 `tool_call`/`template_run` 的路径不得再调用本函数**（避免重复计数）。
-    fn reject_tool_call(
-        &self,
-        id: &Value,
-        actor: &Actor,
-        e: &McpError,
-        tool: &str,
-        context: Value,
-    ) -> Value {
-        let object_type = if tool == "db_run_template" {
-            "template"
-        } else {
-            "tool"
-        };
-        let object_id = if object_type == "template" {
-            context
-                .get("template_id")
-                .and_then(Value::as_str)
-                .unwrap_or(tool)
-        } else {
-            tool
-        };
-        let payload = Self::with_audit_context(
-            audit_error(audit_base(object_type, object_id, "invoke", "error"), e),
-            &context,
-        );
-        // 审计写失败必须上抛，不吞成“调用失败但无痕迹”。
-        let event_id = match self.service.audit_event("tool_call", payload, actor) {
-            Ok(id) => id,
-            Err(audit_error) => return err_tool(id, &audit_error),
-        };
-        let mut detail = json!({"tool": tool, "context": context});
-        if object_type == "template" {
-            detail["template_id"] = json!(object_id);
-        }
-        match self.service.policy_decision_correlated(
-            actor,
-            e,
-            detail,
-            (!event_id.is_empty()).then_some(event_id.as_str()),
-        ) {
-            Ok(_) => err_tool(id, e),
-            Err(audit_error) => err_tool(id, &audit_error),
-        }
-    }
-
-    /// 参数还没解析成 `QueryParams` 时的审计数据：直接从原始 args 取脚本/参数/库/白名单。
-    fn raw_query_audit_context(args: &Value) -> Value {
-        let mut context = json!({"arguments": args});
-        if let Some(sql) = args.get("sql").and_then(Value::as_str) {
-            context["executed_script"] = json!(sql);
-        }
-        for (from, to) in [
-            ("params", "bound_params"),
-            ("database", "database"),
-            ("allowed_schemas", "allowed_schemas"),
-        ] {
-            if let Some(value) = args.get(from) {
-                context[to] = value.clone();
-            }
-        }
-        context
-    }
-
-    /// `db_run_template` 早期错误的审计数据：模板还没 render，没有脚本，只有原始入参。
-    fn template_audit_context(args: &Value) -> Value {
-        let mut context = json!({
-            "arguments": args,
-            "bound_params": args.get("params").cloned().unwrap_or_else(|| json!({})),
-        });
-        if let Some(template_id) = args.get("template_id").and_then(Value::as_str) {
-            context["template_id"] = json!(template_id);
-        }
-        if let Some(version) = args.get("version") {
-            context["version"] = version.clone();
-        }
-        context
-    }
-
-    /// 固定链：schema 收窄 → sqlguard → 占位符 → 预算预检 → 执行 → 审计 → 记账。
-    async fn tool_db_query_readonly(
-        &self,
-        id: &Value,
-        args: &Value,
-        scope: &jumcp_core::entry::EffectiveScope,
-        actor: &Actor,
-    ) -> Value {
-        let sql = args.get("sql").and_then(|s| s.as_str()).unwrap_or("");
-        let q = match QueryParams::new(
-            sql.to_string(),
-            &self.service.connection_schemas(),
-            self.service.statement_timeout_ms(),
-            args,
-        ) {
-            Ok(q) => q,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_query_readonly",
-                    Self::raw_query_audit_context(args),
-                );
-            }
-        };
-        if let Err(e) = self.service.executor.validate(&q) {
-            return self.reject_tool_call(
-                id,
-                actor,
-                &e,
-                "db_query_readonly",
-                Self::query_audit_context(&q, args),
-            );
-        }
-        // 审计上下文在预算/执行之前算好：三条 tool_call 路径都带同一份 SQL 与绑定值。
-        let audit_context = Self::query_audit_context(&q, args);
-        // 预算预检：会话已进摘要模式时本次结果只回聚合值。
-        let key = crate::service::session_key(actor);
-        let pre = match self.service.check_result(&key, 0) {
-            Ok(p) => p,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_query_readonly",
-                    Self::query_audit_context(&q, args),
-                );
-            }
-        };
-
-        let started = Instant::now();
-        let outcome = self.service.executor.execute(scope, &q).await;
-        let elapsed_ms = started.elapsed().as_millis() as i64;
-        let sql_hash = sha256_hex(&q.sql);
-        match outcome {
-            Ok(result) => {
-                let tokens = result
-                    .get("tokens")
-                    .and_then(|t| t.as_i64())
-                    .unwrap_or_else(|| estimate_tokens(&result));
-                let row_count = result
-                    .get("row_count")
-                    .and_then(|r| r.as_i64())
-                    .unwrap_or_default();
-                let truncated = result
-                    .get("truncated")
-                    .and_then(|t| t.as_bool())
-                    .unwrap_or(false);
-                // max_tokens 是调用方显式声明的结果预算：超限默认 fail（不静默截断）。
-                if let Some(cap) = q.max_tokens
-                    && tokens > cap
-                {
-                    let e = McpError::new(
-                        "MCP_BUDGET_EXCEEDED",
-                        json!({"required": tokens, "available": cap, "scope": "max_tokens"}),
-                    );
-                    let mut payload = audit_error(
-                        audit_base("tool", "db_query_readonly", "invoke", "error"),
-                        &e,
-                    );
-                    if let Some(data) = payload.get_mut("data").and_then(Value::as_object_mut) {
-                        data.insert("tokens".into(), json!(tokens));
-                        data.insert("elapsed_ms".into(), json!(elapsed_ms));
-                    }
-                    if let Err(audit_error) = self.service.audit_event(
-                        "tool_call",
-                        Self::with_audit_context(payload, &audit_context),
-                        actor,
-                    ) {
-                        return err_tool(id, &audit_error);
-                    }
-                    return err_tool(id, &e);
-                }
-                let budget = match self.service.record_result(&key, tokens) {
-                    Ok(b) => b,
-                    Err(e) => return err_tool(id, &e),
-                };
-                let summary = budget.summary || pre.summary;
-                if let Err(e) = self.service.audit_event(
-                    "tool_call",
-                    Self::with_audit_context(
-                        audit_data(
-                            audit_base("tool", "db_query_readonly", "invoke", "ok"),
-                            json!({
-                                "row_count": row_count,
-                                "truncated": truncated,
-                                "elapsed_ms": elapsed_ms,
-                                "tokens": tokens,
-                                "summary": summary,
-                                "cache": Value::Null,
-                                "version": Value::Null
-                            }),
-                        ),
-                        &audit_context,
-                    ),
-                    actor,
-                ) {
-                    return err_tool(id, &e);
-                }
-                if summary {
-                    let summarized = json!({
-                        "row_count": row_count,
-                        "summary": true,
-                        "truncated": truncated,
-                        "elapsed_ms": elapsed_ms,
-                        "sql_hash": sql_hash,
-                        "note": "会话结果预算已达上限：仅返回聚合值，明细请缩小结果集或用模板分页"
-                    });
-                    return ok(id, json!({"content": summarized, "isError": false}));
-                }
-                let mut content = result;
-                content["sql_hash"] = json!(sql_hash);
-                ok(id, json!({"content": content, "isError": false}))
-            }
-            Err(e) => {
-                // outcome=unknown 表示结果未知：不重试、不重放，只写审计并回错（§6.3）。
-                let outcome_label =
-                    if e.data.get("outcome").and_then(|v| v.as_str()) == Some("unknown") {
-                        "unknown"
-                    } else {
-                        "error"
-                    };
-                let mut payload = audit_error(
-                    audit_base("tool", "db_query_readonly", "invoke", outcome_label),
-                    &e,
-                );
-                if let Some(data) = payload.get_mut("data").and_then(Value::as_object_mut) {
-                    data.insert("elapsed_ms".into(), json!(elapsed_ms));
-                }
-                if let Err(audit_error) = self.service.audit_event(
-                    "tool_call",
-                    Self::with_audit_context(payload, &audit_context),
-                    actor,
-                ) {
-                    return err_tool(id, &audit_error);
-                }
-                err_tool(id, &e)
-            }
-        }
-    }
-    /// db_run_template：版本钉住 → 参数校验 → 缓存 → 只读事务执行 → 结果预算 → 审计。
-    async fn tool_db_run_template(
-        &self,
-        id: &Value,
-        args: &Value,
-        scope: &jumcp_core::entry::EffectiveScope,
-        actor: &Actor,
-    ) -> Value {
-        let Some(registry) = self.service.templates.as_ref() else {
-            let e = McpError::new(
-                "MCP_STORE_ERROR",
-                json!({"hint": "模板注册表未注入（TemplateRegistry 未就绪）"}),
-            );
-            return self.reject_tool_call(
-                id,
-                actor,
-                &e,
-                "db_run_template",
-                Self::template_audit_context(args),
-            );
-        };
-        let Some(template_id) = args.get("template_id").and_then(|v| v.as_str()) else {
-            let e = McpError::validation("template_id 必填".to_string());
-            return self.reject_tool_call(
-                id,
-                actor,
-                &e,
-                "db_run_template",
-                Self::template_audit_context(args),
-            );
-        };
-        let params = args.get("params").cloned().unwrap_or(json!({}));
-        let requested_version = args.get("version").and_then(|v| v.as_i64());
-
-        let current = match registry.current(template_id) {
-            Ok(r) => r,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_run_template",
-                    Self::template_audit_context(args),
-                );
-            }
-        };
-        // 调用面判定：published ∧ callable ∧ group ∈ scope（§4.4.1）。
-        // 可见性只决定"谁能看见"，不决定"能否调用"——`discoverable=false, callable=true`
-        // 是合法的系统直调状态。谓词与发现面共用 CapabilityStore 的同一处实现。
-        let callable = match self.service.callable_capabilities(scope) {
-            Ok(v) => v,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_run_template",
-                    Self::template_audit_context(args),
-                );
-            }
-        };
-        if catalog::find(&callable, template_id).is_none() {
-            let e = McpError::new(
-                "MCP_CAPABILITY_NOT_FOUND",
-                json!({"template_id": template_id}),
-            );
-            return self.reject_tool_call(
-                id,
-                actor,
-                &e,
-                "db_run_template",
-                Self::template_audit_context(args),
-            );
-        }
-        // 会话键按身份派生：不同 agent 可以各自钉住同一模板的不同版本。
-        let key = crate::service::session_key(actor);
-        let version = match registry.pin(&key, template_id, requested_version, current.version) {
-            Ok(v) => v,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_run_template",
-                    Self::template_audit_context(args),
-                );
-            }
-        };
-        let record = if version == current.version {
-            current
-        } else {
-            match registry.at_version(template_id, version) {
-                Ok(r) => r,
-                Err(e) => {
-                    return self.reject_tool_call(
-                        id,
-                        actor,
-                        &e,
-                        "db_run_template",
-                        Self::template_audit_context(args),
-                    );
-                }
-            }
-        };
-        let prepared = match record.compiled.render(&params) {
-            Ok(p) => p,
-            Err(e) => {
-                return self.reject_tool_call(
-                    id,
-                    actor,
-                    &e,
-                    "db_run_template",
-                    Self::template_audit_context(args),
-                );
-            }
-        };
-        let cache_state = if registry
-            .cache_lookup(template_id, version, &prepared.params_hash)
-            .is_some()
-        {
-            "hit"
-        } else {
-            "miss"
-        };
-        if let Some(cached) = registry.cache_lookup(template_id, version, &prepared.params_hash) {
-            // 命中分支没有执行结果：token 从缓存内容估算，口径与 miss 分支的 `estimate_tokens` 一致
-            // （缓存里若已带 tokens 就直接用，避免同一份结果两次估算出现口径差）。
-            let cached_tokens = cached
-                .get("tokens")
-                .and_then(|t| t.as_i64())
-                .unwrap_or_else(|| estimate_tokens(&cached));
-            if let Err(e) = self.service.audit_event(
-                "template_run",
-                audit_data(
-                    audit_base("template", template_id, "invoke", "ok"),
-                    json!({
-                        "arguments": args,
-                        "executed_script": prepared.sql,
-                        "bound_params": prepared.values,
-                        "cache": "hit",
-                        "elapsed_ms": 0,
-                        "tokens": cached_tokens,
-                        "version": version
-                    }),
-                ),
-                actor,
-            ) {
-                return err_tool(id, &e);
-            }
-            return ok(
-                id,
-                json!({"content": cached, "isError": false, "cache": "hit", "version": version}),
-            );
-        }
-
-        let constraints = &record.compiled.def.constraints;
-        let schemas = match effective_schemas(
-            &self.service.connection_schemas(),
-            &constraints.allowed_schemas,
-        ) {
-            Ok(s) => s,
-            Err(e) => return err_tool(id, &e),
-        };
-        let q = QueryParams::from_parts(
-            prepared.sql.clone(),
-            prepared.values.clone(),
-            constraints.auto_limit,
-            200,
-            0,
-            schemas,
-            constraints.statement_timeout_ms,
-        );
-        let started = Instant::now();
-        let outcome = self.service.executor.execute(scope, &q).await;
-        let elapsed_ms = started.elapsed().as_millis() as i64;
-        match outcome {
-            Ok(result) => {
-                let tokens = result
-                    .get("tokens")
-                    .and_then(|t| t.as_i64())
-                    .unwrap_or_else(|| estimate_tokens(&result));
-                let row_count = result
-                    .get("row_count")
-                    .and_then(|r| r.as_i64())
-                    .unwrap_or_default();
-                // 统计面（admin/tools/stats）按 `tokens` 取样求均值/p95，按 `truncated`
-                // 判断结果是否被行数上限截断：两条成功分支都要如实落这两个字段。
-                let truncated = result
-                    .get("truncated")
-                    .and_then(|t| t.as_bool())
-                    .unwrap_or(false);
-                if tokens > constraints.max_result_tokens {
-                    let over = McpError::new(
-                        "MCP_BUDGET_EXCEEDED",
-                        json!({
-                            "template_id": template_id,
-                            "required": tokens,
-                            "available": constraints.max_result_tokens,
-                            "scope": "max_result_tokens"
-                        }),
-                    );
-                    if self.service.overflow_policy() == jumcp_core::budget::OverflowPolicy::Fail {
-                        let mut payload = audit_base("template", template_id, "invoke", "error");
-                        payload.insert(
-                            "data".into(),
-                            json!({
-                                "arguments": args,
-                                "executed_script": prepared.sql,
-                                "bound_params": prepared.values,
-                                "cache": cache_state,
-                                "elapsed_ms": elapsed_ms,
-                                "tokens": tokens,
-                                "version": version
-                            }),
-                        );
-                        if let Err(e) = self.service.audit_event(
-                            "template_run",
-                            audit_error(payload, &over),
-                            actor,
-                        ) {
-                            return err_tool(id, &e);
-                        }
-                        return err_tool(id, &over);
-                    }
-                    let summarized = json!({
-                        "row_count": row_count,
-                        "summary": true,
-                        "truncated": true,
-                        "template_id": template_id,
-                        "version": version
-                    });
-                    if let Err(e) = self.service.audit_event(
-                        "template_run",
-                        audit_data(
-                            audit_base("template", template_id, "invoke", "summary"),
-                            json!({
-                                "arguments": args,
-                                "executed_script": prepared.sql,
-                                "bound_params": prepared.values,
-                                "cache": cache_state,
-                                "elapsed_ms": elapsed_ms,
-                                "tokens": tokens,
-                                "row_count": row_count,
-                                "truncated": true,
-                                "version": version
-                            }),
-                        ),
-                        actor,
-                    ) {
-                        return err_tool(id, &e);
-                    }
-                    return ok(
-                        id,
-                        json!({"content": summarized, "isError": false, "cache": cache_state, "version": version}),
-                    );
-                }
-                let budget = match self.service.record_result(&key, tokens) {
-                    Ok(b) => b,
-                    Err(e) => return err_tool(id, &e),
-                };
-                if let Err(e) = self.service.audit_event(
-                    "template_run",
-                    audit_data(
-                        audit_base("template", template_id, "invoke", "ok"),
-                        json!({
-                            "arguments": args,
-                            "executed_script": prepared.sql,
-                            "bound_params": prepared.values,
-                            "cache": cache_state,
-                            "elapsed_ms": elapsed_ms,
-                            "tokens": tokens,
-                            "row_count": row_count,
-                            "truncated": truncated,
-                            "version": version
-                        }),
-                    ),
-                    actor,
-                ) {
-                    return err_tool(id, &e);
-                }
-                let mut content = result;
-                if let Some(obj) = content.as_object_mut() {
-                    obj.insert("template_id".into(), json!(template_id));
-                    obj.insert("version".into(), json!(version));
-                    obj.insert("cache".into(), json!(cache_state));
-                    if let Some(variant) = &prepared.variant_id {
-                        obj.insert("variant".into(), json!(variant));
-                    }
-                    obj.insert("summary".into(), json!(budget.summary));
-                }
-                if budget.summary {
-                    return ok(
-                        id,
-                        json!({"content": json!({"row_count": row_count, "summary": true, "template_id": template_id, "version": version}), "isError": false, "cache": cache_state, "version": version}),
-                    );
-                }
-                registry.cache_store(
-                    template_id,
-                    version,
-                    &prepared.params_hash,
-                    content.clone(),
-                    record.compiled.def.result_cache_ttl_s,
-                );
-                ok(
-                    id,
-                    json!({"content": content, "isError": false, "cache": cache_state, "version": version}),
-                )
-            }
-            Err(e) => {
-                let outcome_label =
-                    if e.data.get("outcome").and_then(|v| v.as_str()) == Some("unknown") {
-                        "unknown"
-                    } else {
-                        "error"
-                    };
-                let mut payload = audit_base("template", template_id, "invoke", outcome_label);
-                payload.insert(
-                    "data".into(),
-                    json!({
-                        "arguments": args,
-                        "executed_script": prepared.sql,
-                        "bound_params": prepared.values,
-                        "cache": cache_state,
-                        "elapsed_ms": elapsed_ms,
-                        "version": version
-                    }),
-                );
-                if let Err(audit_error) =
-                    self.service
-                        .audit_event("template_run", audit_error(payload, &e), actor)
-                {
-                    return err_tool(id, &audit_error);
-                }
-                err_tool(id, &e)
-            }
-        }
-    }
 }
 
 /// 目录形态：flat 时包含会话可见的 kind=tool 能力定义，collapsed 时只含元工具 + 分发器。
@@ -1867,26 +1214,6 @@ fn rpc_mcp_error(id: &Value, e: &McpError) -> Value {
 
 fn err_tool(id: &Value, e: &McpError) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":{"content":{"error":{"code":e.code,"message":e.message,"data":e.data}},"isError":true}})
-}
-
-/// 模板声明的 schema 只能比连接声明更窄：越界即拒绝，不做隐式降级。
-fn effective_schemas(connection: &[String], template: &[String]) -> Result<Vec<String>, McpError> {
-    if template.is_empty() {
-        return Ok(connection.to_vec());
-    }
-    if !connection.is_empty() {
-        let offending: Vec<&String> = template
-            .iter()
-            .filter(|s| !connection.contains(*s))
-            .collect();
-        if !offending.is_empty() {
-            return Err(McpError::new(
-                "MCP_SCHEMA_OUT_OF_SCOPE",
-                json!({"offending_schemas": offending, "allowed": connection}),
-            ));
-        }
-    }
-    Ok(template.to_vec())
 }
 
 // ---------------------------- HTTP 入口 ----------------------------
@@ -2014,14 +1341,8 @@ mod category_tests {
 
     #[test]
     fn every_builtin_id_has_its_responsibility_category() {
-        // basic：基础查询与计算（目录走查 + 直接取数）。
-        for id in [
-            "search_capabilities",
-            "describe_capability",
-            "list_groups",
-            "db_query_readonly",
-            "db_run_template",
-        ] {
+        // basic：基础查询（目录走查）。
+        for id in ["search_capabilities", "describe_capability", "list_groups"] {
             assert_eq!(builtin_category(id), CATEGORY_BASIC, "{id} 应归 basic");
         }
         // analysis：工具列表分析与变更提交审计。

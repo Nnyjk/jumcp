@@ -121,7 +121,6 @@ struct Harness {
     app: Router,
     store: Arc<CapabilityStore>,
     audit: Arc<AuditLog>,
-    registry: Arc<TemplateRegistry>,
 }
 
 fn harness() -> Harness {
@@ -162,12 +161,7 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
     };
     let app = jumcp_server::admin::router(admin)
         .merge(http_router(Arc::new(McpServer::from_arc(service))));
-    Harness {
-        app,
-        store,
-        audit,
-        registry,
-    }
+    Harness { app, store, audit }
 }
 
 /// 走完整生命周期开放一条能力（与 admin.rs 调同一批 store 方法）。
@@ -293,17 +287,6 @@ fn names_of(resp: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-async fn run_template(app: &Router, token: &str, version: Option<i64>) -> Value {
-    let mut args = json!({
-        "template_id": "order.daily_summary",
-        "params": {"start_date": "2026-11-01", "end_date": "2026-11-02"}
-    });
-    if let Some(version) = version {
-        args["version"] = json!(version);
-    }
-    call_tool(app, token, "db_run_template", args).await
 }
 
 async fn search_ids(app: &Router, token: &str, query: &str) -> Vec<String> {
@@ -645,7 +628,7 @@ async fn admin_register_template_creates_draft_then_human_publish_exposes_it() {
 #[tokio::test]
 async fn admin_set_visibility_rejects_builtin_and_audits_success() {
     let h = harness();
-    for id in ["db_query_readonly", "admin_register_template"] {
+    for id in ["search_capabilities", "admin_register_template"] {
         let resp = call_tool(
             &h.app,
             ADMIN_TOKEN,
@@ -863,80 +846,6 @@ async fn schema_budget_is_isolated_per_agent() {
     );
 }
 
-/// 预算按请求身份记账：A 进入摘要模式不影响 B 的完整结果。
-#[tokio::test]
-async fn result_budget_is_isolated_per_agent() {
-    let h = harness_with_budget(Some(BudgetCaps {
-        max_result_cumulative: 4,
-        ..Default::default()
-    }));
-    let args = json!({"sql": "SELECT 1 AS x"});
-
-    let first = call_tool(&h.app, ANALYST_TOKEN, "db_query_readonly", args.clone()).await;
-    assert!(first["result"]["content"].get("rows").is_some(), "{first}");
-    let second = call_tool(&h.app, ANALYST_TOKEN, "db_query_readonly", args.clone()).await;
-    assert_eq!(
-        second["result"]["content"]["summary"],
-        json!(true),
-        "A 累计超限后进入摘要模式: {second}"
-    );
-
-    let other = call_tool(&h.app, ANALYST_B_TOKEN, "db_query_readonly", args).await;
-    assert!(
-        other["result"]["content"].get("rows").is_some(),
-        "B 的累计与 A 无关，必须仍返回明细: {other}"
-    );
-}
-
-/// 模板版本钉住按身份隔离：A 钉 v1、B 钉 v2，各自读回自己的版本且不报版本冲突。
-#[tokio::test]
-async fn template_version_pins_are_isolated_per_agent() {
-    let h = harness();
-    h.registry.register(&template_value()).expect("register");
-    h.registry
-        .submit_for_review("order.daily_summary", "alice")
-        .expect("submit");
-    h.registry
-        .publish("order.daily_summary", "ap-pub", "bob")
-        .expect("publish");
-    h.registry
-        .set_visibility("order.daily_summary", Some(true), Some(true), "alice")
-        .expect("visibility");
-    // v2 只改说明（SQL 未变），预检回执因此可复用。
-    let mut v2 = template_value();
-    v2["description"] = json!("按日汇总订单（v2）");
-    let receipt = h.registry.preflight(&v2).expect("preflight");
-    h.registry
-        .publish_version(
-            "order.daily_summary",
-            &v2,
-            "ap-v2",
-            "alice",
-            "bob",
-            &receipt,
-        )
-        .expect("publish_version");
-
-    let a = run_template(&h.app, ANALYST_TOKEN, Some(1)).await;
-    assert_eq!(a["result"]["version"], json!(1), "{a}");
-    let b = run_template(&h.app, ANALYST_B_TOKEN, Some(2)).await;
-    assert_eq!(
-        b["result"]["version"],
-        json!(2),
-        "B 钉住 v2 不得被 A 的 v1 顶掉: {b}"
-    );
-
-    let a_again = run_template(&h.app, ANALYST_TOKEN, None).await;
-    assert_eq!(
-        a_again["result"]["isError"],
-        json!(false),
-        "同一 agent 复用自己钉住的版本不得报冲突: {a_again}"
-    );
-    assert_eq!(a_again["result"]["version"], json!(1), "{a_again}");
-    let b_again = run_template(&h.app, ANALYST_B_TOKEN, None).await;
-    assert_eq!(b_again["result"]["version"], json!(2), "{b_again}");
-}
-
 /// 审计未启用时的服务：`Service::audit = None`，store 也不挂审计。
 ///
 /// 为什么必须单独一套 harness：`audit_event` 在无审计时是 **no-op**，
@@ -1067,7 +976,7 @@ async fn admin_tool_calls_are_counted_in_stats() {
         &h.app,
         ADMIN_TOKEN,
         "admin_set_visibility",
-        json!({"capability_id": "db_query_readonly", "discoverable": true}),
+        json!({"capability_id": "search_capabilities", "discoverable": true}),
     )
     .await;
     assert_eq!(err_code(&builtin), "MCP_BUILTIN_IMMUTABLE", "{builtin}");
@@ -1142,7 +1051,7 @@ async fn admin_tool_calls_are_counted_in_stats() {
     // 明细必须回放调用方原始入参；维护工具不执行脚本 → executed_script 为 null。
     assert_eq!(
         detail["calls"][0]["arguments"],
-        json!({"capability_id": "db_query_readonly", "discoverable": true})
+        json!({"capability_id": "search_capabilities", "discoverable": true})
     );
     assert_eq!(detail["calls"][0]["executed_script"], Value::Null);
 
@@ -1178,7 +1087,7 @@ async fn admin_tool_calls_are_counted_in_stats() {
         .expect("admin_set_visibility 的 tool_call");
     assert_eq!(
         visibility.payload["data"]["arguments"],
-        json!({"capability_id": "db_query_readonly", "discoverable": true})
+        json!({"capability_id": "search_capabilities", "discoverable": true})
     );
     let queue_call = events
         .iter()
@@ -1190,21 +1099,21 @@ async fn admin_tool_calls_are_counted_in_stats() {
     assert_eq!(queue_call.payload["data"]["arguments"], json!({}));
 }
 
-/// 通用分发入口（`tools/call` 按 name 路由）产生的 `tool_call` 必须能回放原始入参与执行脚本。
+/// 通用分发入口（`tools/call` 按 name 路由）产生的 `tool_call` 必须能回放原始入参。
 ///
-/// `invoke_capability` 在本仓库只有文档规划、尚无实现；当前直接执行 SQL 的通用入口是
-/// `handle_tools_call` 的 `db_query_readonly` 分支，这里端到端验证该路径的 calls 明细。
+/// `invoke_capability` 在本仓库只有文档规划、尚无实现；内置 basic 组也不再直连数据源，
+/// 当前仍有"任意 MCP 工具名分发"的入口是维护工具分支，这里端到端验证该路径的 calls 明细。
 #[tokio::test]
-async fn generic_dispatch_call_audits_arguments_and_script() {
+async fn generic_dispatch_call_audits_arguments() {
     let h = harness();
-    let args = json!({"sql": "SELECT 1 AS x", "params": []});
-    let resp = call_tool(&h.app, ANALYST_TOKEN, "db_query_readonly", args.clone()).await;
+    let args = json!({"filter": {"event_type": "tool_call"}, "limit": 5});
+    let resp = call_tool(&h.app, ADMIN_TOKEN, "admin_audit_queries", args.clone()).await;
     assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
 
     let (status, body) = call(
         &h.app,
         "GET",
-        "/admin/tools/db_query_readonly/calls",
+        "/admin/tools/admin_audit_queries/calls",
         Some(ALICE_TOKEN),
         None,
         None,
@@ -1214,6 +1123,7 @@ async fn generic_dispatch_call_audits_arguments_and_script() {
     assert_eq!(body["total"], json!(1));
     let record = &body["calls"][0];
     assert_eq!(record["arguments"], args, "calls 必须回放原始入参");
-    assert_eq!(record["executed_script"], json!("SELECT 1 AS x"));
+    // 维护工具不执行脚本：executed_script 必须为 null，不得伪造 SQL。
+    assert_eq!(record["executed_script"], Value::Null);
     assert_eq!(record["outcome"], json!("ok"));
 }

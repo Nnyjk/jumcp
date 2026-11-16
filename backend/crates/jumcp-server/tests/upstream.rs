@@ -1452,8 +1452,9 @@ async fn builtin_categories_are_exposed_and_filterable() {
     assert_eq!(category_of("describe_capability"), json!("basic"));
     assert_eq!(category_of("list_groups"), json!("basic"));
 
-    // 数据入口不在 allowlist 里 → 列表不出现，但 search 的分类过滤仍然可用。
+    // 取数工具已从内置 basic 组移除：任何 token 的 tools/list 都不再出现它们。
     assert_eq!(category_of("db_query_readonly"), Value::Null);
+    assert_eq!(category_of("db_run_template"), Value::Null);
 
     let basic = call_tool(
         &h.app,
@@ -1481,38 +1482,28 @@ async fn builtin_categories_are_exposed_and_filterable() {
     .await;
     assert_eq!(admin["result"]["content"], json!([]));
 
-    // 数据入口（db_query_readonly / db_run_template）归 basic：allowlist 命中后
-    // 既出现在 tools/list，也能被 basic 分类过滤命中。
-    let data_token = issue_token(
-        &h,
-        "agent-data",
-        "analyst",
-        &["db.read.core"],
-        &[
-            "search_capabilities",
-            "db_query_readonly",
-            "db_run_template",
-        ],
-    )
-    .await;
-    let data_basic = call_tool(
+    // 旧 allowlist 里残留的两个取数工具 id：已不是内置工具，签发令牌时直接按未知 id 拒绝。
+    let (status, rejected) = call(
         &h.app,
-        &data_token,
-        "search_capabilities",
-        json!({"query":"", "category":"basic", "limit":50}),
+        "POST",
+        "/admin/tokens",
+        Some(ALICE_TOKEN),
+        Some(json!({
+            "name": "legacy data token",
+            "role": "analyst",
+            "groups": ["db.read.core"],
+            "builtin_tools": ["search_capabilities", "db_query_readonly", "db_run_template"],
+            "source": "agent",
+            "caller": "agent-legacy-data"
+        })),
     )
     .await;
-    let data_hits = data_basic["result"]["content"].as_array().expect("hits");
-    for id in ["db_query_readonly", "db_run_template"] {
-        let hit = data_hits
-            .iter()
-            .find(|h| h["id"] == json!(id))
-            .unwrap_or_else(|| panic!("{id} 应被 basic 过滤命中: {data_basic}"));
-        assert_eq!(hit["category"], json!("basic"), "{id}");
-    }
-    let names = tool_names(&h.app, &data_token).await;
-    assert!(names.contains(&"db_query_readonly".to_string()));
-    assert!(names.contains(&"db_run_template".to_string()));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+    assert_eq!(
+        rejected["error"]["data"]["unknown"],
+        json!(["db_query_readonly", "db_run_template"]),
+        "{rejected}"
+    );
 
     // analysis 归工具列表分析与变更提交审计，admin 只剩审计查询：都要 admin 组 +
     // allowlist 双重命中才可见，分类本身不放宽权限。
