@@ -1,0 +1,32 @@
+# 版本库与本地开发产物
+.git
+.github
+.gitignore
+.gitattributes
+.vscode
+.idea
+.dev-data
+.screenshots
+notes
+docs
+
+# 宿主机工具链产物（镜像内重新构建）
+backend/target
+admin-web/node_modules
+admin-web/dist
+
+# 本地数据与凭据：镜像不携带任何 sqlite / 日志 / env
+data
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/*.db-*
+*.log
+logs
+.env
+.env.*
+!.env.example
+
+# 容器与 CI 自身（构建无需它们参与上下文）
+Dockerfile
+.dockerignore

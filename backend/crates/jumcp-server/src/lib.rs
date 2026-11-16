@@ -8,6 +8,7 @@ pub mod mcp;
 pub mod service;
 pub mod templates_boot;
 pub mod upstream;
+pub mod web;
 
 pub use catalog::{Capability, Catalog};
 pub use connector::{ConnectorConfig, ConnectorExecutor};

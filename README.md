@@ -1,5 +1,7 @@
 # jumcp
 
+[![CI](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml)
+
 **jumcp**（jump + mcp）是面向 agent 的 MCP **聚合 router**：一个 `/mcp` 端点同时暴露内置工具与动态接入的上游 MCP server，统一做入口裁剪（§4.1）、渐进发现（§4.2）、只读分发（§4.3）与治理审计（§4.4）。架构见 `docs/plan/jumcp-preview.md`。
 
 > 品牌说明：产品对外名称统一为 **jumcp**；crate/包名与 `JUMCP_*` 环境变量统一使用 `jumcp` 前缀；本地数据路径保持 `.dev-data/` 的运行约定（不随品牌改名）；令牌前缀为 `jumcp_`（新签发与重签发），明文只在创建/重签发响应中出现一次。
@@ -97,6 +99,26 @@ curl -X POST http://127.0.0.1:8000/admin/tokens \
 策略与 `[[datasources]]` 同文件；数据源只写
 **环境变量名**（`dsn_env`），DSN 由部署注入。非法配置、DSN 缺失或 agent 握手失败时启动即退出（非零码）；L1 只读账号由部署与巡检独立验证，启动不执行写探测（当前联调账号为超级用户）。
 
+### 容器与 CI/CD
+
+镜像 `ghcr.io/nnyjk/jumcp`，只构建 `linux/amd64`：多阶段构建（Rust release 编译后端与 connector、Node 22 构建管理台、Debian bookworm-slim 运行时），非 root（UID/GID `10001`）、`/data` 为数据卷、`JUMCP_MCP_WEB_DIR=/app/web` 把管理台作为同源静态资源提供。`JUMCP_ADMIN_TOKENS` **必须由运行时注入**：镜像里既没有默认值，也没有任何 token/secret（HTTP 模式缺它直接拒绝启动）。
+
+```bash
+docker buildx build --platform linux/amd64 -t jumcp:local --load .
+docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
+  -e JUMCP_ADMIN_TOKENS="admin:<至少 16 位的 token>" \
+  -v jumcp-data:/data \
+  jumcp:local
+# 管理台 http://127.0.0.1:8000/ ，健康检查 GET /health ，MCP POST /mcp
+```
+
+- `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
+- 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
+- CI（`.github/workflows/ci.yml`）：后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟；PR 额外跑依赖审查（高危阻断）。release（`.github/workflows/release.yml`）推 `ghcr.io/<owner>/jumcp`（branch/sha/semver/latest，带 provenance 与 SBOM），按 digest 回拉后再冒烟。
+- 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`）。
+
+完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
+
 ## 测试
 
 ```bash
@@ -155,4 +177,5 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 - `docs/mcp-router.md`：router 模型——内置工具三组分类、上游配置与工具暴露规则。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
 - `docs/plan/jumcp-preview.md`：架构与设计预览（§4.1–§4.4）。
+- `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、冒烟脚本与分支保护建议。
 - `admin-web/README.md`：管理台页面职责、契约要点与本地启动。

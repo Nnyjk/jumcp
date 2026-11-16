@@ -210,6 +210,10 @@ async fn run_http(
     };
     let admin_app = jumcp_server::admin::router(admin);
     let app = admin_app.merge(jumcp_server::mcp::http_router(server));
+    // 管理台静态托管：`JUMCP_MCP_WEB_DIR` 为空即不挂（行为与旧版一致）；
+    // 非空时目录/产物不合法直接拒绝启动，绝不静默降级成 404。
+    let app = jumcp_server::web::attach(app, &settings.web_dir)
+        .map_err(|e| anyhow::anyhow!("启动配置非法: {e}"))?;
     axum::serve(listener, app).await?;
     Ok(())
 }

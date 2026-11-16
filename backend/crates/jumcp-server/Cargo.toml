@@ -26,7 +26,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # 上游 MCP 客户端：axum 只提供服务端，hyper 不能直接当 client；rustls 避免引入 openssl。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 管理台静态托管：ServeDir/ServeFile 负责路径解析（穿越防护由上游实现，不手写拼接）。
+tower-http = { version = "0.6", features = ["fs"] }
+# ServeDir 只有 Service 实现，调用 static 资源需要 ServiceExt::oneshot。
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3"

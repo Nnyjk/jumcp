@@ -1,41 +1,157 @@
 name: CI
 
+# 触发：默认分支 push、PR、手动。
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
+# 最小权限：CI 只读仓库内容（不 push 镜像、不写包）。
 permissions:
   contents: read
 
+# 同一分支/PR 的旧运行自动取消，避免排队占满 runner。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  check:
+  # ---------------------------------------------------------------- 后端
+  backend:
+    name: backend (fmt / clippy / test)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - name: Format
-        run: cargo fmt --check --manifest-path backend/Cargo.toml
-      - name: Clippy
-        run: cargo clippy --all-targets --manifest-path backend/Cargo.toml -- -D warnings
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend -> target
+          # 与 image job 的 Release 构建分开缓存，避免 debug/release 互相淘汰。
+          key: backend-debug
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
       - name: Test
-        run: cargo test --workspace --manifest-path backend/Cargo.toml
+        run: cargo test --workspace --locked
+
+  # ---------------------------------------------------------------- 管理台
   web:
+    name: web (lint / typecheck / build / headless smoke)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: admin-web
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: admin-web/package-lock.json
+
       - name: Install
         run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
+
       - name: Build
         run: npm run build
+
+      # 产物校验：dist 必须真的能作为静态站点提供（/ 200、/review SPA 回退、hashed JS 可取）。
+      # 该 job 默认工作在 admin-web，这一步必须回到仓库根才能按相对路径调用脚本。
+      - name: Headless web smoke
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/smoke-headless-web.sh
+
+      - name: Upload admin-web dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: jumcp-admin-web-headless
+          path: admin-web/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------- 容器镜像
+  image:
+    name: image (linux/amd64 build / smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 只构建本地镜像（load），不登录、不 push：发布由 release.yml 负责。
+      # provenance/sbom 在 load 模式下不可用，显式关闭。
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          tags: jumcp:ci
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=jumcp-image
+          cache-to: type=gha,mode=max,scope=jumcp-image
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
+
+      - name: Smoke image
+        run: bash scripts/smoke-image.sh jumcp:ci
+
+      - name: Save image as artifact
+        run: docker save jumcp:ci | gzip -1 > jumcp-linux-amd64-image.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jumcp-linux-amd64-image
+          path: jumcp-linux-amd64-image.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------- 依赖审查（仅 PR）
+  dependency-review:
+    name: dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # PR 评论需要 pull-requests: write；其余权限不下放。
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

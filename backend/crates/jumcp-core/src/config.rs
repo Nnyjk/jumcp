@@ -504,6 +504,9 @@ pub struct Settings {
     pub registry_path: String,
     /// 启动时装载的模板定义文件（JSON）；空表示不预置模板。
     pub templates_file: String,
+    /// 管理台静态构建产物目录（`JUMCP_MCP_WEB_DIR`）：空表示不托管静态资源。
+    /// 非空时启动期必须存在且含 `index.html`（fail-closed，见 [`validate_web_dir`]）。
+    pub web_dir: String,
     /// 管理面 token→actor 映射（JUMCP_ADMIN_TOKENS="alice:tok,bob:tok"）。
     /// HTTP 模式为空即拒绝启动（fail-closed）；不接受任何“匿名管理员”降级。
     pub admin_tokens: AdminTokens,
@@ -533,6 +536,7 @@ impl Default for Settings {
             audit_path: "data/audit.sqlite3".to_string(),
             registry_path: "data/registry.sqlite3".to_string(),
             templates_file: String::new(),
+            web_dir: String::new(),
             admin_tokens: AdminTokens::default(),
             agent_tokens: AgentTokens::default(),
             flatten_threshold: 40,
@@ -544,6 +548,26 @@ impl Default for Settings {
             datasources: vec![],
         }
     }
+}
+
+/// 静态托管目录门禁：空串合法（不托管）；非空必须是含 `index.html` 的目录。
+///
+/// 为什么不静默忽略：`JUMCP_MCP_WEB_DIR` 是部署侧"管理台已同源上线"的声明，
+/// 目录缺失或产物没构建时若降级成 404，问题只会在浏览器里暴露；启动期直接拒绝更早、更明确。
+pub fn validate_web_dir(dir: &str) -> Result<(), String> {
+    if dir.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(dir);
+    if !path.is_dir() {
+        return Err(format!("JUMCP_MCP_WEB_DIR 不是目录: {dir}"));
+    }
+    if !path.join("index.html").is_file() {
+        return Err(format!(
+            "JUMCP_MCP_WEB_DIR 缺少 index.html（管理台未构建或目录错误）: {dir}"
+        ));
+    }
+    Ok(())
 }
 
 impl Settings {
@@ -559,6 +583,7 @@ impl Settings {
         s.audit_path = env_or("JUMCP_MCP_AUDIT_PATH", &s.audit_path);
         s.registry_path = env_or("JUMCP_MCP_REGISTRY_PATH", &s.registry_path);
         s.templates_file = env_or("JUMCP_MCP_TEMPLATES_FILE", &s.templates_file);
+        s.web_dir = env_or("JUMCP_MCP_WEB_DIR", &s.web_dir);
         s.admin_tokens = AdminTokens::parse(&env_or("JUMCP_ADMIN_TOKENS", ""))?;
         s.agent_tokens = AgentTokens::parse(&env_or("JUMCP_AGENT_TOKENS", ""))?;
         s.flatten_threshold = env_or("JUMCP_MCP_FLATTEN_THRESHOLD", "40")
@@ -597,6 +622,7 @@ impl Settings {
         if !matches!(self.budget_overflow.as_str(), "fail" | "truncate") {
             return Err(format!("budget_overflow 非法: {}", self.budget_overflow));
         }
+        validate_web_dir(&self.web_dir)?;
         self.policy.validate()?;
         // agent 身份的角色必须是已定义角色：否则每次请求才在 resolve_scope 里报错，
         // 部署者会以为服务正常而实际 /mcp 全量失败（启动期一次说清）。
@@ -1029,5 +1055,51 @@ default_budget = 1600
             ..Default::default()
         };
         assert!(p.validate().is_err());
+    }
+
+    /// 默认不托管：空串是合法值，行为与未引入静态托管前完全一致。
+    #[test]
+    fn empty_web_dir_is_valid_and_means_no_hosting() {
+        assert!(validate_web_dir("").is_ok());
+        let s = Settings::default();
+        assert_eq!(s.web_dir, "");
+        assert!(s.validate().is_ok());
+    }
+
+    /// 目录存在但产物没构建（缺 index.html）：启动期报错，而不是运行期 404。
+    #[test]
+    fn web_dir_without_index_html_is_rejected_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = validate_web_dir(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(e.contains("缺少 index.html"), "{e}");
+
+        let s = Settings {
+            web_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        assert!(
+            s.validate().is_err(),
+            "缺 index.html 不得通过 Settings::validate"
+        );
+    }
+
+    #[test]
+    fn web_dir_pointing_at_missing_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("dist");
+        let e = validate_web_dir(missing.to_str().unwrap()).unwrap_err();
+        assert!(e.contains("不是目录"), "{e}");
+    }
+
+    #[test]
+    fn web_dir_with_index_html_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
+        validate_web_dir(dir.path().to_str().unwrap()).unwrap();
+        let s = Settings {
+            web_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        s.validate().unwrap();
     }
 }

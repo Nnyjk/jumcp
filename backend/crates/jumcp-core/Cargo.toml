@@ -19,3 +19,6 @@ thiserror = "2"
 tracing = "0.1"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[dev-dependencies]
+tempfile = "3"
