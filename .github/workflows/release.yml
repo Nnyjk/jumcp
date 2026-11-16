@@ -1,6 +1,7 @@
 name: Release
 
-# 触发：默认分支 push（产出 latest + main）、版本 tag（semver）、手动。
+# 触发：main push（发布分支，产出 latest + main）、版本 tag（semver）、手动。
+# 仓库默认分支是 dev（集成分支），它不触发本 workflow，也不产出镜像。
 on:
   push:
     branches: [main]
@@ -49,13 +50,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.ref }}
-          # branch / sha / semver；latest 只给默认分支（tag 推送不覆盖 latest）。
+          # branch / sha / semver；latest 只给 main（发布分支）。
+          # 默认分支是 dev，所以不能再用 is_default_branch 判 latest。
           tags: |
             type=ref,event=branch
             type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
           flavor: |
             latest=false
           labels: |

@@ -1,6 +1,6 @@
 # jumcp
 
-[![CI](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml)
 
 **jumcp**（jump + mcp）是面向 agent 的 MCP **聚合 router**：一个 `/mcp` 端点同时暴露内置工具与动态接入的上游 MCP server，统一做入口裁剪（§4.1）、渐进发现（§4.2）、只读分发（§4.3）与治理审计（§4.4）。架构见 `docs/plan/jumcp-preview.md`。
 
@@ -114,10 +114,13 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
 
 - `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
 - 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
-- CI（`.github/workflows/ci.yml`）：后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟；PR 额外跑依赖审查（高危阻断）。release（`.github/workflows/release.yml`）推 `ghcr.io/<owner>/jumcp`（branch/sha/semver/latest，带 provenance 与 SBOM），按 digest 回拉后再冒烟。
+- CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
+- release（`.github/workflows/release.yml`）：仅由 `main` push、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`（branch/sha/semver；`latest` 只给 `main`，带 provenance 与 SBOM），按 digest 回拉后再冒烟。
 - 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`）。
 
 完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
+
+分支模型：`main` 只做发布、不接受日常直接 push；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 release。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
 
 ## 测试
 
@@ -157,6 +160,7 @@ scripts/test-all.sh            # Linux / macOS / CI
 - `config/`：`policy.toml`（组、角色、数据源、预算与只读策略）
 - `scripts/`：`dev.ps1` / `dev.sh`（一键启动）、`test-all.ps1` / `test-all.sh`（一键测试）
 - `docs/`：当前契约与路由文档（见下方文档索引）
+- `CONTRIBUTING.md`：分支模型、开发流程、PR 要求与发版步骤
 
 ## 管理台（admin-web）
 
@@ -177,5 +181,7 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 - `docs/mcp-router.md`：router 模型——内置工具三组分类、上游配置与工具暴露规则。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
 - `docs/plan/jumcp-preview.md`：架构与设计预览（§4.1–§4.4）。
-- `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、冒烟脚本与分支保护建议。
+- `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、分支模型与发布流程、分支保护。
+- `docs/repository-structure.md`：目录结构与各层职责（root、Rust workspace、管理台、config/scripts/docs/notes、`.github`）。
+- `CONTRIBUTING.md`：分支模型、开发流程、本地校验、PR 与发版步骤。
 - `admin-web/README.md`：管理台页面职责、契约要点与本地启动。

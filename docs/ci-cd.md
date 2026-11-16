@@ -4,10 +4,34 @@
 
 | workflow | 触发 | 作用 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push `main`、`pull_request`、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、镜像构建与冒烟、PR 依赖审查 |
+| `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、镜像构建与冒烟、PR 依赖审查 |
 | `.github/workflows/release.yml` | push `main`、tag `v*`、`workflow_dispatch` | 构建并推送 GHCR 镜像，回拉 digest 再冒烟 |
 
+CI 只订阅 `dev` 的 push：`main` 上的改动只能经 `dev → main` 的发版 PR 进入，合并后的全量发布校验由 release 承担，避免同一 ref 上重复跑两遍。PR 则同时接受目标 `dev`（日常）与 `main`（发版 PR）。
+
 CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attestations: write`、`id-token: write`。两个 workflow 都用 `concurrency` 控并发：CI 取消同 ref 的旧运行，release 不取消。
+
+## 分支模型与发布流程
+
+| 分支 | 角色 | 谁能推 |
+|---|---|---|
+| `main` | 发布分支，只有从 `dev` 合入的发版提交 | 仅 PR 合并（禁止直接 push） |
+| `dev` | 默认分支、集成分支，日常改动的汇聚点 | 仅 PR 合并（禁止直接 push） |
+| `feature/*` | 单个改动的短期分支，从 `dev` 切出 | 作者本人 |
+
+流程：
+
+1. 从 `dev` 切 `feature/<主题>`，在其中开发、本地校验（见 `CONTRIBUTING.md`）。
+2. 开 PR 到 `dev`：CI 跑 `backend` / `web` / `image` / `dependency review`，全部通过后合并（squash 或 merge 均可，历史留在 `dev`）。
+3. 发版：`dev` 的 PR 目标改为 `main`，**必须用 merge commit**（`gh pr merge --merge`，不用 squash/rebase），保留 `dev` 的完整提交历史。
+4. 合并进 `main` 即触发 `release.yml`，产出 `latest` + `main` + `sha-<短 sha>` 镜像。
+
+关键约束：
+
+- `main` 不接受日常直接 push，也不承接 `feature/*` 的 PR。
+- release 只由 `main` push、`v*` tag、`workflow_dispatch` 触发；`dev` 的任何活动都不登录、不推送 GHCR。
+- `latest` 只由 `main` 的 push 产出（`enable=${{ github.ref == 'refs/heads/main' }}`）；默认分支是 `dev`，所以不能用 `is_default_branch` 判断。
+- `v*` tag 推送产出 `X.Y.Z` / `X.Y`，不改 `latest`。
 
 ## CI 检查项
 
@@ -56,10 +80,10 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 
 - 地址：`ghcr.io/nnyjk/jumcp`（`ghcr.io/<owner>/jumcp`，owner 一律转小写）
 - tag（`docker/metadata-action`）：
-  - `main`：默认分支 push（`type=ref,event=branch`）
-  - `sha-<短 sha>`：每次 push（`type=sha`）
+  - `main`：`main` push 时打上（`type=ref,event=branch`）
+  - `sha-<短 sha>`：每次发布 push（`type=sha`）
   - `X.Y.Z`、`X.Y`：tag `vX.Y.Z` push（`type=semver`）
-  - `latest`：仅默认分支 push（`type=raw,value=latest,enable={{is_default_branch}}`，且 `flavor: latest=false`，tag push 不会改 `latest`）
+  - `latest`：只在 `main` push 时打（`type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}`，且 `flavor: latest=false`，tag push 不会改 `latest`）。默认分支是 `dev`，因此不用 `{{is_default_branch}}`
 - 每次发布带 `provenance: true` 与 `sbom: true`（attestation 随镜像 push 到 GHCR）
 - 发布门禁：push 之后按 `ghcr.io/<owner>/jumcp@<digest>` 回拉，再跑同一份 `scripts/smoke-image.sh`；任一断言失败即发布失败
 
@@ -131,16 +155,48 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 - 失败时打印容器状态与日志尾部，然后清理容器与临时目录
 - 退出码：0 通过、1 断言失败、2 参数或工具缺失
 
-## 分支保护建议
+## 分支保护
 
-`main` 的 required checks（必须与 job 名完全一致）：
+`dev` 与 `main` 都要保护：只允许 PR 合并、禁止 force push、禁止删除分支、合并前要求分支最新。`main` 另需禁止直接 push（发版提交只能来自 `dev` 的 PR 合并）。不强制要求人工 approve——单人仓库会把合并卡死。
+
+required status checks 的名字必须与 workflow 里的 job `name` **完全一致**，否则 GitHub 会一直等一个永不出现的检查：
 
 - `backend (fmt / clippy / test)`
 - `web (lint / typecheck / build / headless smoke)`
 - `image (linux/amd64 build / smoke)`
-- `dependency review`（PR 上出现；勾选后 PR 必须通过）
+- `dependency review`（只在 PR 上出现；不要设成只对 `main` 生效，否则发版 PR 会缺这一项）
 
-建议同时开启：禁止直接 push `main`、合并前需要分支最新、禁止 force push。
+一次性配置（`gh api`，两个分支同一份 payload）：
+
+```bash
+payload='{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "backend (fmt / clippy / test)",
+      "web (lint / typecheck / build / headless smoke)",
+      "image (linux/amd64 build / smoke)",
+      "dependency review"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "required_approving_review_count": 0 },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": false
+}'
+
+printf '%s' "$payload" | gh api --method PUT repos/Nnyjk/jumcp/branches/dev/protection --input -
+printf '%s' "$payload" | gh api --method PUT repos/Nnyjk/jumcp/branches/main/protection --input -
+```
+
+- `required_approving_review_count: 0` 表示「必须走 PR」但不要求人工 approve：单人仓库也能自行合并，同时直接 push 被拒。
+- `enforce_admins: true` 是「禁止直接 push」真正生效的关键：否则仓库管理员（owner）可以绕过保护直接推 `main`/`dev`。
+- `strict: true` 即合并前要求分支最新（PR 必须基于目标分支最新提交）。
+- `restrictions: null` 表示不额外限制可推送人员（PR 要求已经挡住直接 push）；需要按人限制时再填白名单。
+
+生效情况以返回结果为准：`gh api repos/Nnyjk/jumcp/branches/main/protection`、`gh api repos/Nnyjk/jumcp/branches/dev/protection`。计划或权限不允许时不要假设已生效。
 
 ## 管理台鉴权边界
 
