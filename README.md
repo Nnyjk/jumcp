@@ -115,12 +115,12 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
 - `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
 - 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
 - CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
-- release（`.github/workflows/release.yml`）：仅由 `main` push、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`（branch/sha/semver；`latest` 只给 `main`，带 provenance 与 SBOM），按 digest 回拉后再冒烟。
+- release（`.github/workflows/release.yml`）：仅由 `main` push、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`（branch/sha/semver；`latest` 只给 `main`，带 provenance 与 SBOM），按 digest 回拉后再冒烟。`publish` job 限定 `refs/heads/main` 与 `refs/tags/v*`：对 `dev` 手动 dispatch 会整 job 跳过，`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验），所以在 `dev` 上既不能手动发布也不能靠打 tag 发布。
 - 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`）。
 
 完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
 
-分支模型：`main` 只做发布、不接受日常直接 push；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 release。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
+分支模型：`main` 只做发布、不接受日常直接 push，且只接受 `dev` 的发版 PR（另有 `release source is dev` 检查来源）；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 release。发版后要把 `main` 合回 `dev` 做同步，否则 `strict` 保护会挡住下一次发版 PR。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
 
 ## 测试
 

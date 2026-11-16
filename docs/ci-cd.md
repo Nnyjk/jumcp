@@ -5,9 +5,14 @@
 | workflow | 触发 | 作用 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、镜像构建与冒烟、PR 依赖审查 |
-| `.github/workflows/release.yml` | push `main`、tag `v*`、`workflow_dispatch` | 构建并推送 GHCR 镜像，回拉 digest 再冒烟 |
+| `.github/workflows/release.yml` | push `main`、tag `v*`（必须指向 `main` 历史）、`workflow_dispatch`（只有 `main` / `v*` tag 真正发布） | 构建并推送 GHCR 镜像，回拉 digest 再冒烟 |
 
 CI 只订阅 `dev` 的 push：`main` 上的改动只能经 `dev → main` 的发版 PR 进入，合并后的全量发布校验由 release 承担，避免同一 ref 上重复跑两遍。PR 则同时接受目标 `dev`（日常）与 `main`（发版 PR）。
+
+`release.yml` 在 `github.ref` 触发条件之外还有两道来源防线，`dev` 绕不过去：
+
+- `publish` job 的 `if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')`：`workflow_dispatch` 可以选任意 ref，选到 `dev` 时整个 job 跳过，不构建、不推镜像。
+- tag 触发先跑 `git fetch --no-tags origin main`，再用 `git merge-base --is-ancestor "$GITHUB_SHA" origin/main` 校验：tag 必须打在 `main` 的提交上，在 `dev` 提交上打 `v*` tag 会失败退出（所以 checkout 用 `fetch-depth: 0`）。
 
 CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attestations: write`、`id-token: write`。两个 workflow 都用 `concurrency` 控并发：CI 取消同 ref 的旧运行，release 不取消。
 
@@ -23,13 +28,16 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 
 1. 从 `dev` 切 `feature/<主题>`，在其中开发、本地校验（见 `CONTRIBUTING.md`）。
 2. 开 PR 到 `dev`：CI 跑 `backend` / `web` / `image` / `dependency review`，全部通过后合并（squash 或 merge 均可，历史留在 `dev`）。
-3. 发版：`dev` 的 PR 目标改为 `main`，**必须用 merge commit**（`gh pr merge --merge`，不用 squash/rebase），保留 `dev` 的完整提交历史。
-4. 合并进 `main` 即触发 `release.yml`，产出 `latest` + `main` + `sha-<短 sha>` 镜像。
+3. 发版前确认 `dev` 已包含 `main`（上一轮发版后做过第 6 步的同步）；若 `main` 领先，先做一次 `main → dev` 的同步 PR 再发版。
+4. 发版：`dev` 的 PR 目标改为 `main`，**必须用 merge commit**（`gh pr merge --merge`，不用 squash/rebase），保留 `dev` 的完整提交历史。这个 PR 除了四个常规检查，还会跑 `release source is dev`（来源分支不是 `dev` 直接失败）。
+5. 合并进 `main` 即触发 `release.yml`，产出 `latest` + `main` + `sha-<短 sha>` 镜像。
+6. 发版后把 `main` 合回 `dev`（`sync/main-to-dev` 分支 → PR 到 `dev`，merge commit）。`main` 因发版多一个 merge commit，`dev` 若不含它，`strict` 会让下一次发版 PR 卡在「分支不是最新」。
 
 关键约束：
 
-- `main` 不接受日常直接 push，也不承接 `feature/*` 的 PR。
-- release 只由 `main` push、`v*` tag、`workflow_dispatch` 触发；`dev` 的任何活动都不登录、不推送 GHCR。
+- `main` 不接受日常直接 push，也不承接 `feature/*` 的 PR（`release source is dev` 会拒绝）。
+- release 只由 `main` push、`v*` tag、`workflow_dispatch` 触发；`dev` 的任何活动都不登录、不推送 GHCR——对 `dev` 手动 `workflow_dispatch` 时 `publish` job 直接跳过。
+- `v*` tag 必须打在 `main` 历史内的提交上：tag 触发会跑 `merge-base --is-ancestor`，在 `dev` 提交上打 tag 会失败退出。
 - `latest` 只由 `main` 的 push 产出（`enable=${{ github.ref == 'refs/heads/main' }}`）；默认分支是 `dev`，所以不能用 `is_default_branch` 判断。
 - `v*` tag 推送产出 `X.Y.Z` / `X.Y`，不改 `latest`。
 
@@ -73,6 +81,10 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 ### `dependency-review`（仅 PR，timeout 10 分钟）
 
 `actions/dependency-review-action@v4`，`fail-on-severity: high`：高危依赖变更直接阻断 PR。没有引入其他扫描器。
+
+### `release-source`（仅目标为 `main` 的 PR，timeout 5 分钟）
+
+job 名 `release source is dev`，`if: github.event_name == 'pull_request' && github.base_ref == 'main'`：断言 `github.head_ref` 等于 `dev`，否则失败退出。PR 目标为 `dev` 时整个 job 跳过（跳过不算失败，也不影响 `dev` 的 required checks）。作用是挡住 `feature/*` 直接 PR 到 `main`——`main` 只接受 `dev` 的发版 PR。
 
 ## 镜像
 
@@ -159,16 +171,22 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 
 `dev` 与 `main` 都要保护：只允许 PR 合并、禁止 force push、禁止删除分支、合并前要求分支最新。`main` 另需禁止直接 push（发版提交只能来自 `dev` 的 PR 合并）。不强制要求人工 approve——单人仓库会把合并卡死。
 
-required status checks 的名字必须与 workflow 里的 job `name` **完全一致**，否则 GitHub 会一直等一个永不出现的检查：
+required status checks 的名字必须与 workflow 里的 job `name` **完全一致**，否则 GitHub 会一直等一个永不出现的检查。两个分支的列表**不同**：
+
+`dev`（4 项）：
 
 - `backend (fmt / clippy / test)`
 - `web (lint / typecheck / build / headless smoke)`
 - `image (linux/amd64 build / smoke)`
 - `dependency review`（只在 PR 上出现；不要设成只对 `main` 生效，否则发版 PR 会缺这一项）
 
+`main`（上面 4 项 + 1 项来源校验）：
+
+- `release source is dev`（只在目标为 `main` 的 PR 上运行，PR 到 `dev` 时跳过）。`dev` 上**不要**加这一项，否则 `dev` 的检查永远等不到它。
+
 `dependency review` 还依赖仓库的 Dependency graph：未开启时该 job 会立即失败并报 `Dependency review is not supported on this repository`，与代码无关。在仓库 Settings → Code security and analysis 开启 Dependency graph（启用 Dependabot alerts 会一并打开它）后重跑即可。
 
-一次性配置（`gh api`，两个分支同一份 payload）：
+一次性配置（`gh api`；`main` 在 `dev` 的 payload 上追加来源检查）：
 
 ```bash
 payload='{
@@ -190,12 +208,17 @@ payload='{
 }'
 
 printf '%s' "$payload" | gh api --method PUT repos/Nnyjk/jumcp/branches/dev/protection --input -
-printf '%s' "$payload" | gh api --method PUT repos/Nnyjk/jumcp/branches/main/protection --input -
+
+# main 多一项：只接受 dev 的发版 PR
+printf '%s' "$payload" \
+  | jq '.required_status_checks.contexts += ["release source is dev"]' \
+  | gh api --method PUT repos/Nnyjk/jumcp/branches/main/protection --input -
 ```
 
 - `required_approving_review_count: 0` 表示「必须走 PR」但不要求人工 approve：单人仓库也能自行合并，同时直接 push 被拒。
 - `enforce_admins: true` 是「禁止直接 push」真正生效的关键：否则仓库管理员（owner）可以绕过保护直接推 `main`/`dev`。
 - `strict: true` 即合并前要求分支最新（PR 必须基于目标分支最新提交）。
+- `strict: true` 与「发版用 merge commit」配合的后果：每次发版后 `main` 都比 `dev` 多一个 merge commit，必须按「分支模型与发布流程」第 6 步做 `main → dev` 同步，否则下一次发版 PR 会被「分支不是最新」挡住。
 - `restrictions: null` 表示不额外限制可推送人员（PR 要求已经挡住直接 push）；需要按人限制时再填白名单。
 
 生效情况以返回结果为准：`gh api repos/Nnyjk/jumcp/branches/main/protection`、`gh api repos/Nnyjk/jumcp/branches/dev/protection`。计划或权限不允许时不要假设已生效。

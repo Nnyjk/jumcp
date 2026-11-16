@@ -3,6 +3,7 @@ name: CI
 # 触发：dev（默认分支/集成分支）push、PR（目标 dev 或 main）、手动。
 # main 上的日常改动一律经 dev → main 的发版 PR 进入，因此 CI 不订阅 main push，
 # 避免与 release.yml 在同一 ref 上重复跑一遍全量校验。
+# 目标为 main 的 PR 额外跑 release source is dev：main 只接受 dev 的发版 PR。
 on:
   push:
     branches: [dev]
@@ -158,3 +159,23 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+
+  # ---------------------------------------------------------------- 发版来源（仅 main 的 PR）
+  # main 只接受 dev 的发版 PR；feature/* 必须先进 dev，不能直接 PR 到 main。
+  # 该 job 只在 target 为 main 的 PR 上出现，PR 到 dev 时整体跳过。
+  release-source:
+    name: release source is dev
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert head branch is dev
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" = "dev" ]; then
+            echo "发版来源分支是 dev，允许合并到 main"
+          else
+            echo "::error::main 只接受 dev 的发版 PR（当前来源分支：'$HEAD_REF'）；feature 分支请先 PR 到 dev"
+            exit 1
+          fi
