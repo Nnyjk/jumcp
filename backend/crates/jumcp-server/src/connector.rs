@@ -95,8 +95,11 @@ struct ConnectorAgent {
 }
 
 /// 一次请求失败：`fatal` 表示进程/管道已不可继续使用，必须杀进程等下一次重拉。
+///
+/// `error` 用 `Box` 装箱：`McpError` 内含 `serde_json::Value`（`preserve_order` 下 Value 较大），
+/// 直接内联会让 `Result<_, AgentFailure>` 的 Err 变体超过 clippy `result_large_err` 阈值。
 struct AgentFailure {
-    error: McpError,
+    error: Box<McpError>,
     fatal: bool,
 }
 
@@ -173,7 +176,7 @@ impl ConnectorAgent {
             "params": params,
         }))
         .map_err(|e| AgentFailure {
-            error: McpError::store(format!("编码 agent 请求失败: {e}")),
+            error: Box::new(McpError::store(format!("编码 agent 请求失败: {e}"))),
             fatal: false,
         })?;
         encoded.push('\n');
@@ -195,16 +198,16 @@ impl ConnectorAgent {
         let line = match response_line {
             Err(_) => {
                 return Err(AgentFailure {
-                    error: McpError::timeout(format!(
+                    error: Box::new(McpError::timeout(format!(
                         "connector agent 请求 {method} 超时（{}ms）",
                         deadline.as_millis()
-                    )),
+                    ))),
                     fatal: true,
                 });
             }
             Ok(Err(e)) => {
                 return Err(AgentFailure {
-                    error: abnormal(format!("connector agent 通信失败: {e}")),
+                    error: Box::new(abnormal(format!("connector agent 通信失败: {e}"))),
                     fatal: true,
                 });
             }
@@ -212,24 +215,24 @@ impl ConnectorAgent {
         };
 
         let response: Value = serde_json::from_str(line.trim()).map_err(|e| AgentFailure {
-            error: abnormal(format!("connector agent 返回非法 JSON: {e}")),
+            error: Box::new(abnormal(format!("connector agent 返回非法 JSON: {e}"))),
             fatal: true,
         })?;
         if response.get("id").and_then(Value::as_u64) != Some(id) {
             return Err(AgentFailure {
-                error: abnormal("connector agent 响应 id 不匹配".to_string()),
+                error: Box::new(abnormal("connector agent 响应 id 不匹配".to_string())),
                 fatal: true,
             });
         }
         if let Some(error) = response.get("error") {
             return Err(AgentFailure {
-                error: map_rpc_error(error),
+                error: Box::new(map_rpc_error(error)),
                 // JSON-RPC error 是 agent 明确给出的失败，进程仍可继续服务。
                 fatal: false,
             });
         }
         response.get("result").cloned().ok_or_else(|| AgentFailure {
-            error: abnormal("connector agent 响应缺少 result".to_string()),
+            error: Box::new(abnormal("connector agent 响应缺少 result".to_string())),
             fatal: true,
         })
     }
@@ -352,7 +355,7 @@ impl ConnectorExecutor {
                 Ok((agent, init))
             }
             Err(failure) => {
-                let error = with_tail(failure.error, &agent.stderr_tail);
+                let error = with_tail(*failure.error, &agent.stderr_tail);
                 agent.kill();
                 Err(error)
             }
@@ -388,8 +391,8 @@ impl ConnectorExecutor {
             Ok(value) => Ok(value),
             Err(failure) => {
                 let error = match guard.as_ref() {
-                    Some(agent) => with_tail(failure.error, &agent.stderr_tail),
-                    None => failure.error,
+                    Some(agent) => with_tail(*failure.error, &agent.stderr_tail),
+                    None => *failure.error,
                 };
                 if failure.fatal
                     && let Some(mut agent) = guard.take()
