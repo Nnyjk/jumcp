@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
             AuditLog::open(&settings.audit_path).map_err(|e| anyhow::anyhow!("{e}"))?,
         ))
     };
-    // 注册表常驻：即使没有模板，db_run_template 也应给出"不存在"而不是"未实现"。
+    // 注册表常驻：即使没有模板，模板/上游能力也应给出"不存在"而不是"未实现"。
     let store = Arc::new(
         CapabilityStore::open(&settings.registry_path, audit.clone())
             .map_err(|e| anyhow::anyhow!("打开注册表失败: {e}"))?,

@@ -297,12 +297,10 @@ async fn create_list_and_audit_token_without_secrets() {
         "{names:?}"
     );
     assert!(names.contains(&"cap.core".to_string()), "{names:?}");
-    for id in ["db_query_readonly", "db_run_template", "list_groups"] {
-        assert!(
-            !names.contains(&id.to_string()),
-            "allowlist 未配置的 {id} 不得出现: {names:?}"
-        );
-    }
+    assert!(
+        !names.contains(&"list_groups".to_string()),
+        "allowlist 未配置的 list_groups 不得出现: {names:?}"
+    );
     for id in ADMIN_CAPABILITY_IDS {
         assert!(
             !names.contains(&id.to_string()),
@@ -315,7 +313,7 @@ async fn create_list_and_audit_token_without_secrets() {
         Some(&plaintext),
         rpc(
             "tools/call",
-            json!({"name": "db_query_readonly", "arguments": {"sql": "SELECT 1"}}),
+            json!({"name": "list_groups", "arguments": {}}),
         ),
         &[],
     )
@@ -928,10 +926,10 @@ async fn call_details_and_audit_filter_carry_token_origin() {
             event_type: "tool_call".into(),
             payload: json!({
                 "object_type": "tool",
-                "object_id": "db_query_readonly",
+                "object_id": "admin_review_queue",
                 "action": "invoke",
                 "outcome": "ok",
-                "data": {"arguments": {"sql": "SELECT 0"}}
+                "data": {"arguments": {}}
             }),
             session_id: "default".into(),
             ts: String::new(),
@@ -940,7 +938,9 @@ async fn call_details_and_audit_filter_carry_token_origin() {
         .expect("legacy event");
 
     let mut body = base_token_body();
-    body["builtin_tools"] = json!(["search_capabilities", "db_query_readonly"]);
+    body["role"] = json!("admin");
+    body["groups"] = json!(["admin"]);
+    body["builtin_tools"] = json!(["admin_review_queue"]);
     let (status, created) = create_token(&h.app, body).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let plaintext = created["token"].as_str().unwrap().to_string();
@@ -951,7 +951,7 @@ async fn call_details_and_audit_filter_carry_token_origin() {
         Some(&plaintext),
         rpc(
             "tools/call",
-            json!({"name": "db_query_readonly", "arguments": {"sql": "SELECT 1"}}),
+            json!({"name": "admin_review_queue", "arguments": {}}),
         ),
         &[],
     )
@@ -1001,7 +1001,7 @@ async fn call_details_and_audit_filter_carry_token_origin() {
     let (status, calls) = call(
         &h.app,
         "GET",
-        "/admin/tools/db_query_readonly/calls?window_days=1&limit=50",
+        "/admin/tools/admin_review_queue/calls?window_days=1&limit=50",
         Some(ALICE_TOKEN),
         &[],
         None,

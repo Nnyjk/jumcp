@@ -1,7 +1,7 @@
 //! 发现面的唯一可见集：`builtin 常驻工具 ∪ 注册表可见行 ∪ 内存目录可见条目`。
 //!
 //! 为什么只允许一个生产函数：`search_capabilities` / `describe_capability` / `list_groups` /
-//! `tools/list` 的平铺 / `db_run_template` 的可见性判定必须同一口径，否则会出现
+//! `tools/list` 的平铺 / 模板与上游工具的可见性判定必须同一口径，否则会出现
 //! "搜得到但调不了"或"调得了但搜不到"的双套口径漂移。
 //!
 //! 为什么不缓存：每次请求按 scope 从 SQLite 现查（本地读，代价可接受），

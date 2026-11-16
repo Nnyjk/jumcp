@@ -36,13 +36,8 @@ pub const RISKS: &[&str] = &["read", "sensitive"];
 ///
 /// 单一来源：`jumcp-server` 的 `RESIDENT_TOOL_NAMES` 直接引用本常量，
 /// 因此"哪些 id 是内置"在发现面与存储层是同一份列表（重复写两份字符串必然漂移）。
-pub const RESIDENT_CAPABILITY_IDS: &[&str] = &[
-    "search_capabilities",
-    "describe_capability",
-    "list_groups",
-    "db_query_readonly",
-    "db_run_template",
-];
+pub const RESIDENT_CAPABILITY_IDS: &[&str] =
+    &["search_capabilities", "describe_capability", "list_groups"];
 
 /// 内置维护工具的能力 id：`group="admin"`，只有 scope.groups 含 admin 时才可见可调。
 ///
@@ -62,8 +57,6 @@ pub const BUILTIN_CAPABILITY_IDS: &[&str] = &[
     "search_capabilities",
     "describe_capability",
     "list_groups",
-    "db_query_readonly",
-    "db_run_template",
     "admin_register_template",
     "admin_review_queue",
     "admin_audit_queries",
