@@ -166,6 +166,8 @@ required status checks 的名字必须与 workflow 里的 job `name` **完全一
 - `image (linux/amd64 build / smoke)`
 - `dependency review`（只在 PR 上出现；不要设成只对 `main` 生效，否则发版 PR 会缺这一项）
 
+`dependency review` 还依赖仓库的 Dependency graph：未开启时该 job 会立即失败并报 `Dependency review is not supported on this repository`，与代码无关。在仓库 Settings → Code security and analysis 开启 Dependency graph（启用 Dependabot alerts 会一并打开它）后重跑即可。
+
 一次性配置（`gh api`，两个分支同一份 payload）：
 
 ```bash
