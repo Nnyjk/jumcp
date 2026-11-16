@@ -85,7 +85,7 @@ fail() {
   exit 1
 }
 
-# ---------------------------------------------------------------- 启动容器
+# 启动容器
 PUBLISH_ARGS=(-p "127.0.0.1::${CONTAINER_PORT}")
 if [ -n "$PORT" ]; then
   PUBLISH_ARGS=(-p "127.0.0.1:${PORT}:${CONTAINER_PORT}")
@@ -107,7 +107,7 @@ HOST_PORT="${MAPPING##*:}"
 BASE="http://127.0.0.1:${HOST_PORT}"
 echo "    容器 $NAME → $BASE"
 
-# ---------------------------------------------------------------- 等待就绪
+# 等待就绪
 echo "==> smoke-image: 等待 /health（最长 ${TIMEOUT_S}s）"
 HEALTH_FILE="$TMP_ROOT/health.json"
 ready=0
@@ -125,7 +125,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 done
 [ "$ready" = "1" ] || fail "容器在 ${TIMEOUT_S}s 内未通过 /health 就绪"
 
-# ---------------------------------------------------------------- 断言工具
+# 断言工具
 CODE=""
 CTYPE=""
 get() {

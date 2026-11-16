@@ -169,7 +169,7 @@ function Resolve-Tool {
 }
 
 try {
-  # ------------------------------------------------------------ 1. 环境探测
+  # 1. 环境探测
   Write-Host '==> env: toolchain probe'
   $envLog = Get-LogPath 'env: toolchain probe'
   $toolCandidates = @{
@@ -208,7 +208,7 @@ try {
   Add-Step 'env: toolchain probe' 'PASS' 0 $envLog
   $envLines | ForEach-Object { Write-Host $_ }
 
-  # ------------------------------------------------------------ 2. 后端
+  # 2. 后端
   Invoke-Step 'backend: cargo fmt --check' $BackendDir { & cargo fmt --check } | Out-Null
   Invoke-Step 'backend: cargo clippy -D warnings' $BackendDir { & cargo clippy --all-targets -- -D warnings } | Out-Null
   Invoke-Step 'backend: cargo test --workspace' $BackendDir { & cargo test --workspace } | Out-Null
@@ -218,13 +218,13 @@ try {
     Invoke-Step 'backend: cargo test --ignored (真库)' $BackendDir { & cargo test --workspace -- --ignored } | Out-Null
   }
 
-  # ------------------------------------------------------------ 3. 前端
+  # 3. 前端
   Invoke-Step 'frontend: npm ci' $WebDir { & npm ci } | Out-Null
   Invoke-Step 'frontend: npm run typecheck' $WebDir { & npm run typecheck } | Out-Null
   Invoke-Step 'frontend: npm run build' $WebDir { & npm run build } | Out-Null
   Invoke-Step 'frontend: eslint src --max-warnings 0' $WebDir { & npx eslint src --max-warnings 0 } | Out-Null
 
-  # ------------------------------------------------------------ 4. E2E 冒烟
+  # 4. E2E 冒烟
   if ($SkipE2E) {
     Write-Host '跳过 E2E 冒烟（-SkipE2E）'
     Write-Summary
