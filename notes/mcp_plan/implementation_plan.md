@@ -1,6 +1,8 @@
 # 落地计划：阶段拆分与执行
 
-配套文档：`docs/plan/jumcp-preview.md`（架构、契约、预算、指标）。本文件只回答"按什么顺序做、每步交付什么、什么算做完"，不重复设计结论。
+> **历史设计记录，不作为当前契约。** 当前契约见 `docs/`：架构与 router 模型见 `docs/mcp-router.md`，审计/令牌字段见 `docs/audit-openness.md`，目录职责见 `docs/repository-structure.md`。
+
+配套文档：同目录 `architecture_preview.md`（架构、契约、预算、指标）。本文件只回答"按什么顺序做、每步交付什么、什么算做完"，不重复设计结论。
 
 ## 0. 信息充分性判定
 

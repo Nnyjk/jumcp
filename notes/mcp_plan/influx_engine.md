@@ -1,6 +1,6 @@
 # InfluxDB 1.8 引擎接入的取舍与坑
 
-只记理由、限制与坑；对外契约与能力矩阵见 `docs/plan/jumcp-preview.md` §4.3.2 与附录 A。
+只记理由、限制与坑；对外契约与能力矩阵见 `architecture_preview.md` §4.3.2 与附录 A。
 
 ## 为什么复用 QueryExecutor + `db_query_readonly`
 

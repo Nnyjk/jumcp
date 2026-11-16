@@ -1,7 +1,9 @@
 # Harness Agent 平台 MCP 服务实施计划
 
+> **历史设计记录，不作为当前契约。** 当前契约见 `docs/`：架构与 router 模型见 `docs/mcp-router.md`，审计/令牌字段见 `docs/audit-openness.md`，目录职责见 `docs/repository-structure.md`。
+>
 > **状态**：预览稿；待 §11.1 三项阻塞决策后定稿。服务对全部接入数据源只读；agent 可修改的只有本项目自有数据（§4.4.6）。
-> **首个落地载体**：`jumcp` 仓库。技术栈已定稿（Rust + React，见 `docs/plan/implementation-plan.md` §3.2）；本计划只锁定契约与不变量。
+> **首个落地载体**：`jumcp` 仓库。技术栈已定稿（Rust + React，见同目录 `implementation_plan.md` §3.2）；本计划只锁定契约与不变量。
 > **适用对象**：平台架构师、MCP 服务开发者、Agent 平台运维与安全负责人。
 
 ---
@@ -746,7 +748,7 @@ Agent → db_query_readonly(sql) → L1..L4 校验 → 执行 → 审计(sql_has
 | 四 治理闭环 | 第 15–19 周 | Admin API 与管理台、审批流、聚类固化、评估自动化、灰度淘汰 | G4：admin 审计 100%，模板占比 ≥60% |
 | 五 自维护通道 | 第 20–24 周 | 注册表→发现面单一事实源、builtin 边界、维护 MCP 工具组（统计/草案/修改/下架）、调用历史聚合、定时触发与幂等 | G5：维护 agent 产出草案→人工批准→新会话可检索可调用；builtin 零变更；全程审计可回放 |
 
-阶段〇与阶段一后半重叠：骨架、CI 与数据源联调可在决策冻结前启动。工作包拆分、每阶段完成定义、风险回退见 `docs/plan/implementation-plan.md`；指标口径见 §9。
+阶段〇与阶段一后半重叠：骨架、CI 与数据源联调可在决策冻结前启动。工作包拆分、每阶段完成定义、风险回退见同目录 `implementation_plan.md`；指标口径见 §9。
 
 ## 9. 验收指标与测量方法
 

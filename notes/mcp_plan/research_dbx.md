@@ -33,7 +33,7 @@ DBX 的 **Java Agent 体系与多数据源接入**（Agent 实为父进程拉起
 
 ## 写路径：已整体否决
 
-DBX 的 prepare/apply 单次确认令牌服务于"agent 改业务数据"。本项目明确不提供业务数据写面（只读账号 + 只读会话是产品不变量），因此该机制不落地：原 `docs/plan/write-path.md` 与阶段五 W5.1–W5.8 已删除（见 `decisions_write_scope.md`），不要再据本文件提案。
+DBX 的 prepare/apply 单次确认令牌服务于"agent 改业务数据"。本项目明确不提供业务数据写面（只读账号 + 只读会话是产品不变量），因此该机制不落地：原 `docs/plan/write-path.md`（已归档，内容见 git 历史）与阶段五 W5.1–W5.8 已删除（见 `decisions_write_scope.md`），不要再据本文件提案。
 
 仅保留两条与写无关的结论：
 

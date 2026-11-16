@@ -11,7 +11,7 @@
 - 管理台导航只有：工作台 / 审核队列 / 工具（含统计+新建草案）/ 审计查询 / 例外处理 / 健康（`admin-web/src/App.tsx:21-67`），没有“分析提取”按钮。
 - 文档里最接近的两条：
   - §4.2 平面 B 渐进发现：`search_capabilities` / `describe_capability` / `list_groups`（“分析工具目录、提取 schema”）。
-  - §4.4.2 + §6.2 固化闭环：采集审计 → 归一化/指纹/聚类 → `admin_register_template` 落 draft → HTTP 审核发布（外部审批单号）；文档明确“查询固化不设独立工具”（`docs/plan/jumcp-preview.md:555`）。
+  - §4.4.2 + §6.2 固化闭环：采集审计 → 归一化/指纹/聚类 → `admin_register_template` 落 draft → HTTP 审核发布（外部审批单号）；文档明确“查询固化不设独立工具”（`architecture_preview.md` §4.4.2）。
 
 因此用户所说“分析提取 tool”实际指 **A（检索三件套）+ B（审计→草案固化链路）**，二者都做了真实 HTTP 验证。
 
