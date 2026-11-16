@@ -6,6 +6,8 @@ Fluent 2 风格的管理面。信息架构以「能力」为主键：列表页�
 
 ## 页面
 
+页面源码按功能目录拆分：`pages/dashboard/`、`pages/review-queue/`、`pages/tools/`、`pages/groups/`、`pages/capability-dossier/`、`pages/upstreams/`、`pages/tokens/`、`pages/audit-query/`；`pages/ExceptionPage.tsx`、`pages/HealthPage.tsx` 仍是单文件页面。
+
 | 路由 | 页面 | 职责 |
 |---|---|---|
 | `/` | 工作台 | KPI（待审批、未提交草稿两个独立计数）、调用趋势、健康/生命周期分布、工具调用排行、失败榜、数据源、治理动态（主谓宾一句话摘要）；支持「每 30 秒自动刷新」并显示「数据更新于 …」 |
@@ -24,7 +26,7 @@ Fluent 2 风格的管理面。信息架构以「能力」为主键：列表页�
 - 审计 payload 只认结构化字段：`object_type / object_id / action / outcome / changes / approval / error_code / error_message / correlation_id / data`。缺少结构化字段的旧事件显示「旧格式事件，仅原始载荷」，不按旧字段（`capability_id`、`diff`、`approval_id`）回退。
 - `GET /admin/me` 提供当前登录主体；批准人由后端按 token 派生，前端不发送 `approved_by`。
 - 审批流：草稿「提交审核」在审核队列与能力档案内都是二次确认弹层（能力 ID / 版本 / 草稿→待审 / 提交后不可自行撤回）；批准走 `POST publish {approval_id}` → `POST visibility {discoverable?, callable?}` 两步，第二步失败时明确提示「已发布但未开放」。
-- 审计查询不再有 `session_id`；调用记录不再有会话与 MCP 码，错误统一为 `error_code + error_message`。
+- 审计查询不返回 `session_id`；调用记录不含会话与 MCP 码，错误统一为 `error_code + error_message`。
 - 时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），不显示毫秒与时区尾注；完整 RFC3339 保留在 `title` 与详情弹层。
 - 访问令牌（`/tokens`）：`GET /admin/tokens` 只返回 hash 对应的前缀与元数据，明文 token 仅在 `POST /admin/tokens` 与 `POST /admin/tokens/{id}/reissue` 的响应里出现一次，关闭弹窗后无法再次查看，前端不写 `localStorage`。前缀为 `jumcp_`。调用方用 `POST /mcp` + `Authorization: Bearer <token>` 接入。卡片「MCP 接入」复制 HTTP MCP JSON 配置：本页已知明文（刚创建或刚重签发）直接复制；否则弹「重新签发」确认——重签发原地换钥匙，名称/角色/组/工具授权/到期时间不变，`token`、哈希、前缀与 `last_used_at` 重置，**旧 token 立即失效**。复制内容形状：
 
@@ -40,12 +42,12 @@ Fluent 2 风格的管理面。信息架构以「能力」为主键：列表页�
   }
   ```
 
-  `url` 取页面同源 `/mcp`（生产由网关同源转发，开发期走 Vite `/mcp` 代理）；`revoked` / `expired` 卡片的「MCP 接入」按钮禁用（不能接入，也不能重签发）。令牌卡片另有「查看调用」在 content 视图内打开审计查询并预填 token_id（不改 URL；直接 `/audit?token_id=<id>` 仍可用），审计查询与调用明细的主体均带来源 / 令牌 ID（表格截断到 12 位，完整值在 `title`/详情）。列表顶部按状态（全部 / 有效 / 已撤销 / 已过期）在客户端过滤并显示各自计数；active 只能「撤销」，已撤销 / 已过期可「删除记录」，后端只允许删除非 active 记录（先撤销再删）。管理类工具的徽标为橙色，页面有图例；状态行旁有撤销/过期说明；卡片不再重复页面标题。
-- 令牌授权 = 角色 + 组 + 内置工具 allowlist。令牌的「组」只列 `grantable !== false` 的组，`basic` 是内置通道、不是可授权组；`builtin_tools` 是精确白名单，控制 search/describe/list/admin_* 等内置能力，除内置工具外还需在「上游工具名」文本框按 `<server_id>__<tool>` 显式填写，上游 `basic` 工具同样不自动授予；`admin_*` 必须同时勾选 `admin` 组并显式选中该工具。内置 `basic` 只保留三个元工具（`search_capabilities` / `describe_capability` / `list_groups`）；ClickHouse 内置只读查询与模板执行工具已移除，数据源查询改由上游 MCP 工具接入，`basic` 组契约保留、上游只读工具可逐项加入。组的 `token_count` 参与删除保护：仍被能力或令牌引用时 `DELETE /admin/groups/{code}` 返回 409，`error.data` 含 `capability_count` 与 `token_count`，页面两个计数都展示。
+  `url` 取页面同源 `/mcp`（生产由网关同源转发，开发期走 Vite `/mcp` 代理）；`revoked` / `expired` 卡片的「MCP 接入」按钮禁用（不能接入，也不能重签发）。令牌卡片另有「查看调用」在 content 视图内打开审计查询并预填 token_id（不改 URL；直接 `/audit?token_id=<id>` 仍可用），审计查询与调用明细的主体均带来源 / 令牌 ID（表格截断到 12 位，完整值在 `title`/详情）。列表顶部按状态（全部 / 有效 / 已撤销 / 已过期）在客户端过滤并显示各自计数；active 只能「撤销」，已撤销 / 已过期可「删除记录」，后端只允许删除非 active 记录（先撤销再删）。管理类工具的徽标为橙色，页面有图例；状态行旁有撤销/过期说明；卡片不重复页面标题。
+- 令牌授权 = 角色 + 组 + 内置工具 allowlist。令牌的「组」只列 `grantable !== false` 的组，`basic` 是内置通道、不是可授权组；`builtin_tools` 是精确白名单，控制 search/describe/list/admin_* 等内置能力，除内置工具外还需在「上游工具名」文本框按 `<server_id>__<tool>` 显式填写，上游 `basic` 工具同样不自动授予；`admin_*` 必须同时勾选 `admin` 组并显式选中该工具。内置 `basic` 只保留三个元工具（`search_capabilities` / `describe_capability` / `list_groups`）；数据源查询与模板执行不由本服务提供，通过上游 MCP 工具接入，上游只读工具可逐项加入 `basic` 组。组的 `token_count` 参与删除保护：仍被能力或令牌引用时 `DELETE /admin/groups/{code}` 返回 409，`error.data` 含 `capability_count` 与 `token_count`，页面两个计数都展示。
 - 组与角色都是 `code + name` 双字段：`code` 是唯一契约值（能力、令牌、审计 `actor.role`、组 `group` 字段都传 code），界面显示中文 `name` 并用 `title` 保留 code；缺映射时回退 code，不隐藏原值。引用数据统一来自 `GET /admin/groups` 与 `GET /admin/roles`，共享 `groups` / `roles` query key，不逐页重复请求。
 - `GET /admin/groups?q=&source=policy|managed|builtin&role=<code>`：`q` 同时匹配 code 与 name；页面按后端过滤结果展示，`total` 与筛选一致。`source=builtin` 目前返回后端合成的 `basic` 条目：`{code:"basic",name:"基础工具",priority:0,min_budget:800,roles:[],grantable:false,token_count:0,capability_count:<n>}`，它不可编辑、不可删除，行内显示「不可编辑」且不出现编辑/删除按钮。组写操作：`POST /admin/groups` 带 `code`，`PUT /admin/groups/{code}` 改名/预算/角色（code 不可改）；策略组只读语义只在来源徽标与卡头说明，行内不重复，策略组不可编辑；受管组可维护。
-- 审计 `actor` 新增可选 `source` / `token_id`（MCP token 事件携带）；旧事件缺少字段时展示「—」，不按旧字段推断。审计主体角色、组对象与组字段展示中文名（title 保留 code）；token ID 在表格中截断到 12 位，完整值在 `title` 与详情弹层。
-- 工具台账与调用明细只聚合审计 v2 事件（带 `object_id`）；改造前的旧格式调用未回填、不计入聚合，页面上有固定口径说明，`calls=0` 不代表从未调用。审计查询中旧格式事件只折叠展示原始载荷，不猜旧字段。
+- 审计 `actor` 含可选 `source` / `token_id`（MCP token 事件携带）；旧事件缺少字段时展示「—」，不按旧字段推断。审计主体角色、组对象与组字段展示中文名（title 保留 code）；token ID 在表格中截断到 12 位，完整值在 `title` 与详情弹层。
+- 工具台账与调用明细只聚合审计 v2 事件（带 `object_id`）；旧格式调用不计入聚合，页面上有固定口径说明，`calls=0` 不代表从未调用。审计查询中旧格式事件只折叠展示原始载荷，不猜旧字段。
 
 ## 启动
 

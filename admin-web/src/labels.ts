@@ -1,6 +1,8 @@
+import type { BadgeTone } from './components/Badge'
 import type {
   AccessTokenStatus,
   AuditAction,
+  AuditChainState,
   AuditObjectType,
   AuditOutcome,
   CapabilityRisk,
@@ -38,7 +40,7 @@ export const RISK_LABEL: Record<CapabilityRisk, string> = {
   admin: '管理',
 }
 
-/** 审计事件类型：已删除从未写入的 session_init。 */
+/** 审计事件类型：闭集里没有 session_init（该事件从不写入）。 */
 export const EVENT_TYPE_LABEL: Record<string, string> = {
   tools_list_served: '工具列表下发',
   capability_search: '能力检索',
@@ -267,4 +269,25 @@ export function visibilityText(discoverable: boolean, callable: boolean): string
 export function errorCodeText(code: string | null | undefined): string {
   if (code === null || code === undefined || code === '') return '—'
   return ERROR_CODE_LABEL[code] ?? code
+}
+
+/** 审计链校验状态（看板 KPI 与健康页共用；两个页面的文案长短不同，色板相同）。 */
+export const CHAIN_TONE: Record<AuditChainState, BadgeTone> = {
+  valid: 'success',
+  tampered: 'danger',
+  error: 'danger',
+}
+
+/**
+ * 状态色板：上游探测状态与访问令牌状态共用一组语义值，含义一致才同色
+ * （ok/active 成功，degraded/expired 警示，error/revoked 危险，unknown 中性）。
+ */
+export const STATUS_TONE: Record<string, BadgeTone> = {
+  active: 'success',
+  ok: 'success',
+  degraded: 'warning',
+  expired: 'warning',
+  error: 'danger',
+  revoked: 'danger',
+  unknown: 'neutral',
 }

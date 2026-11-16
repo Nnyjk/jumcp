@@ -1,5 +1,5 @@
 /**
- * 管理台后端访问的唯一出口（§4.4.5：UI 只是 admin API 的薄前端，禁止直连数据库）。
+ * 管理台后端访问的唯一出口（UI 只是 admin API 的薄前端，禁止直连数据库）。
  * 页面层不得直接调用 fetch，统一经此模块换取类型化结果或 ApiError。
  */
 
@@ -30,7 +30,7 @@ export interface RequestOptions {
 const BASE_URL = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
 
 /**
- * 前端不携带任何管理面凭证（§4.4.5）：token 只存在于网关/BFF 与后端之间，
+ * 前端不携带任何管理面凭证：token 只存在于网关/BFF 与后端之间，
  * 操作者身份由后端按 token 派生，前端既不读取也不发送 Authorization / X-Admin-Actor。
  */
 function buildInit(options: RequestOptions): RequestInit {

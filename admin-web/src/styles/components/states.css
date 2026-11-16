@@ -1,0 +1,242 @@
+/* 状态：空/错/加载、分页、健康页统计、详情网格。 */
+
+.state {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  color: var(--text-secondary);
+}
+
+.state strong {
+  color: var(--text-primary);
+  font-size: var(--fs-14);
+}
+
+.state p {
+  margin-top: 2px;
+  font-size: var(--fs-12);
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.state-icon {
+  flex: none;
+  color: var(--danger);
+  margin-top: 1px;
+}
+
+.state-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.state-error {
+  border-left: 3px solid var(--danger);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 48px var(--space-5);
+  text-align: center;
+}
+
+.empty-icon {
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.empty-state strong {
+  font-size: var(--fs-16);
+}
+
+.empty-state p {
+  max-width: 420px;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  line-height: 18px;
+}
+
+.loading-state {
+  padding: var(--space-4);
+}
+
+.skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.skeleton-line {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-base) 25%,
+    var(--skeleton-shine) 37%,
+    var(--skeleton-base) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+.skeleton-line:nth-child(3n + 1) {
+  width: 88%;
+}
+
+.skeleton-line:nth-child(3n + 2) {
+  width: 96%;
+}
+
+.skeleton-line:nth-child(3n + 3) {
+  width: 72%;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 100% 50%;
+  }
+  to {
+    background-position: 0 50%;
+  }
+}
+
+/* 分页 */
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pagination-info {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* 健康页统计 */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-4);
+}
+
+.stat {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--fill-subtle);
+}
+
+.stat-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.stat-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: var(--fs-20);
+  font-weight: 600;
+  line-height: 26px;
+}
+
+.stat-value .mono {
+  font-size: var(--fs-16);
+}
+
+.detail-block {
+  margin-top: var(--space-4);
+}
+
+/* 详情网格：每格自带弱化 label 与可换行值，1–4 列随容器宽度自适应。
+ * 网格项用 minmax(0, 1fr)，长哈希/ID 依靠 break-all 在格内折行，不撑破 Modal。 */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-3);
+  margin: 0;
+}
+
+.detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--fill-hover);
+  border-radius: var(--radius-lg);
+  background: var(--fill-subtle);
+}
+
+.detail-field dt {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.detail-field dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-14);
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.detail-field dd.mono {
+  font-size: var(--fs-12);
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.detail-field-wide {
+  grid-column: 1 / -1;
+}
+
+.detail-field-wide .json-block,
+.detail-field-wide .code-block {
+  width: 100%;
+}
+
+@media (min-width: 1100px) {
+  .detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1500px) {
+  .detail-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-field-wide {
+    grid-column: auto;
+  }
+}
+

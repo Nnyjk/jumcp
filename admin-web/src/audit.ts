@@ -1,4 +1,6 @@
 import type { AuditEnvelope, AuditPayload } from './api/types'
+import { DASH } from './format'
+import { inlineJson } from './json'
 import {
   ACTION_LABEL,
   CHANGE_FIELD_LABEL,
@@ -8,11 +10,9 @@ import {
   OUTCOME_LABEL,
 } from './labels'
 
-const DASH = '—'
-
 /**
- * 新契约的结构化事件以 object_type/object_id/action 为必需字段。
- * 三者任一缺失即视为旧格式：页面只折叠展示原始载荷，不再猜测 capability_id/diff 等旧字段。
+ * 结构化事件以 object_type/object_id/action 为必需字段。
+ * 三者任一缺失即视为非结构化：页面只折叠展示原始载荷，不猜测 capability_id/diff 等字段。
  */
 export function isStructuredEvent(event: AuditEnvelope): boolean {
   const payload = event.payload
@@ -62,12 +62,12 @@ export function changeValueForField(
   if (field === 'discoverable' || field === 'callable') {
     if (value === true) return '是'
     if (value === false) return '否'
-    if (value === null || value === undefined) return '—'
+    if (value === null || value === undefined) return DASH
     return changeValueText(value)
   }
   if (field === 'roles') {
     if (Array.isArray(value)) {
-      if (value.length === 0) return '—'
+      if (value.length === 0) return DASH
       const role = labelers?.role
       return value.map((code) => role?.(String(code)) ?? String(code)).join('、')
     }
@@ -81,11 +81,7 @@ export function changeValueText(value: unknown): string {
   if (value === undefined) return DASH
   if (typeof value === 'string') return value === '' ? '空字符串' : value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
+  return inlineJson(value)
 }
 
 function objectText(payload: AuditPayload, labelers?: AuditLabelers): string {

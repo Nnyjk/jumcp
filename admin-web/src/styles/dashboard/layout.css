@@ -1,0 +1,129 @@
+/* 工作台看板：12 列栅格 + 手写 SVG/CSS 图表，颜色只用 tokens.css 的语义变量。 */
+
+/* 控制条 */
+
+.dash-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+.dash-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dash-toolbar-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.dash-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-control);
+}
+
+.dash-segmented button {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dash-segmented button:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.dash-segmented button[aria-pressed='true'] {
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dash-updated {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 栅格 */
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.dash-grid > * {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 同一行卡片底边对齐：数据源这类短卡片不再在行内留下断裂空洞。 */
+.dash-grid > * > .card {
+  flex: 1 1 auto;
+}
+
+.dash-span-12 {
+  grid-column: span 12;
+}
+
+.dash-span-8 {
+  grid-column: span 8;
+}
+
+.dash-span-6 {
+  grid-column: span 6;
+}
+
+.dash-span-4 {
+  grid-column: span 4;
+}
+
+.dash-card-note {
+  margin-top: var(--space-3);
+}
+
+/* 趋势图在 1280 以下占满整行：8/12 栅格会把卡片压到 620px 并在右侧留下 1/3 空洞。 */
+@media (max-width: 1280px) {
+  .dash-span-8 {
+    grid-column: span 12;
+  }
+}
+
+/* 侧栏在 1100 折叠后内容区仍有 ~930px，趋势图保持整行；只有 6/4 列卡片降为半宽。 */
+@media (max-width: 1100px) {
+  .dash-span-6,
+  .dash-span-4 {
+    grid-column: span 6;
+  }
+}
+
+@media (max-width: 900px) {
+  .dash-span-12,
+  .dash-span-8,
+  .dash-span-6,
+  .dash-span-4 {
+    grid-column: span 12;
+  }
+}
+

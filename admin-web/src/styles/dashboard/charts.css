@@ -1,0 +1,235 @@
+/* 趋势图 */
+
+.trend-wrap {
+  width: 100%;
+}
+
+.trend-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-grid {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.chart-axis-line {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.chart-axis {
+  fill: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-area {
+  fill: var(--accent);
+  fill-opacity: 0.14;
+}
+
+.trend-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-dot {
+  fill: var(--accent);
+  stroke: var(--surface-opaque);
+  stroke-width: 1.5;
+}
+
+/* 环形图 */
+
+.donut-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.donut-svg {
+  flex: none;
+  width: 168px;
+  height: 168px;
+}
+
+.donut-track {
+  fill: none;
+  stroke: var(--fill-subtle);
+  stroke-width: 14;
+}
+
+.donut-seg {
+  fill: none;
+  stroke-width: 14;
+}
+
+.donut-seg-ok {
+  stroke: var(--success);
+}
+
+.donut-seg-degraded {
+  stroke: var(--warning);
+}
+
+.donut-seg-failing {
+  stroke: var(--danger);
+}
+
+.donut-seg-unknown {
+  stroke: var(--text-tertiary);
+}
+
+.donut-total {
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.donut-caption {
+  fill: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+/* 图例 */
+
+.legend {
+  display: flex;
+  flex: 1 1 140px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.legend-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--fill-active);
+}
+
+.legend-swatch[data-tone='builtin'] {
+  background: var(--accent);
+}
+
+.legend-swatch[data-tone='published'] {
+  background: var(--success);
+}
+
+.legend-swatch[data-tone='review'] {
+  background: var(--warning);
+}
+
+.legend-swatch[data-tone='draft'] {
+  background: var(--text-tertiary);
+}
+
+.legend-swatch[data-tone='deprecated'] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--danger) 0 3px,
+    var(--danger-subtle) 3px 6px
+  );
+}
+
+.legend-swatch[data-tone='unknown'] {
+  background: var(--border-strong);
+}
+
+.legend-label {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-value {
+  margin-left: auto;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 堆叠状态条 */
+
+.stack-bar {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--fill-subtle);
+}
+
+.stack-seg {
+  height: 100%;
+  min-width: 0;
+}
+
+.stack-seg[data-tone='builtin'] {
+  background: var(--accent);
+}
+
+.stack-seg[data-tone='published'] {
+  background: var(--success);
+}
+
+.stack-seg[data-tone='review'] {
+  background: var(--warning);
+}
+
+.stack-seg[data-tone='draft'] {
+  background: var(--text-tertiary);
+}
+
+.stack-seg[data-tone='deprecated'] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--danger) 0 3px,
+    var(--danger-subtle) 3px 6px
+  );
+}
+
+.stack-seg[data-tone='unknown'] {
+  background: var(--border-strong);
+}
+
+.stack-source {
+  margin-top: var(--space-2);
+}
+
+.stack-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px var(--space-3);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
