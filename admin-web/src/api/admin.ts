@@ -1,5 +1,5 @@
 /**
- * admin API 契约层（§4.4.4 admin_* 函数）：把后端 admin HTTP 面的真实响应结构映射成类型化结果。
+ * admin API 契约层（admin_* 函数）：把后端 admin HTTP 面的真实响应结构映射成类型化结果。
  * 页面层只读本层导出的函数，不直接 fetch；写操作同样经此落审计。
  *
  * 治理身份一律由后端按 token 派生：前端不发送 approved_by，也不存在任何伪造主体的入口。
@@ -61,7 +61,7 @@ export async function fetchAdminMe(signal?: AbortSignal): Promise<AdminIdentity>
 }
 
 /**
- * 按 §4.4.4 admin_audit_queries 的过滤条件分页查询审计。
+ * 按 admin_audit_queries 的过滤条件分页查询审计。
  * 默认最新优先（order=desc）；时间范围由调用方转成 RFC3339 后传入。
  */
 export async function fetchAuditEvents(

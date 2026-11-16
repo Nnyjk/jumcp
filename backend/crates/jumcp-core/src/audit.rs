@@ -21,7 +21,7 @@ pub const EVENT_TYPES: &[&str] = &[
 
 /// `admin_change` 的最小可读契约：主体/动作/对象/结果四件套必须显式给出。
 ///
-/// 定义哈希、前后态、审批等属于事件语义，缺省用 `null`，不再要求哨兵字符串。
+/// 定义哈希、前后态、审批等属于事件语义，缺省用 `null`，不用哨兵字符串。
 pub const ADMIN_REQUIRED_FIELDS: &[&str] = &["object_type", "object_id", "action", "outcome"];
 
 /// 业务载荷结构版本（固定值）。能力/模板自身的版本在 `payload.data.version`。
@@ -29,8 +29,7 @@ pub const PAYLOAD_VERSION: i64 = 1;
 
 /// 统一载荷骨架：所有 event_type 共用同一组键，缺省值一律 `null`/`[]`。
 ///
-/// 为什么集中在这里：写入点分散在 store / mcp / admin 三处，各拼一份 JSON 必然漂移
-/// （旧实现就出现过 `diff` 与 `changes` 两种前后态表达）。
+/// 为什么集中在这里：写入点分散在 store / mcp / admin 三处，各拼一份 JSON 必然漂移。
 pub fn payload(
     object_type: &str,
     object_id: &str,

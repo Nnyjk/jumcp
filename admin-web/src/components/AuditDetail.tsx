@@ -10,7 +10,7 @@ import {
   isStructuredEvent,
   statusText,
 } from '../audit'
-import { formatDateTime } from '../format'
+import { DASH, dashText, formatDateTime } from '../format'
 import {
   ACTION_LABEL,
   EVENT_TYPE_LABEL,
@@ -21,13 +21,6 @@ import {
 import { DetailField, DetailGrid } from './DetailGrid'
 import { CodeBlock, JsonBlock } from './JsonBlock'
 import { InfoBar } from './InfoBar'
-
-const DASH = '—'
-
-function text(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === '') return DASH
-  return String(value)
-}
 
 /** data 是结构化事件的扩展载荷容器：只读取明确列出的运行期字段。 */
 interface RunData {
@@ -51,7 +44,7 @@ function scriptText(value: unknown): string | undefined {
 
 /**
  * 审计详情：结构化摘要 + 变更表 + 审批块 + 执行 SQL/绑定值 + 折叠的原始载荷。
- * 旧格式事件不做字段回退：明确标注「旧格式事件，仅原始载荷」并折叠 payload。
+ * 非结构化事件不做字段回退：明确标注「旧格式事件，仅原始载荷」并折叠 payload。
  */
 export function AuditDetail({ event }: { event: AuditEnvelope }) {
   const groupIndex = useGroupIndex()
@@ -111,19 +104,19 @@ export function AuditDetail({ event }: { event: AuditEnvelope }) {
           {EVENT_TYPE_LABEL[event.event_type] ?? event.event_type}
         </DetailField>
         <DetailField label="租户" title={event.tenant}>
-          {text(event.tenant)}
+          {dashText(event.tenant)}
         </DetailField>
         <DetailField label="主体" mono title={`${event.actor.type}:${event.actor.id || '(empty)'}`}>
           {event.actor.id.trim() === '' ? '未认证调用方' : event.actor.id}
         </DetailField>
         <DetailField label="主体角色 / 类型" title={event.actor.role}>
-          {roleLabel(roleIndex, event.actor.role)} · {text(event.actor.type)}
+          {roleLabel(roleIndex, event.actor.role)} · {dashText(event.actor.type)}
         </DetailField>
         <DetailField label="主体来源" mono title="actor.source">
-          {text(event.actor.source)}
+          {dashText(event.actor.source)}
         </DetailField>
         <DetailField label="令牌 ID" mono title="actor.token_id">
-          {text(event.actor.token_id)}
+          {dashText(event.actor.token_id)}
         </DetailField>
         {structured && (
           <DetailField
@@ -159,7 +152,7 @@ export function AuditDetail({ event }: { event: AuditEnvelope }) {
         )}
         {structured && data.version !== undefined && (
           <DetailField label="能力版本" mono title="data.version">
-            {typeof data.version === 'number' ? `v${data.version}` : text(String(data.version))}
+            {typeof data.version === 'number' ? `v${data.version}` : dashText(String(data.version))}
           </DetailField>
         )}
         {structured &&
@@ -241,10 +234,10 @@ export function AuditDetail({ event }: { event: AuditEnvelope }) {
                   : '无审批单'}
             </DetailField>
             <DetailField label="提审人" mono>
-              {text(payload.approval?.submitted_by ?? undefined)}
+              {dashText(payload.approval?.submitted_by ?? undefined)}
             </DetailField>
             <DetailField label="批准人" mono>
-              {text(payload.approval?.approved_by ?? undefined)}
+              {dashText(payload.approval?.approved_by ?? undefined)}
             </DetailField>
             <DetailField label="批准时间" mono>
               {formatDateTime(payload.approval?.approved_at ?? undefined)}

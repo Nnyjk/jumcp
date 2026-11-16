@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/Nnyjk/jumcp/actions/workflows/ci.yml)
 
-**jumcp**（jump + mcp）是面向 agent 的 MCP **聚合 router**：一个 `/mcp` 端点同时暴露内置工具与动态接入的上游 MCP server，统一做入口裁剪（§4.1）、渐进发现（§4.2）、只读分发（§4.3）与治理审计（§4.4）。架构见 `docs/plan/jumcp-preview.md`。
+**jumcp**（jump + mcp）是面向 agent 的 MCP **聚合 router**：一个 `/mcp` 端点同时暴露内置工具与动态接入的上游 MCP server，统一做入口裁剪、渐进发现、只读分发与治理审计。数据源查询与模板执行不由本服务内置——ClickHouse 等数据源通过上游 MCP server 接入。架构与 router 模型见 `docs/mcp-router.md`。
 
 > 品牌说明：产品对外名称统一为 **jumcp**；crate/包名与 `JUMCP_*` 环境变量统一使用 `jumcp` 前缀；本地数据路径保持 `.dev-data/` 的运行约定（不随品牌改名）；令牌前缀为 `jumcp_`（新签发与重签发），明文只在创建/重签发响应中出现一次。
 
@@ -10,13 +10,13 @@
 
 ## 能力
 
-- **内置工具分类 + `basic` 内置组**：`basic`（`search_capabilities`、`describe_capability`、`list_groups` 三个元工具）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）是 `tools/list` / 搜索 / 统计上的**展示分类**；其中 `basic` 同时是后端合成的**不可编辑内置组**——3 个常驻元工具的 `group` 就是 `basic`，上游只读工具可逐工具加入（见下文「上游 MCP router」）。ClickHouse 等数据源查询不再有内置入口，通过上游 MCP 工具接入。`analysis` / `admin` 仍只是分类，`admin_*` 仍需组 `admin` 在 scope 内。
+- **内置工具分类 + `basic` 内置组**：`basic`（`search_capabilities`、`describe_capability`、`list_groups` 三个元工具）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）是 `tools/list` / 搜索 / 统计上的**展示分类**；其中 `basic` 同时是后端合成的**不可编辑内置组**——3 个常驻元工具的 `group` 就是 `basic`，上游只读工具可逐工具加入（见下文「上游 MCP router」）。`analysis` / `admin` 仍只是分类，`admin_*` 仍需组 `admin` 在 scope 内。
 - **动态上游 MCP server**：管理台或 `POST /admin/upstreams` 接入，工具以 `<server_id>__<tool>` 暴露在同一 `/mcp`；写成功后下一次 `tools/list` / `tools/call` 即生效，单个上游不可达只影响它自己。
 - **双传输**：stdio（默认，本地 agent 直接拉起）与 streamable-http（`POST /mcp`）。
 - **组 + token allowlist 双重约束**：`groups` 是 token 的硬上限（header / `_meta` 只能收窄），`builtin_tools` 是精确名字白名单（内置 id 与上游暴露名同表约束）；`admin_*` 另需组 `admin` 在 scope 内；`basic` 成员不要求 token `groups` 含 `basic` 或上游组，但仍受 `builtin_tools` 精确 allowlist 与上游 `enabled`/`read_only` 约束——`basic` 不是授权组，不能写进令牌 `groups`。管理台访问令牌卡片提供「MCP 接入」一键复制 HTTP MCP JSON 配置：服务名 `jumcp`、URL 为页面同源 `/mcp`、`headers.Authorization = Bearer <token>`；明文只在创建/重签发的响应里出现一次，已有 active 令牌需先重新签发（`POST /admin/tokens/{id}/reissue`，旧 token 立即失效）才能复制配置。
 - **治理审计**：写操作与调用统一落哈希链审计（`admin_change` / `policy_decision`），管理台可按令牌 / 对象 / 事件检索并查看详情。
 - **管理台**：工作台看板、审核队列、工具台账与能力档案、组维护（内置 `basic` 只读不可编辑）、访问令牌、MCP 接入、上游维护（含「基础工具」弹层：逐工具开关、刷新、失效覆盖清理）、审计查询、例外与可见性、健康检查。
-- **只读边界**：数据源工具对**接入数据源只读**（只读账号 + 查询级 `readonly`，不存在写数据源的路径）；上游 MCP 工具默认 `read_only=true`，只有部署显式开启 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 才允许写上游（默认关闭）。agent 可修改的只有**本项目自有数据**（能力注册表，且只产草案、人工审批后发布，见 §4.4.6）。
+- **只读边界**：数据源工具对**接入数据源只读**（只读账号 + 查询级 `readonly`，不存在写数据源的路径）；上游 MCP 工具默认 `read_only=true`，只有部署显式开启 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 才允许写上游（默认关闭）。agent 可修改的只有**本项目自有数据**（能力注册表，且只产草案、人工审批后发布）。
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ stdio 接入用 `cargo run -p jumcp-server`（默认 stdio）；HTTP 传输用 `
 - 每次启动都先 `cargo build --bin jumcp-server --bin jumcp-connector-clickhouse`（增量构建，不会运行过期二进制）；启动前若后端端口**已有监听者**（多半是上次遗留的旧后端），脚本立即失败并打印端口/排查命令（`netstat -ano | findstr :<port>`、`lsof -i :<port>`），**不会自动杀进程**，也不会把旧进程的 `/health` 当成“就绪”。请先停掉旧后端或换端口。
 - **管理面凭证只存在于进程环境**：后端 `JUMCP_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`，前端由 Vite 代理注入 `JUMCP_DEV_ADMIN_TOKEN` —— 不设这个变量，管理台请求会全部 401。
 - 前端代理目标用 `JUMCP_DEV_API_TARGET` 指定（默认 `http://127.0.0.1:8000`），启动器会按后端实际端口自动设置；手动起前端时后端换端口就要带上它。
-- `-ClickHouseDsn <dsn>` / `--clickhouse-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-clickhouse`，`engine = "clickhouse"`，DSN 走 `JUMCP_DEV_CLICKHOUSE_DSN`）；DSN 形如 `http://<user>:<password>@<host>:<port>[/database]`，凭证只经环境变量传递。`allowed_schemas` 对 ClickHouse 是 **database 白名单**，脚本生成的是空数组（不限制）；不给 DSN 则用 `config/policy.toml` 原样。内置查询工具已移除，ClickHouse 需要作为上游 MCP 工具接入后才能查询。
+- `-ClickHouseDsn <dsn>` / `--clickhouse-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-clickhouse`，`engine = "clickhouse"`，DSN 走 `JUMCP_DEV_CLICKHOUSE_DSN`）；DSN 形如 `http://<user>:<password>@<host>:<port>[/database]`，凭证只经环境变量传递。`allowed_schemas` 对 ClickHouse 是 **database 白名单**，脚本生成的是空数组（不限制）；不给 DSN 则用 `config/policy.toml` 原样。
 - 脚本会同时构建 `jumcp-server` 与 `jumcp-connector-clickhouse`；host 默认在可执行文件同目录查找 agent，也可用 `JUMCP_CLICKHOUSE_AGENT_BIN` 指定绝对路径。
 - `-ResetData` / `--reset-data` 启动前清空 `.dev-data/`（默认保留，便于连续试用）；`-NoWeb` / `--no-web` 只起后端。
 - Ctrl+C 同时停掉前后端；日志在 `.dev-data/logs/`（`backend.log` / `web.log`），数据在 `.dev-data/{registry,audit}.sqlite3`。
@@ -60,7 +60,7 @@ pwsh scripts/dev.ps1 -ClickHouseDsn 'http://<user>:<password>@<host>:<port>' -No
 
 `-ClickHouseDsn` 只负责生成带 `dev-clickhouse` 只读数据源的 `.dev-data/policy.toml`；DSN 里的 `<user>`/`<password>` 只经环境变量传入，不写进配置文件、不提交进仓库。
 
-内置的 ClickHouse 只读查询与模板执行工具已移除，`/mcp` 不再提供数据源查询入口。需要查询 ClickHouse 时，通过上游 MCP server 接入（工具以 `<server_id>__<tool>` 暴露），并在令牌的 `builtin_tools` 或上游工具名列表中显式授权；上游工具可逐项加入 `basic` 组。
+需要查询 ClickHouse 时，通过上游 MCP server 接入（工具以 `<server_id>__<tool>` 暴露），并在令牌的 `builtin_tools` 或上游工具名列表中显式授权；上游工具可逐项加入 `basic` 组。
 
 > ClickHouse 只读语义（只读账号、`readonly=1`、行数/单次执行限制、函数与外部表引擎黑名单）由上游 MCP server 自己保证；本服务只保留入口裁剪、组/令牌授权与调用审计。生产必须使用仅 SELECT 授权的只读账号。
 
@@ -149,9 +149,10 @@ scripts/test-all.sh            # Linux / macOS / CI
 
 ## 目录
 
-- `backend/crates/jumcp-core/`：`config`、`entry`（三通道 + EffectiveScope）、`audit`（哈希链）、`registry`（双布尔 + 版本审批元数据）、`budget`（§5 上限）
+- `backend/crates/jumcp-core/`：治理域与配置——`config`（`policy.toml` 解析与校验）、`registry`（能力注册表：双布尔可见性 + 版本审批元数据）、`template`（SQL 模板定义与渲染）、`access`（token / 角色 / 组模型与 allowlist 判定）、`entry`（三通道入口 + EffectiveScope）、`audit`（哈希链审计）、`budget`（调用预算与溢出策略）
 - `backend/crates/jumcp-sqlguard/`：只读 SQL 校验（L4）与结果整形
-- `backend/crates/jumcp-server/`：JSON-RPC MCP 服务、`ConnectorExecutor`（拉起 `jumcp-connector-clickhouse` 子进程、L4/database 收窄/整形/预算/审计）、stdio / HTTP 双入口
+- `backend/crates/jumcp-server/`：MCP 服务与传输层——`mcp/`（JSON-RPC 方法与 `/mcp` 分发、HTTP 传输）、`admin/`（`/admin/*` 管理面：令牌、组、能力审核、统计、审计查询、上游维护）、`upstream/`（动态上游 MCP server 接入，工具名 `<server_id>__<tool>`）、`connector/`（`ConnectorExecutor`：拉起 `jumcp-connector-clickhouse` 子进程的 host 侧执行桥，做 L4 校验、database 收窄与结果整形，供数据源健康检查与执行器契约使用）；另有能力目录与渐进发现（`search_capabilities` / `describe_capability`）与 `JUMCP_MCP_WEB_DIR` 静态资源同源托管
+- `backend/crates/jumcp-connector-protocol/`：host 与 connector agent 之间的行分隔 JSON-RPC 协议定义（两端共用）
 - `backend/crates/jumcp-connector-clickhouse/`：ClickHouse connector agent（stdin/stdout 按行 JSON-RPC；只做连接/绑定/执行/取数）
 - `admin-web/`：React + Vite 管理台（jumcp 治理面）；`npm run typecheck` / `build` / `lint`
 - `config/`：`policy.toml`（组、角色、数据源、预算与只读策略）
@@ -167,18 +168,19 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 
 **能力档案 `/capabilities/:id`**：可从工具台账、审核队列、例外与可见性点「详情」，在 content 视图栈内打开（URL 不变），也可直接访问 `/capabilities/:id`；「返回」回到来源列表，切侧栏即清空视图。它是单个能力的唯一工作面，分六个栏——概览（生效范围：组→角色；状态与可见性；治理时间线与窗口指标）、定义（结构化字段视图）、版本（版本行与定义哈希）、审批（提交 / 批准发布 + 第二步可见性 / 退回）、调用（最近 1 / 7 / 30 天的调用记录）、审计（该对象的事件流）。内置工具没有受管定义，只有「概览」与「调用」两栏；审核队列进入时直接落在「审批」栏。草稿「提交审核」（审核队列与档案内一致）走二次确认弹层，展示能力 ID / 版本 / 草稿→待审 / 提交后不可自行撤回。
 
-**工具台账**：按受管能力 / 内置工具分段，列顺序按首屏可见性排：工具 ID（第二行类型/版本）→ 调用/失败 → 成功率 → 健康 → 生命周期 → 风险 → 可见性 → 组 → 分类 → 最近调用 → 操作；组显示中文名（内置工具显示「内置」），分类列只显示中文名（基础 / 分析 / 审计 / 自定义），筛选同样是中文分类；点「详情」在 content 视图内打开能力档案，URL 不变（不再用弹层承载详情）。**新建草案**是独立弹层（打开即聚焦第一个输入，组为必选），创建后进入草稿，需到「审批」栏提交审核。
+**工具台账**：按受管能力 / 内置工具分段，列顺序按首屏可见性排：工具 ID（第二行类型/版本）→ 调用/失败 → 成功率 → 健康 → 生命周期 → 风险 → 可见性 → 组 → 分类 → 最近调用 → 操作；组显示中文名（内置工具显示「内置」），分类列只显示中文名（基础 / 分析 / 审计 / 自定义），筛选同样是中文分类；点「详情」在 content 视图内打开能力档案，URL 不变。**新建草案**是独立弹层（打开即聚焦第一个输入，组为必选），创建后进入草稿，需到「审批」栏提交审核。
 
-**审计查询**：默认**最新优先**（`desc`，可切「最旧优先」）；从令牌、能力档案或工具台账进入时在 content 视图内打开并预填筛选（token_id / object_id / event_id），URL 不变，直接访问 `/audit` 路由仍可用并兼容这些查询参数，筛选与「重置」只改页内状态；表格列为 时间 → 摘要 → 主体 → 动作 → 对象 → 操作，结果与审批单不再单列，由摘要与详情弹层承载（主体里的令牌 ID 表格中截断到 12 位，完整值在 `title`/详情）。时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），完整 RFC3339 保留在 `title` 与详情。详情里对 `tool_call`、`template_run` 展示入参、执行脚本与载荷结构版本。改造前写入的旧事件没有 `object_type` / `object_id` / `action`，界面标注「旧格式事件，仅原始载荷」，不按旧字段推断语义，也不计入工具统计。
+**审计查询**：默认**最新优先**（`desc`，可切「最旧优先」）；从令牌、能力档案或工具台账进入时在 content 视图内打开并预填筛选（token_id / object_id / event_id），URL 不变，直接访问 `/audit` 路由仍可用并兼容这些查询参数，筛选与「重置」只改页内状态；表格列为 时间 → 摘要 → 主体 → 动作 → 对象 → 操作，结果与审批单由摘要与详情弹层承载（主体里的令牌 ID 表格中截断到 12 位，完整值在 `title`/详情）。时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），完整 RFC3339 保留在 `title` 与详情。详情里对 `tool_call`、`template_run` 展示入参、执行脚本与载荷结构版本。旧格式事件（没有 `object_type` / `object_id` / `action`）界面标注「旧格式事件，仅原始载荷」，不按旧字段推断语义，也不计入工具统计。
 
 所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`，但**必须**带上 `JUMCP_DEV_ADMIN_TOKEN=<管理面 token>`（Vite 代理据此注入 `Authorization`，缺失则请求全部 401），后端 token 由 `JUMCP_ADMIN_TOKENS="id:token,id:token"` 配置。`npm run build` 做类型检查与构建。
 
 ## 文档索引
 
-- `docs/mcp-router.md`：router 模型——内置工具分类与 `basic` 组、上游配置与逐工具基础组。
+- `docs/mcp-router.md`：架构与 router 模型——内置工具分类与 `basic` 组、上游配置与逐工具基础组。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
-- `docs/plan/jumcp-preview.md`：架构与设计预览（§4.1–§4.4）。
 - `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、分支模型与发布流程、分支保护。
+- `docs/web-hosting.md`：管理台静态资源同源托管的启动校验、路由优先级与缓存策略。
 - `docs/repository-structure.md`：目录结构与各层职责（root、Rust workspace、管理台、config/scripts/docs/notes、`.github`）。
 - `CONTRIBUTING.md`：分支模型、开发流程、本地校验、PR 与发版步骤。
 - `admin-web/README.md`：管理台页面职责、契约要点与本地启动。
+- `notes/mcp_plan/architecture_preview.md` / `notes/mcp_plan/implementation_plan.md`：历史设计记录，不作为当前契约。

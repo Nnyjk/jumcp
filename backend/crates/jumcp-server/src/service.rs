@@ -1,5 +1,5 @@
 //! 服务聚合：配置、catalog、执行委托、审计与按会话预算。
-//! 为什么预算放在 Service 而不是每个 handler：schema/result 累计必须跨调用共享（§5.1 按会话计）。
+//! 为什么预算放在 Service 而不是每个 handler：schema/result 累计必须跨调用共享。
 
 use crate::catalog::{Capability, Catalog};
 use crate::discovery;
@@ -176,9 +176,9 @@ impl Service {
         discovery::visible_capabilities(&self.catalog, self.store.as_deref(), scope)
     }
 
-    /// 调用面集合：`published ∧ callable ∧ group ∈ scope`（可见性不决定可调用性，§4.4.1）。
-    /// 系统直调（连接器/上游/未来的 invoke_capability）用它与发现面共享 predicate 实现，
-    /// 但不再要求 discoverable。
+    /// 调用面集合：`published ∧ callable ∧ group ∈ scope`（可见性不决定可调用性）。
+    /// 系统直调（连接器/上游）用它与发现面共享 predicate 实现，
+    /// 但不要求 discoverable。
     pub fn callable_capabilities(
         &self,
         scope: &EffectiveScope,
@@ -202,7 +202,7 @@ impl Service {
         Ok(discovery::merge_exposed(base, extra))
     }
 
-    /// 常驻 token 计量（§5.1 口径：每个工具 canonical JSON 字节数 / 4，逐个累加）。
+    /// 常驻 token 计量（口径：每个工具 canonical JSON 字节数 / 4，逐个累加）。
     pub fn resident_tokens(&self, tools: &[Value]) -> i64 {
         tools.iter().map(estimate_tokens).sum()
     }
@@ -261,7 +261,7 @@ impl Service {
         .map(|env| env.event_id)
     }
 
-    /// 拒绝路径统一审计（§4.4.3 policy_decision）：统一载荷 + 人类可读错误信息。
+    /// 拒绝路径统一审计（policy_decision）：统一载荷 + 人类可读错误信息。
     pub fn policy_decision(
         &self,
         actor: &Actor,
@@ -393,7 +393,7 @@ pub fn health(settings: &Settings) -> Value {
 /// 多角色部署里角色名往往 `admin` 排最前，若按字典序取第一个，stdio 进程会直接拿到维护通道
 /// （`admin` 组）——默认身份不得持有维护通道。
 ///
-/// 取法：优先 `analyst`（历史默认、最小权限），否则按名字排序取第一个非 admin 角色。
+/// 取法：优先 `analyst`（默认角色、最小权限），否则按名字排序取第一个非 admin 角色。
 /// 全部角色都持 admin 组时返回 `None`：`process_actor` 得到空角色，后续 `require_scope()`
 /// 因策略里查不到该角色而失败，即 fail-closed——绝不回退到特权角色。
 fn default_role(settings: &Settings) -> Option<String> {

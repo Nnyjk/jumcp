@@ -1,0 +1,120 @@
+/* 面：卡片、毛玻璃、浮层与筛选条容器。 */
+
+.card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--glass-surface);
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  overflow: hidden;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.card-head h2 {
+  font-size: var(--fs-16);
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.card-subtitle {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex: none;
+}
+
+.card-body {
+  padding: var(--space-4);
+}
+
+.card-body-flush {
+  padding: 0;
+}
+
+.card-foot {
+  padding: 10px var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+/* 操作 / 筛选 */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.filter-bar .field {
+  /* 160px 让 5 个筛选字段 + 搜索 + 操作按钮在 1440 下同排，按钮与字段底边对齐。 */
+  flex: 0 1 160px;
+}
+
+.filter-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.hint {
+  max-width: var(--measure);
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  line-height: 18px;
+}
+
+/* 统计口径固定说明：台账卡片内贴边，调用明细里作为普通段落。 */
+.scope-note {
+  max-width: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.inline-link {
+  margin-left: 4px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* 同一位置的操作也可能用按钮（视图内换页不跳路由）：去掉 UA 按钮外观，行为保持文字链接。 */
+button.inline-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.scope-note-inline {
+  padding: 0 0 var(--space-2);
+  border-bottom: 0;
+  background: transparent;
+}
+

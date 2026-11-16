@@ -1,5 +1,5 @@
 //! 平面 A 纯函数：三通道解析 → 越界判定 → EffectiveScope，严格按序（填充默认→越界→预算）。
-//! 为什么顺序不可调：先交集使 strict 恒假，先截断掩盖越界（§4.1.3）。
+//! 为什么顺序不可调：先交集使 strict 恒假，先截断掩盖越界。
 
 use crate::config::TenantPolicy;
 use crate::errors::McpError;

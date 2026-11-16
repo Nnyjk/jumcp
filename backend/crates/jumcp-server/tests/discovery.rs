@@ -1,4 +1,4 @@
-//! 静态客户端路径（§5.2 / W2.4）：平铺阈值、收缩形态、常驻预算与 `_meta` 通道。
+//! 静态客户端路径：平铺阈值、收缩形态、常驻预算与 `_meta` 通道。
 
 use jumcp_core::budget::BudgetCaps;
 use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};

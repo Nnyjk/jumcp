@@ -1,7 +1,6 @@
 //! 契约测试：入口裁剪、令牌常驻预算 fail|truncate、schema 预算、版本冲突。
 //!
-//! 内置 basic 组已不再提供直连数据源的工具（`db_query_readonly` / `db_run_template` 已移除），
-//! 因此这里只剩元工具三件套 + 目录/预算契约；取数契约由模板与上游工具各自的测试覆盖。
+//! 内置 basic 组不提供直连数据源的工具，这里只剩元工具三件套 + 目录/预算契约；
 //! 真实 PG/ClickHouse 用例在 jumcp-server 单元里 `#[ignore]` + DSN 门槛。
 
 use jumcp_core::audit::AuditLog;

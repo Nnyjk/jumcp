@@ -16,7 +16,7 @@
 
 - `db_query_readonly(sql, params?, max_rows, max_tokens, cell_char_limit, cell_char_offset, allowed_schemas, database?)`：位置参数绑定、单条只读语句、行数夹紧并回显 `effective_max_rows/truncated`、单元格续读、token 预算、`sql_hash`、审计。
 - `db_run_template(template_id, version?, params)`：命名参数 → 绑定占位符、版本钉住、发布期 EXPLAIN、结果缓存键、schema 白名单。
-- L1 只读账号是强保证；L2 连接/事务级只读是强保证；L4 AST 是纵深防御，不是保证（`docs/plan/jumcp-preview.md` §2、§4.3.1）。
+- L1 只读账号是强保证；L2 连接/事务级只读是强保证；L4 AST 是纵深防御，不是保证（`architecture_preview.md` §2、§4.3.1）。
 
 一个方案只有同时满足 **绑定参数 + 每次调用可下压的行数上限 + 可判定的 `truncated` + 结构化行 + 可按引擎建立只读会话**，才可能直接承接 `db_query_readonly`。只满足其中一部分的，只能承接模板。
 

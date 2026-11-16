@@ -77,7 +77,7 @@ fail() {
   exit 1
 }
 
-# ---------------------------------------------------------------- 前置检查
+# 前置检查
 command -v curl >/dev/null 2>&1 || { echo "错误：缺少 curl" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "错误：缺少 node" >&2; exit 2; }
 [ -f "$DIST_DIR/index.html" ] || {
@@ -92,7 +92,7 @@ VITE_ENTRY="$WEB_DIR/node_modules/vite/bin/vite.js"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jumcp-web-smoke.XXXXXX")"
 
-# ---------------------------------------------------------------- 起 vite preview
+# 起 vite preview
 echo "==> smoke: vite preview（dist=$DIST_DIR，$HOST:$PORT）"
 (
   cd "$WEB_DIR" || exit 1
@@ -116,7 +116,7 @@ done
 [ "$ready" = "1" ] || fail "vite preview 在 ${TIMEOUT_S}s 内未就绪（$BASE/）"
 echo "    preview 已就绪"
 
-# ---------------------------------------------------------------- 断言工具
+# 断言工具
 CODE=""
 CTYPE=""
 get() {

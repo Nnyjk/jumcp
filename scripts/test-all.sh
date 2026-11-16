@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# ---------------------------------------------------------------- 结果记录
+# 结果记录
 STEP_NAMES=()
 STEP_STATUS=()
 STEP_SECONDS=()
@@ -164,13 +164,13 @@ run_step() {
   fail_step "$name" "$log"
 }
 
-# ---------------------------------------------------------------- 0. 参数后准备
+# 0. 参数后准备
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jumcp-testall.XXXXXX")"
 if [ -n "$CLICKHOUSE_DSN" ]; then
   export JUMCP_TEST_CLICKHOUSE_DSN="$CLICKHOUSE_DSN"
 fi
 
-# ---------------------------------------------------------------- 1. 环境探测
+# 1. 环境探测
 echo "==> env: toolchain probe"
 ENV_LOG="$TMP_DIR/env.log"
 MISSING=""
@@ -207,7 +207,7 @@ fi
 record "env: toolchain probe" "PASS" "0" "$ENV_LOG"
 cat "$ENV_LOG"
 
-# ---------------------------------------------------------------- 2. 后端
+# 2. 后端
 run_step "backend: cargo fmt --check" "$BACKEND_DIR" cargo fmt --check
 run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --all-targets -- -D warnings
 run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace
@@ -216,13 +216,13 @@ if [ -n "$CLICKHOUSE_DSN" ]; then
   run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace -- --ignored
 fi
 
-# ---------------------------------------------------------------- 3. 前端
+# 3. 前端
 run_step "frontend: npm ci" "$WEB_DIR" npm ci
 run_step "frontend: npm run typecheck" "$WEB_DIR" npm run typecheck
 run_step "frontend: npm run build" "$WEB_DIR" npm run build
 run_step "frontend: eslint src --max-warnings 0" "$WEB_DIR" npx eslint src --max-warnings 0
 
-# ---------------------------------------------------------------- 4. E2E 冒烟
+# 4. E2E 冒烟
 if [ "$SKIP_E2E" = "1" ]; then
   echo "跳过 E2E 冒烟（--skip-e2e）"
   print_summary

@@ -1,0 +1,689 @@
+//! 上游 MCP router：配置加载、连接池、工具缓存、失败隔离与调用转发。
+//!
+//! 边界：
+//! - 只做聚合：一个 `/mcp` 暴露内置工具 + 所有启用上游的工具，不提供逐上游透传端点。
+//! - 命名 `<server_id>__<tool>`，两侧非 `[A-Za-z0-9_-]` → `-`，整名 ≤64；冲突拒绝，不加后缀。
+//! - 传输只实现 MCP Streamable HTTP（POST + JSON/SSE 响应 + `Mcp-Session-Id`）；stdio 上游
+//!   由部署开关控制，`Command` 直接 spawn 且显式剔除管理/agent token 环境变量。
+//! - 惰性连接、空闲回收，不做后台轮询；管理面 `refresh` 是唯一"主动探测"入口。
+//!
+//! 失败隔离：单个上游不可达只影响它自己——缓存里的旧工具继续可见（状态 `degraded`），
+//! 其他上游与内置工具照常；调用失败整形为 MCP `isError` 结果。
+//!
+//! 连接池、工具缓存与失败隔离留在本文件；两种传输实现在 `http` / `stdio`，共用件在 `client`。
+
+mod client;
+mod http;
+mod stdio;
+
+use self::client::UpstreamClient;
+
+use crate::catalog::{Capability, SOURCE_UPSTREAM};
+use crate::discovery;
+use jumcp_core::entry::EffectiveScope;
+use jumcp_core::errors::McpError;
+use jumcp_core::registry::{
+    CapabilityStore, EXPOSED_TOOL_NAME_MAX, McpUpstream, UPSTREAM_NAME_SEP, UpstreamTool,
+    is_builtin_id, is_upstream_tool_name,
+};
+use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinSet;
+
+/// 未显式声明时，`tools/list` 缓存的有效期；管理面写操作会立即失效。
+const TOOLS_TTL: Duration = Duration::from_secs(30);
+
+/// MCP 协议版本：对外回执与向上游 `initialize` 使用同一常量（当前只支持这一个版本）。
+pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+
+/// 一次已解析的上游调用：名字、原始工具与配置指纹。
+#[derive(Debug, Clone)]
+pub struct UpstreamCall {
+    pub upstream_id: String,
+    pub definition_hash: String,
+    pub tool: String,
+    pub exposed: String,
+}
+
+/// 上游调用的失败形态：不含 body/凭据，只带可对外展示的原因。
+#[derive(Debug, Clone)]
+pub struct UpstreamFailure {
+    pub upstream_id: String,
+    pub code: String,
+    pub message: String,
+    /// 审计 outcome：超时/结果未知用 `unknown`，其余 `error`。
+    pub outcome: &'static str,
+    pub definition_hash: String,
+}
+
+impl UpstreamFailure {
+    fn error(upstream_id: &str, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            upstream_id: upstream_id.into(),
+            code: code.into(),
+            message: message.into(),
+            outcome: "error",
+            definition_hash: String::new(),
+        }
+    }
+    fn unknown(upstream_id: &str, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            outcome: "unknown",
+            ..Self::error(upstream_id, code, message)
+        }
+    }
+    fn with_hash(mut self, hash: &str) -> Self {
+        self.definition_hash = hash.to_string();
+        self
+    }
+}
+
+/// 上游运行态（管理面 GET 的 status 字段来源）。
+#[derive(Debug, Clone)]
+pub struct UpstreamRuntime {
+    pub status: &'static str,
+    pub status_message: String,
+    pub tool_count: i64,
+    pub last_checked_at: Option<String>,
+}
+
+/// 暴露名规则：`<server_id>__<tool>`，两侧非法字符转 `-`。
+///
+/// **不截断**：超长名在拉取工具时整台拒绝（见 `conflict_message`），否则旧名回退会拿
+/// 截断后的名字去调上游。server id 不含 `__`，因此第一次出现的 `__` 一定是分隔符。
+pub fn exposed_tool_name(server_id: &str, tool: &str) -> String {
+    let sanitize = |raw: &str| -> String {
+        raw.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    };
+    format!(
+        "{}{UPSTREAM_NAME_SEP}{}",
+        sanitize(server_id),
+        sanitize(tool)
+    )
+}
+
+/// 单工具能否进 `basic`（公共基础通道）：只读、非 admin 类别、名字不是 `admin_` 前缀。
+///
+/// 三条限制合起来回答同一个问题："这个工具能不能成为所有 token 都能看见的只读入口"。
+/// 写工具、审计类工具与 `admin_*` 维护工具都必须留在上游组里按组授权，
+/// 否则 `basic` 会变成绕过 admin 的旁路。
+pub fn basic_eligible(def: &McpUpstream, tool: &UpstreamTool) -> bool {
+    def.read_only
+        && def.category != crate::catalog::CATEGORY_ADMIN
+        && !tool.name.starts_with("admin_")
+        && is_upstream_tool_name(&exposed_tool_name(&def.id, &tool.name))
+}
+
+/// 工具在本次投影里的**生效组**：显式覆盖到 `basic` 且仍 eligible 时是 `basic`，
+/// 否则继承上游注册时的组。`eligible` 当场复核，因此上游改成可写/改成 admin 类别时，
+/// 覆盖行不会继续把一个不合规的工具暴露在公共通道上。
+fn effective_group<'a>(
+    def: &'a McpUpstream,
+    tool: &UpstreamTool,
+    overrides: &'a HashMap<String, HashMap<String, String>>,
+) -> &'a str {
+    match overrides
+        .get(&def.id)
+        .and_then(|tools| tools.get(&tool.name))
+        .filter(|group| group.as_str() == discovery::BASIC_GROUP && basic_eligible(def, tool))
+    {
+        Some(group) => group.as_str(),
+        None => &def.group,
+    }
+}
+
+struct Pooled {
+    generation: String,
+    client: Arc<UpstreamClient>,
+}
+
+struct CacheEntry {
+    generation: String,
+    fetched_at: Instant,
+    last_checked_at: String,
+    tools: Vec<UpstreamTool>,
+    /// 最近一次拉取/调用的失败；`tools` 非空时为 `degraded`。
+    failure: Option<(String, &'static str)>,
+}
+
+#[derive(Default)]
+struct Inner {
+    pool: HashMap<String, Pooled>,
+    tools: HashMap<String, CacheEntry>,
+}
+
+/// 上游管理器：配置现查 SQLite，连接池与工具缓存按配置指纹失效。
+pub struct UpstreamManager {
+    store: Arc<CapabilityStore>,
+    /// 是否允许 `read_only=false` 的上游进入投影/调用面（部署开关的运行时副本）。
+    write_allowed: bool,
+    http: reqwest::Client,
+    inner: Mutex<Inner>,
+    /// 每个上游一把建连锁：并发请求不会为同一上游拉起两个 stdio 进程/两条初始化链。
+    connect_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+}
+
+impl UpstreamManager {
+    pub fn new(store: Arc<CapabilityStore>, write_allowed: bool) -> Self {
+        // 重定向只允许同 host（跨 host 一律停止）：上游地址由管理面填写，必须防被重定向到内网。
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 3 {
+                    return attempt.stop();
+                }
+                match attempt.previous().last() {
+                    Some(previous) if previous.host_str() != attempt.url().host_str() => {
+                        attempt.stop()
+                    }
+                    _ => attempt.follow(),
+                }
+            }))
+            .build()
+            .expect("reqwest client 初始化失败");
+        Self {
+            store,
+            write_allowed,
+            http,
+            inner: Mutex::new(Inner::default()),
+            connect_locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn store(&self) -> &Arc<CapabilityStore> {
+        &self.store
+    }
+
+    fn lock_for(&self, id: &str) -> Arc<AsyncMutex<()>> {
+        let mut locks = self.connect_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.entry(id.to_string()).or_default().clone()
+    }
+
+    fn pooled(&self, id: &str, generation: &str) -> Option<Arc<UpstreamClient>> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .pool
+            .get(id)
+            .filter(|p| p.generation == generation)
+            .map(|p| p.client.clone())
+    }
+
+    fn drop_pooled(&self, id: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.pool.remove(id);
+    }
+
+    /// 配置写后失效：连接与工具缓存一起丢，下一次请求重新建连/拉取。
+    pub fn invalidate(&self, id: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.pool.remove(id);
+        inner.tools.remove(id);
+    }
+
+    /// 删除上游后回收连接与缓存。
+    pub fn remove(&self, id: &str) {
+        self.invalidate(id);
+        let mut locks = self.connect_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.remove(id);
+    }
+
+    /// 名字是否落在某个"会参与路由"的上游前缀上：纯 SQLite 判定，**不建连、不拉取**。
+    ///
+    /// 供调用面的 allowlist 预检使用——被拒绝的名字不应产生任何上游连接/工具拉取。
+    /// 上游组不在 scope 时，只有显式覆盖到 `basic` 的工具名仍可能被路由（逐工具通道），
+    /// 因此这里也认这些名字，否则 allowlist 的拒绝会被 `resolve` 绕到"可调用"路径上。
+    pub fn matches_upstream(&self, scope: &EffectiveScope, name: &str) -> bool {
+        let Ok(defs) = self.store.upstreams() else {
+            return false;
+        };
+        let overrides = self.tool_group_overrides();
+        defs.iter().any(|def| {
+            if !def.enabled || !(def.read_only || self.write_allowed) {
+                return false;
+            }
+            if !name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id)) {
+                return false;
+            }
+            if scope.groups.contains(&def.group) {
+                return true;
+            }
+            // 覆盖行的 key 是上游**原始**工具名，`name` 是清洗后的暴露名，
+            // 因此必须按 `exposed_tool_name` 比较，不能拿暴露名后缀直接查表。
+            overrides.get(&def.id).is_some_and(|tools| {
+                tools.iter().any(|(raw, group)| {
+                    group.as_str() == discovery::BASIC_GROUP
+                        && exposed_tool_name(&def.id, raw) == name
+                })
+            })
+        })
+    }
+
+    /// 逐工具组覆盖的索引形态：`upstream_id → tool_name → group_code`（读失败按无覆盖处理，
+    /// 只会让"上游组不在 scope"的工具更少可见，不会放宽任何授权）。
+    fn tool_group_overrides(&self) -> HashMap<String, HashMap<String, String>> {
+        let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+        if let Ok(rows) = self.store.upstream_tool_groups() {
+            for row in rows {
+                out.entry(row.upstream_id)
+                    .or_default()
+                    .insert(row.tool_name, row.group_code);
+            }
+        }
+        out
+    }
+
+    /// 缓存里的上游工具（管理面读视图用）：**不触网**，从未拉取过时返回空。
+    pub fn cached_tools(&self, id: &str) -> Vec<UpstreamTool> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .tools
+            .get(id)
+            .map(|entry| entry.tools.clone())
+            .unwrap_or_default()
+    }
+
+    async fn client_for(
+        &self,
+        def: &McpUpstream,
+    ) -> Result<(Arc<UpstreamClient>, String), UpstreamFailure> {
+        let generation = def.definition_hash();
+        if let Some(client) = self.pooled(&def.id, &generation) {
+            return Ok((client, generation));
+        }
+        let lock = self.lock_for(&def.id);
+        let _guard = lock.lock().await;
+        if let Some(client) = self.pooled(&def.id, &generation) {
+            return Ok((client, generation));
+        }
+        let client = UpstreamClient::connect(self.http.clone(), def)
+            .await
+            .map_err(|e| e.with_hash(&generation))?;
+        let client = Arc::new(client);
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.pool.insert(
+                def.id.clone(),
+                Pooled {
+                    generation: generation.clone(),
+                    client: client.clone(),
+                },
+            );
+        }
+        Ok((client, generation))
+    }
+
+    /// 拉一次 `tools/list`（只做网络与握手，命名/冲突校验在写缓存前统一做）。
+    async fn fetch_tools(
+        &self,
+        def: &McpUpstream,
+    ) -> Result<(Vec<UpstreamTool>, String), UpstreamFailure> {
+        let (client, generation) = self.client_for(def).await?;
+        let tools = client
+            .list_tools(&def.id)
+            .await
+            .map_err(|e| e.with_hash(&generation))?;
+        Ok((tools, generation))
+    }
+
+    /// 暴露名合法性 + 冲突检测：返回 `Some(message)` 表示整台上游拒绝（不静默改名/丢工具）。
+    ///
+    /// 在缓存写锁内调用，因此"检查"与"插入"之间没有并发窗口：两个上游同时首拉时，
+    /// 后进入临界区的那台会看到已插入的名字并整台置 error。
+    ///
+    /// 冲突面三处：内置 id、注册表里已存在的 capability_id（managed 能力，含 draft）、
+    /// 其他上游已暴露的名字。注册表读取失败按存储错误上抛，不当作"没有冲突"。
+    fn conflict_message(
+        &self,
+        def: &McpUpstream,
+        tools: &[UpstreamTool],
+        inner: &Inner,
+    ) -> Result<Option<String>, McpError> {
+        let managed: HashSet<String> = self
+            .store
+            .all()?
+            .into_iter()
+            .map(|rec| rec.capability_id)
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        for tool in tools {
+            let exposed = exposed_tool_name(&def.id, &tool.name);
+            if exposed.len() > EXPOSED_TOOL_NAME_MAX || !is_upstream_tool_name(&exposed) {
+                return Ok(Some(format!(
+                    "工具 {:?} 的暴露名 {exposed} 不合规（需 <server_id>__<tool> 且整名 ≤{EXPOSED_TOOL_NAME_MAX}），拒绝接入",
+                    tool.name
+                )));
+            }
+            if is_builtin_id(&exposed) {
+                return Ok(Some(format!("工具 {exposed} 与内置工具重名，拒绝接入")));
+            }
+            if managed.contains(&exposed) {
+                return Ok(Some(format!(
+                    "工具 {exposed} 与注册表能力重名（managed capability），拒绝接入"
+                )));
+            }
+            if !seen.insert(exposed.clone()) {
+                return Ok(Some(format!("工具 {exposed} 规范化后重名，拒绝接入")));
+            }
+            for (other_id, entry) in &inner.tools {
+                if other_id == &def.id {
+                    continue;
+                }
+                if entry
+                    .tools
+                    .iter()
+                    .any(|other| exposed_tool_name(other_id, &other.name) == exposed)
+                {
+                    return Ok(Some(format!(
+                        "工具 {exposed} 与其他上游（{other_id}）已暴露的工具重名，拒绝接入"
+                    )));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// 单个上游的工具（缓存命中直接返回；过期/缺失则重新拉取，失败保留旧工具）。
+    ///
+    /// 失败也刷新 `fetched_at`：失败的上游在 TTL 内不重复打点（避免每个 `tools/list` 都
+    /// 等一次超时），但保留旧工具并把状态标成 `degraded`，不影响其他上游。
+    async fn tools_for(&self, def: &McpUpstream) -> Vec<UpstreamTool> {
+        let generation = def.definition_hash();
+        let now = Instant::now();
+        if let Ok(inner) = self.inner.lock()
+            && let Some(entry) = inner.tools.get(&def.id)
+            && entry.generation == generation
+            && now.duration_since(entry.fetched_at) < TOOLS_TTL
+        {
+            return entry.tools.clone();
+        }
+        let outcome = self.fetch_tools(def).await;
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match outcome {
+            Ok((tools, generation)) => {
+                let conflict = match self.conflict_message(def, &tools, &inner) {
+                    Ok(conflict) => conflict,
+                    Err(e) => Some(e.message),
+                };
+                if let Some(message) = conflict {
+                    inner.tools.insert(
+                        def.id.clone(),
+                        CacheEntry {
+                            generation,
+                            fetched_at: Instant::now(),
+                            last_checked_at: now_iso(),
+                            tools: Vec::new(),
+                            failure: Some((message, "error")),
+                        },
+                    );
+                    return Vec::new();
+                }
+                inner.tools.insert(
+                    def.id.clone(),
+                    CacheEntry {
+                        generation,
+                        fetched_at: Instant::now(),
+                        last_checked_at: now_iso(),
+                        tools: tools.clone(),
+                        failure: None,
+                    },
+                );
+                tools
+            }
+            Err(failure) => {
+                let entry = inner
+                    .tools
+                    .entry(def.id.clone())
+                    .or_insert_with(|| CacheEntry {
+                        generation: generation.clone(),
+                        fetched_at: Instant::now(),
+                        last_checked_at: now_iso(),
+                        tools: Vec::new(),
+                        failure: None,
+                    });
+                entry.generation = generation;
+                entry.fetched_at = Instant::now();
+                entry.last_checked_at = now_iso();
+                entry.failure = Some((failure.message, failure.outcome));
+                entry.tools.clone()
+            }
+        }
+    }
+
+    /// 让该上游的工具缓存立即过期（保留旧工具）：refresh 用它强制真实重拉。
+    fn expire_tools(&self, id: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = inner.tools.get_mut(id) {
+            entry.fetched_at = Instant::now() - TOOLS_TTL - Duration::from_secs(1);
+        }
+    }
+
+    /// 一次请求内的上游视图：只含"上游组在 scope 内"或"有逐工具 basic 覆盖"的启用上游，
+    /// **并行**拉取、逐台上游独立超时。
+    ///
+    /// 组门是**工具级**的：
+    /// - 上游组在 scope 内 → 全部工具都在（覆盖到 basic 的工具生效组变成 basic）；
+    /// - 上游组不在 scope 内 → 只保留"覆盖到 basic 且 eligible"的工具。
+    ///
+    /// 这样单个只读工具可以进公共通道，而同一台上游的其他工具仍然按组授权。
+    async fn projection(
+        self: &Arc<Self>,
+        scope: &EffectiveScope,
+    ) -> Vec<(McpUpstream, Vec<UpstreamTool>)> {
+        let overrides = self.tool_group_overrides();
+        let defs: Vec<McpUpstream> = match self.store.upstreams() {
+            Ok(rows) => rows
+                .into_iter()
+                .filter(|d| {
+                    d.enabled
+                        // 写上游的准入是部署开关：DB 里残留的 read_only=false 在开关关闭时
+                        // 既不投影也不可调（不能只靠写入期校验）。
+                        && (d.read_only || self.write_allowed)
+                        && (scope.groups.contains(&d.group) || overrides.contains_key(&d.id))
+                })
+                .collect(),
+            Err(_) => return Vec::new(),
+        };
+        let mut set = JoinSet::new();
+        for def in defs {
+            let me = self.clone();
+            set.spawn(async move {
+                let tools = me.tools_for(&def).await;
+                (def, tools)
+            });
+        }
+        let mut out = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            let Ok((def, tools)) = joined else {
+                continue;
+            };
+            if scope.groups.contains(&def.group) {
+                out.push((def, tools));
+                continue;
+            }
+            let tools: Vec<UpstreamTool> = tools
+                .into_iter()
+                .filter(|tool| effective_group(&def, tool, &overrides) == discovery::BASIC_GROUP)
+                .collect();
+            if !tools.is_empty() {
+                out.push((def, tools));
+            }
+        }
+        out.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        out
+    }
+
+    /// 本次 scope 可见的上游工具投影（失败的上游返回空工具，不阻塞其他上游）。
+    pub async fn capabilities(self: &Arc<Self>, scope: &EffectiveScope) -> Vec<Capability> {
+        let overrides = self.tool_group_overrides();
+        let mut out = Vec::new();
+        for (def, tools) in self.projection(scope).await {
+            for tool in &tools {
+                let exposed = exposed_tool_name(&def.id, &tool.name);
+                // token 的 allowlist 同时约束内置与上游：不在白名单里的暴露名既不可发现。
+                if !discovery::tool_allowed(scope, &exposed) {
+                    continue;
+                }
+                let group = effective_group(&def, tool, &overrides).to_string();
+                out.push(discovery::project_upstream(&def, tool, &exposed, &group));
+            }
+        }
+        out
+    }
+
+    /// 解析一次调用：当前投影精确匹配 → `server_id__` 前缀回退 → `None`。
+    ///
+    /// 前缀回退是"客户端缓存了旧 `tools/list`"的兜底：不要求该工具在本次缓存里，
+    /// 但要求上游本身启用且组在 scope 内（授权不因缓存陈旧而放宽）。
+    /// 上游组**不在** scope 时只允许 `basic` 成员：此时投影里只剩这些工具，
+    /// 因此回退必须命中投影里的真实工具名，不能拿任意 suffix 去调上游。
+    pub async fn resolve(
+        self: &Arc<Self>,
+        scope: &EffectiveScope,
+        name: &str,
+    ) -> Option<UpstreamCall> {
+        let projection = self.projection(scope).await;
+        for (def, tools) in &projection {
+            for tool in tools {
+                if exposed_tool_name(&def.id, &tool.name) == name {
+                    return Some(UpstreamCall {
+                        upstream_id: def.id.clone(),
+                        definition_hash: def.definition_hash(),
+                        tool: tool.name.clone(),
+                        exposed: name.to_string(),
+                    });
+                }
+            }
+        }
+        for (def, tools) in &projection {
+            let prefix = format!("{}{UPSTREAM_NAME_SEP}", def.id);
+            let Some(suffix) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            if suffix.is_empty() {
+                continue;
+            }
+            let known = tools
+                .iter()
+                .find(|t| exposed_tool_name(&def.id, &t.name) == name);
+            if !scope.groups.contains(&def.group) && known.is_none() {
+                continue;
+            }
+            let tool = known
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| suffix.to_string());
+            return Some(UpstreamCall {
+                upstream_id: def.id.clone(),
+                definition_hash: def.definition_hash(),
+                tool,
+                exposed: name.to_string(),
+            });
+        }
+        None
+    }
+
+    /// 转发一次调用，返回（上游结果, 实际使用的配置指纹）。
+    pub async fn call(
+        &self,
+        call: &UpstreamCall,
+        arguments: &Value,
+    ) -> Result<(Value, String), UpstreamFailure> {
+        let def = self
+            .store
+            .upstream(&call.upstream_id)
+            .map_err(|e| UpstreamFailure::error(&call.upstream_id, &e.code, e.message))?
+            .filter(|d| d.enabled)
+            .ok_or_else(|| {
+                UpstreamFailure::error(
+                    &call.upstream_id,
+                    "MCP_UPSTREAM_NOT_FOUND",
+                    "上游不存在或已停用",
+                )
+            })?;
+        if !def.read_only && !self.write_allowed {
+            return Err(UpstreamFailure::error(
+                &def.id,
+                "MCP_UPSTREAM_WRITE_FORBIDDEN",
+                "上游声明可写，但本部署未开启 JUMCP_MCP_ALLOW_WRITE_UPSTREAM",
+            ));
+        }
+        let (client, generation) = self.client_for(&def).await?;
+        match client.call(&def.id, &call.tool, arguments).await {
+            Ok(result) => Ok((result, generation)),
+            Err(failure) => {
+                // 传输层失败后不复用可能已坏掉的连接：下一次调用重新建连/拉起进程。
+                self.drop_pooled(&def.id);
+                Err(failure.with_hash(&generation))
+            }
+        }
+    }
+
+    /// 管理面 refresh：重新建连 + 拉取工具；连接失败不返回 Err（由 status 表达）。
+    pub async fn refresh(self: &Arc<Self>, id: &str) -> Result<UpstreamRuntime, McpError> {
+        let def = self
+            .store
+            .upstream(id)?
+            .ok_or_else(|| McpError::new("MCP_UPSTREAM_NOT_FOUND", json!({"id": id})))?;
+        // 连接与工具缓存都必须失效：只丢连接会被 30s TTL 的缓存挡住，refresh 变成假探测。
+        self.drop_pooled(id);
+        self.expire_tools(id);
+        let _ = self.tools_for(&def).await;
+        Ok(self.runtime(&def))
+    }
+
+    /// 运行态：状态取缓存（`ok|degraded|error|unknown`），不触发任何网络请求。
+    pub fn runtime(&self, def: &McpUpstream) -> UpstreamRuntime {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = inner.tools.get(&def.id) else {
+            return UpstreamRuntime {
+                status: "unknown",
+                status_message: String::new(),
+                tool_count: 0,
+                last_checked_at: None,
+            };
+        };
+        let tool_count = entry.tools.len() as i64;
+        let (status, message) = match &entry.failure {
+            Some((message, _)) if tool_count == 0 => ("error", message.clone()),
+            Some((message, _)) => ("degraded", message.clone()),
+            None => ("ok", String::new()),
+        };
+        UpstreamRuntime {
+            status,
+            status_message: message,
+            tool_count,
+            last_checked_at: Some(entry.last_checked_at.clone()),
+        }
+    }
+
+    /// 全部上游 + 运行态（管理面列表；配置现查 store，状态取缓存）。
+    pub fn views(&self) -> Result<Vec<(McpUpstream, UpstreamRuntime)>, McpError> {
+        Ok(self
+            .store
+            .upstreams()?
+            .into_iter()
+            .map(|def| {
+                let runtime = self.runtime(&def);
+                (def, runtime)
+            })
+            .collect())
+    }
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// 上游工具是否由本服务暴露（供 `tools/list` 判定常驻集合）。
+pub fn is_upstream_capability(cap: &Capability) -> bool {
+    cap.source == SOURCE_UPSTREAM
+}

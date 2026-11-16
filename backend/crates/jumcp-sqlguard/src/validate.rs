@@ -2,7 +2,7 @@
 //!
 //! 设计约束：
 //!
-//! - 只做**语法级**判定：单语句、根节点为查询、命中附录 B 黑名单、schema 不越界。
+//! - 只做**语法级**判定：单语句、根节点为查询、命中函数黑名单、schema 不越界。
 //! - 不做**语义级**判定：能否读到数据由数据源账号权限（L1）保证，AST 层无权也无从保证。
 //! - 解析只用 sqlparser，不用正则：正则无法可靠区分字符串字面量、注释与标识符；
 //!   sqlparser 看不到的部分（可执行注释、INTO OUTFILE、控制字符）另走词法层拦截。
@@ -19,7 +19,7 @@ use crate::dialect::Dialect;
 use crate::error::{CODE_MULTI_STATEMENT, CODE_SCHEMA_OUT_OF_SCOPE, CODE_SQL_REJECTED, GuardError};
 use crate::lex::{self, Lexed, Token, TokenKind};
 
-/// 附录 B 黑名单：精确函数名（小写比较）。
+/// 函数黑名单：精确函数名（小写比较）。
 const BLACKLIST_FUNCTIONS: &[&str] = &[
     "pg_read_file",
     "pg_ls_dir",
@@ -33,7 +33,7 @@ const BLACKLIST_FUNCTIONS: &[&str] = &[
     "sleep",
 ];
 
-/// 附录 B 黑名单：函数名前缀族。
+/// 函数黑名单：前缀族。
 const BLACKLIST_FUNCTION_PREFIXES: &[&str] = &["dblink", "pg_sleep", "pg_advisory_lock"];
 
 /// ClickHouse 外部访问/执行类函数（表函数与标量函数共用名字）。
@@ -702,7 +702,7 @@ fn classify_kind(query: &Query, tokens: &[Token]) -> Kind {
     }
 }
 
-/// 函数名是否命中附录 B 黑名单。
+/// 函数名是否命中黑名单。
 fn is_blacklisted_function(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
     BLACKLIST_FUNCTIONS.contains(&lowered.as_str())

@@ -1,5 +1,5 @@
-// 只读执行委托：默认报「未配置数据源」，绝不假执行（§2.10 错误必须显式）。
-// 入参形状沿用 spec §4.3.2 的自由查询契约：sql/params/max_rows/max_tokens/cell_char_limit/cell_char_offset/allowed_schemas。
+// 只读执行委托：默认报「未配置数据源」，绝不假执行。
+// 入参形状沿用自由查询契约：sql/params/max_rows/max_tokens/cell_char_limit/cell_char_offset/allowed_schemas。
 
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::errors::McpError;
@@ -13,7 +13,7 @@ pub type ExecFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, McpError>> +
 
 /// 自由查询入参（已过 schema 收窄校验与占位符风格校验）。
 ///
-/// 内置 basic 组不再暴露直连查询工具，这里保留供连接器/数据源健康检查与执行器契约使用。
+/// 内置 basic 组不暴露直连查询工具，这里保留供连接器/数据源健康检查与执行器契约使用。
 #[derive(Debug, Clone)]
 pub struct QueryParams {
     pub sql: String,
@@ -30,7 +30,7 @@ pub struct QueryParams {
 }
 
 impl QueryParams {
-    /// §4.3.2 默认/上限：max_rows 默认 100 上限 1000；cell_char_limit 默认 200 上限 4000。
+    /// 默认/上限：max_rows 默认 100 上限 1000；cell_char_limit 默认 200 上限 4000。
     /// allowed_schemas 只能收窄连接声明：请求超出连接声明即 schema 越界拒绝。
     pub fn new(
         sql: String,

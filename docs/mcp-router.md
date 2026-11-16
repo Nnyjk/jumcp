@@ -32,7 +32,7 @@
 - 创建/改名/删除组一律 409 `MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在
   `RESERVED_GROUP_NAMES`）；`basic` 不能出现在令牌的 `groups` 里（`token_options.groups`
   不含它，创建令牌传它会得到"未知组"）。配置文件中出现 `basic` 或 `builtin` 组 → 启动校验失败。
-- `builtin` 只作为**拒绝创建的保留名**存在，不再作为任何工具的 `group` 值。
+- `builtin` 只作为**拒绝创建的保留名**存在，不作为任何工具的 `group` 值。
 
 分类**不是授权组**，不改变权限判定：`analysis`/`admin` 这两类不是 `scope.groups` 的取值，
 `X-MCP-Tool-Groups` 收窄也不会改变常驻工具的可见性。常驻性由代码常量

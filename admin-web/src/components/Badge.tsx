@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react'
-import type { CapabilityRisk, ToolHealth, ToolSource } from '../api/types'
+import type { CapabilityRisk, ToolHealth, ToolSource, UpstreamStatus } from '../api/types'
 import {
   LIFECYCLE_LABEL,
   RISK_LABEL,
+  STATUS_TONE,
   TOOL_CATEGORY_LABEL,
   TOOL_HEALTH_LABEL,
   TOOL_OUTCOME_LABEL,
   TOOL_SOURCE_LABEL,
+  UPSTREAM_STATUS_LABEL,
 } from '../labels'
 
 export type BadgeTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
@@ -124,6 +126,15 @@ export function CategoryBadge({ category }: { category: string }) {
   return (
     <Badge tone={CATEGORY_TONE[category] ?? 'neutral'} title={label ?? category}>
       {label ?? category}
+    </Badge>
+  )
+}
+
+/** 上游探测状态：上游清单与基础工具面板共用，title 保留后端原值。 */
+export function UpstreamStatusBadge({ status }: { status: UpstreamStatus }) {
+  return (
+    <Badge tone={STATUS_TONE[status] ?? 'neutral'} dot title={status}>
+      {UPSTREAM_STATUS_LABEL[status]}
     </Badge>
   )
 }

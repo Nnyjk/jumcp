@@ -1,0 +1,276 @@
+//! 策略配置：TOML + env，非法配置构造即 Err（启动 fail-closed）。
+//!
+//! env 前缀为什么是 `JUMCP_MCP_`：与 Python Settings 的 env_prefix 对齐，部署只改 env 不改代码。
+//! 本模块保留组名/展示名门禁与 `Settings` 入口；租户策略、数据源引用、主体令牌见同目录兄弟模块。
+
+use crate::budget::OverflowPolicy;
+use std::path::Path;
+
+mod datasource;
+mod principals;
+mod tenant;
+
+use datasource::DatasourceFile;
+pub use datasource::DatasourceRef;
+pub use principals::{
+    AdminPrincipal, AdminTokens, AgentPrincipal, AgentTokens, constant_time_eq, is_principal_id,
+};
+pub use tenant::{GroupDef, RoleDef, TenantPolicy};
+
+#[cfg(test)]
+mod tests;
+
+pub const MAX_GROUPS: usize = 20;
+/// 管理面新增组名的长度上限（字符数；组名只允许 ASCII，等价于字节数）。
+pub const MAX_GROUP_NAME_LEN: usize = 64;
+/// 保留组名：`basic` 是常驻工具与"逐工具开放的上游工具"的公共基础通道，
+/// `builtin` 只是保留名（不能作为任何工具的组值），`admin` 是维护通道的安全边界。
+/// 三个通道（配置文件/管理 API）都不得创建、修改或删除它们。
+pub const RESERVED_GROUP_NAMES: &[&str] = &["basic", "builtin", "admin"];
+
+/// 代码内置的公共基础组：组本身不是可授权组，成员对所有 token 可见（仍受 allowlist 约束）。
+pub const BASIC_GROUP_NAME: &str = "basic";
+
+/// 仅用于拒绝创建的保留名：组值不得为 `builtin`。
+pub const LEGACY_BUILTIN_GROUP_NAME: &str = "builtin";
+
+pub fn is_reserved_group_name(name: &str) -> bool {
+    RESERVED_GROUP_NAMES.contains(&name)
+}
+
+/// 展示名门禁（组/角色通用）：trim 后非空、长度 1..64 字符。
+///
+/// 展示名只用于界面显示，**绝不参与**权限判定；权限一律看 code。
+pub fn validate_display_name(field: &str, name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    let len = trimmed.chars().count();
+    if len == 0 {
+        return Err(format!("{field} 不能为空"));
+    }
+    if len > MAX_GROUP_NAME_LEN {
+        return Err(format!(
+            "{field} {trimmed:?} 超过长度上限 {MAX_GROUP_NAME_LEN}"
+        ));
+    }
+    Ok(())
+}
+
+/// 管理面组名门禁：非空、长度受限、仅小写字母数字与 `._-`（因此天然不含空白与逗号）。
+pub fn validate_group_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("组名不能为空".to_string());
+    }
+    if name.len() > MAX_GROUP_NAME_LEN {
+        return Err(format!("组名 {name:?} 超过长度上限 {MAX_GROUP_NAME_LEN}"));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        return Err(format!(
+            "组名 {name:?} 非法：只允许小写字母、数字与 ._-（不含空白与逗号）"
+        ));
+    }
+    Ok(())
+}
+
+/// 服务级 Settings：TOML 文件 + JUMCP_MCP_* env，构造即校验。
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub config_file: String,
+    pub transport: String,
+    pub host: String,
+    pub port: u16,
+    pub audit_path: String,
+    /// capability/模板注册表（SQLite）路径：模板与版本历史落这里。
+    pub registry_path: String,
+    /// 启动时装载的模板定义文件（JSON）；空表示不预置模板。
+    pub templates_file: String,
+    /// 管理台静态构建产物目录（`JUMCP_MCP_WEB_DIR`）：空表示不托管静态资源。
+    /// 非空时启动期必须存在且含 `index.html`（fail-closed，见 [`validate_web_dir`]）。
+    pub web_dir: String,
+    /// 管理面 token→actor 映射（JUMCP_ADMIN_TOKENS="alice:tok,bob:tok"）。
+    /// HTTP 模式为空即拒绝启动（fail-closed）；不接受任何“匿名管理员”降级。
+    pub admin_tokens: AdminTokens,
+    /// MCP 面 per-request 身份（JUMCP_AGENT_TOKENS="agent_id:role:token,..."）。
+    /// HTTP `/mcp` 只认这里派生的身份；为空时 /mcp 一律 `MCP_UNAUTHORIZED`（无兜底角色）。
+    pub agent_tokens: AgentTokens,
+    /// 静态客户端平铺阈值：可见 kind=tool 能力数 ≤ 阈值时直接平铺；0 表示禁用平铺。
+    pub flatten_threshold: i64,
+    pub groups_mode: String,
+    /// 预算溢出策略：默认 fail；truncate 必须显式开启。
+    pub budget_overflow: String,
+    /// stdio 上游总开关（`JUMCP_MCP_UPSTREAM_STDIO=1`）：默认关，关闭时拒收 stdio 配置。
+    pub upstream_stdio: bool,
+    /// 允许注册 `read_only=false` 的上游（`JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`）。
+    pub upstream_write: bool,
+    pub policy: TenantPolicy,
+    pub datasources: Vec<DatasourceRef>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            config_file: "config/policy.toml".to_string(),
+            transport: "stdio".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: 8000,
+            audit_path: "data/audit.sqlite3".to_string(),
+            registry_path: "data/registry.sqlite3".to_string(),
+            templates_file: String::new(),
+            web_dir: String::new(),
+            admin_tokens: AdminTokens::default(),
+            agent_tokens: AgentTokens::default(),
+            flatten_threshold: 40,
+            groups_mode: "strict".to_string(),
+            budget_overflow: "fail".to_string(),
+            upstream_stdio: false,
+            upstream_write: false,
+            policy: TenantPolicy::default(),
+            datasources: vec![],
+        }
+    }
+}
+
+/// 静态托管目录门禁：空串合法（不托管）；非空必须是含 `index.html` 的目录。
+///
+/// 为什么不静默忽略：`JUMCP_MCP_WEB_DIR` 是部署侧"管理台已同源上线"的声明，
+/// 目录缺失或产物没构建时若降级成 404，问题只会在浏览器里暴露；启动期直接拒绝更早、更明确。
+pub fn validate_web_dir(dir: &str) -> Result<(), String> {
+    if dir.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(dir);
+    if !path.is_dir() {
+        return Err(format!("JUMCP_MCP_WEB_DIR 不是目录: {dir}"));
+    }
+    if !path.join("index.html").is_file() {
+        return Err(format!(
+            "JUMCP_MCP_WEB_DIR 缺少 index.html（管理台未构建或目录错误）: {dir}"
+        ));
+    }
+    Ok(())
+}
+
+impl Settings {
+    /// 单一入口：从路径/env 构造并校验（非法 → Err，调用方不得吞掉）。
+    pub fn from_env() -> Result<Self, String> {
+        let mut s = Settings::default();
+        s.config_file = env_or("JUMCP_MCP_CONFIG_FILE", &s.config_file);
+        s.transport = env_or("JUMCP_MCP_TRANSPORT", &s.transport);
+        s.host = env_or("JUMCP_MCP_HOST", &s.host);
+        s.port = env_or("JUMCP_MCP_PORT", "8000")
+            .parse::<u16>()
+            .map_err(|_| "JUMCP_MCP_PORT 非法".to_string())?;
+        s.audit_path = env_or("JUMCP_MCP_AUDIT_PATH", &s.audit_path);
+        s.registry_path = env_or("JUMCP_MCP_REGISTRY_PATH", &s.registry_path);
+        s.templates_file = env_or("JUMCP_MCP_TEMPLATES_FILE", &s.templates_file);
+        s.web_dir = env_or("JUMCP_MCP_WEB_DIR", &s.web_dir);
+        s.admin_tokens = AdminTokens::parse(&env_or("JUMCP_ADMIN_TOKENS", ""))?;
+        s.agent_tokens = AgentTokens::parse(&env_or("JUMCP_AGENT_TOKENS", ""))?;
+        s.flatten_threshold = env_or("JUMCP_MCP_FLATTEN_THRESHOLD", "40")
+            .parse::<i64>()
+            .map_err(|_| "JUMCP_MCP_FLATTEN_THRESHOLD 非法".to_string())?;
+        s.groups_mode = env_or("JUMCP_MCP_GROUPS_MODE", &s.groups_mode);
+        s.budget_overflow = env_or("JUMCP_MCP_BUDGET_OVERFLOW", &s.budget_overflow);
+        s.upstream_stdio = env_or("JUMCP_MCP_UPSTREAM_STDIO", "0") == "1";
+        s.upstream_write = env_or("JUMCP_MCP_ALLOW_WRITE_UPSTREAM", "0") == "1";
+        if Path::new(&s.config_file).exists() {
+            let text = std::fs::read_to_string(&s.config_file).map_err(|e| e.to_string())?;
+            s.policy = toml::from_str(&text).map_err(|e| format!("TOML 解析失败: {e}"))?;
+            let extra: DatasourceFile =
+                toml::from_str(&text).map_err(|e| format!("TOML datasources 解析失败: {e}"))?;
+            s.datasources = extra.datasources;
+        }
+        s.validate()?;
+        Ok(s)
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.transport.as_str(), "stdio" | "streamable-http") {
+            return Err(format!("transport 非法: {}", self.transport));
+        }
+        if !matches!(self.groups_mode.as_str(), "strict" | "intersect") {
+            return Err(format!("groups_mode 非法: {}", self.groups_mode));
+        }
+        if self.flatten_threshold < 0 {
+            return Err(format!(
+                "flatten_threshold 不能为负: {}",
+                self.flatten_threshold
+            ));
+        }
+        if self.registry_path.is_empty() {
+            return Err("registry_path 不能为空".to_string());
+        }
+        if !matches!(self.budget_overflow.as_str(), "fail" | "truncate") {
+            return Err(format!("budget_overflow 非法: {}", self.budget_overflow));
+        }
+        validate_web_dir(&self.web_dir)?;
+        self.policy.validate()?;
+        // agent 身份的角色必须是已定义角色：否则每次请求才在 resolve_scope 里报错，
+        // 部署者会以为服务正常而实际 /mcp 全量失败（启动期一次说清）。
+        for principal in self.agent_tokens.principals() {
+            if !self.policy.roles.contains_key(&principal.role) {
+                return Err(format!(
+                    "JUMCP_AGENT_TOKENS 的 agent {} 引用未定义角色 {}",
+                    principal.id, principal.role
+                ));
+            }
+        }
+        for ds in &self.datasources {
+            ds.validate()?;
+        }
+        // fail-closed：声明了数据源就必须恰好一个 readonly；非 readonly 数据源不允许静默忽略。
+        if !self.datasources.is_empty() {
+            let mutable: Vec<&str> = self
+                .datasources
+                .iter()
+                .filter(|ds| !ds.readonly)
+                .map(|ds| ds.name.as_str())
+                .collect();
+            if !mutable.is_empty() {
+                return Err(format!(
+                    "数据源必须全部 readonly，当前非只读声明: {}",
+                    mutable.join(",")
+                ));
+            }
+            if self.datasources.len() != 1 {
+                let names: Vec<&str> = self.datasources.iter().map(|ds| ds.name.as_str()).collect();
+                return Err(format!(
+                    "必须恰好一个 readonly 数据源，当前声明了 {} 个: {}",
+                    self.datasources.len(),
+                    names.join(",")
+                ));
+            }
+        }
+        // intersect 须租户开关开启（与 Python validator 一致）。
+        if self.groups_mode == "intersect" && !self.policy.allow_intersect {
+            return Err("groups_mode=intersect 但租户未开 allow_intersect".to_string());
+        }
+        Ok(())
+    }
+    pub fn overflow_policy(&self) -> OverflowPolicy {
+        // validate() 已保证取值闭集，此处不会碰到未知值。
+        if self.budget_overflow == "truncate" {
+            OverflowPolicy::Truncate
+        } else {
+            OverflowPolicy::Fail
+        }
+    }
+    /// 唯一主数据源：第一个 readonly 声明。
+    ///
+    /// 执行面只支持一个主数据源，多个 readonly 声明由启动入口显式拒绝；
+    /// 引擎是否已实现同样在启动入口按 `engine` 分发时判定（fail-closed）。
+    pub fn primary_datasource(&self) -> Option<&DatasourceRef> {
+        self.datasources.iter().find(|d| d.readonly)
+    }
+    /// 供测试注入已校验策略。
+    pub fn with_policy(mut self, policy: TenantPolicy) -> Result<Self, String> {
+        self.policy = policy;
+        self.validate()?;
+        Ok(self)
+    }
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}

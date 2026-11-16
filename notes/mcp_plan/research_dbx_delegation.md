@@ -377,7 +377,7 @@ flowchart LR
 
 - 不评估 DBX 桌面端 UI、数据编辑、传输/备份、AI 助手等非数据面能力。
 - 不设计具体适配层代码，不修改任何代码/配置/文档。
-- 不重新论证本项目是否需要治理面；该结论见 `docs/plan/jumcp-preview.md`。
+- 不重新论证本项目是否需要治理面；该结论见 `architecture_preview.md`。
 
 ### 8.2 未核验
 

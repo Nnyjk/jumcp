@@ -4,7 +4,8 @@ import { fetchToolCalls } from '../api/admin'
 import type { RoleItem, ToolCallRecord } from '../api/types'
 import { roleLabel, useRoleIndex } from '../api/queries'
 import { actorLabel } from '../audit'
-import { formatDateTime } from '../format'
+import { DASH, dashText, formatDateTime, truncateInline } from '../format'
+import { inlineJson } from '../json'
 import { EVENT_TYPE_LABEL, TOOL_CACHE_LABEL, errorCodeText } from '../labels'
 import { OutcomeBadge } from './Badge'
 import { DataTable, type DataTableColumn } from './DataTable'
@@ -14,24 +15,12 @@ import { Modal } from './Modal'
 import { EmptyState, ErrorState, LoadingState, Pagination } from './PageShell'
 import { AuditScopeNote } from './ScopeNote'
 
-const DASH = '—'
-
 /** 0/null 都表示没有执行 SQL（缓存命中或策略拒绝），不能读成「极快」。 */
 function elapsedText(value: number | null): string {
   if (value === null || value === 0) return '未执行'
   return `${value} ms`
 }
 
-/** 旧调用记录没有 source / token_id：缺失或空串统一显示破折号。 */
-function actorField(value: string | null | undefined): string {
-  return value === null || value === undefined || value.trim() === '' ? DASH : value
-}
-
-function preview(value: string | null, max = 72): string {
-  if (value === null || value.trim() === '') return DASH
-  const oneLine = value.replace(/\s+/g, ' ').trim()
-  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
-}
 
 function callColumns(
   roleIndex: Map<string, RoleItem>,
@@ -61,7 +50,7 @@ function callColumns(
         <span className="cell-stack">
           <span>{actorLabel(row.actor)}</span>
           <span className="cell-sub" title={row.actor.role ?? undefined}>
-            来源 {actorField(row.actor.source)} · 令牌 {actorField(row.actor.token_id)} · 角色{' '}
+            来源 {dashText(row.actor.source)} · 令牌 {dashText(row.actor.token_id)} · 角色{' '}
             {roleLabel(roleIndex, row.actor.role ?? '')}
           </span>
         </span>
@@ -69,7 +58,7 @@ function callColumns(
       title: (row) =>
         `${row.actor.id ?? DASH} · 角色 ${roleLabel(roleIndex, row.actor.role ?? '')}（${
           row.actor.role ?? DASH
-        }） · 来源 ${actorField(row.actor.source)} · 令牌 ${actorField(row.actor.token_id)}`,
+        }） · 来源 ${dashText(row.actor.source)} · 令牌 ${dashText(row.actor.token_id)}`,
     },
     {
       key: 'outcome',
@@ -84,7 +73,7 @@ function callColumns(
       cell: (row) => (
         <span className="cell-stack">
           <span className="mono">{errorCodeText(row.error_code)}</span>
-          <span className="cell-sub">{preview(row.error_message)}</span>
+          <span className="cell-sub">{truncateInline(row.error_message)}</span>
         </span>
       ),
       title: (row) =>
@@ -101,7 +90,7 @@ function callColumns(
       key: 'sql',
       header: '执行 SQL',
       width: '200px',
-      cell: (row) => preview(row.executed_script),
+      cell: (row) => truncateInline(row.executed_script),
       title: (row) => row.executed_script ?? DASH,
     },
     {
@@ -235,10 +224,10 @@ function CallDetail({ call }: { call: ToolCallRecord }) {
           {roleLabel(roleIndex, call.actor.role ?? '')}
         </DetailField>
         <DetailField label="主体来源" mono>
-          {actorField(call.actor.source)}
+          {dashText(call.actor.source)}
         </DetailField>
         <DetailField label="令牌 ID" mono>
-          {actorField(call.actor.token_id)}
+          {dashText(call.actor.token_id)}
         </DetailField>
         <DetailField label="结果">
           <OutcomeBadge outcome={call.outcome} />
@@ -273,7 +262,7 @@ function CallDetail({ call }: { call: ToolCallRecord }) {
             {bound.map((value, index) => (
               <li key={index} className="mono">
                 <span className="bound-index">#{index + 1}</span>
-                {typeof value === 'string' ? value : JSON.stringify(value)}
+                {typeof value === 'string' ? value : inlineJson(value)}
               </li>
             ))}
           </ol>
