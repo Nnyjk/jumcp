@@ -357,7 +357,7 @@ try {
     $sw.Stop()
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds '' ("POST /mcp tools/list 期望 200，实际 {0}" -f $code)
   }
-  $ok = Invoke-NodeCheck $toolsFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups","db_query_readonly","db_run_template"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}'
+  $ok = Invoke-NodeCheck $toolsFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}'
   $sw.Stop()
   if (-not $ok) {
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds $script:CheckLog 'tools/list 工具清单不完整'
@@ -400,7 +400,7 @@ try {
   $platformTokenId = $tokenJson.item.id
   $platformTools = Join-Path $script:TempDir 'platform_tools.json'
   & $curl -sS --connect-timeout 2 --max-time 5 -o $platformTools -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $platformToken" --data $listBody "$base/mcp" 2>$null | Out-Null
-  $ok = Invoke-NodeCheck $platformTools 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}'
+  $ok = Invoke-NodeCheck $platformTools 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}'
   if (-not $ok) {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog 'allowlist 过滤失败'

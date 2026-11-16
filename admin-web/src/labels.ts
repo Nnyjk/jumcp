@@ -136,7 +136,6 @@ export const ERROR_CODE_LABEL: Record<string, string> = {
   MCP_STATE_TRANSITION_INVALID: '非法状态迁移',
   MCP_TEMPLATE_INVALID: '模板定义非法',
   MCP_UNSUPPORTED_COLUMN_TYPE: '不支持的列类型',
-  MCP_USE_DB_RUN_TEMPLATE: '请改用模板执行',
   MCP_VERSION_CONFLICT: '版本冲突',
   MCP_UPSTREAM_TOOL_UNKNOWN: '上游工具不存在或已变更',
   MCP_UPSTREAM_TOOL_NOT_READ_ONLY: '写工具不能归入基础组',

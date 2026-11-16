@@ -188,7 +188,7 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     $backendEnv['JUMCP_DEV_CLICKHOUSE_DSN'] = $ClickHouseDsn
     Write-Host "==> 已生成临时数据源配置：$policyFile（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
   } else {
-    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（db_query_readonly 会返回 MCP_STORE_ERROR，属预期）'
+    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（内置查询工具已移除，ClickHouse 需通过上游 MCP 接入）'
   }
 
   # ------------------------------------------------------------ 后端
