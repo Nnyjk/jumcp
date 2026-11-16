@@ -2,6 +2,12 @@ name: Release
 
 # 触发：main push（发布分支，产出 latest + main）、版本 tag（semver）、手动。
 # 仓库默认分支是 dev（集成分支），它不触发本 workflow，也不产出镜像。
+#
+# 两道来源防线（github.ref 层面的触发已经排除 dev，但 workflow_dispatch 可以选择任意 ref）：
+#   1) publish job 的 if 限定 github.ref 只能是 main 或 v* tag；
+#      因此 `gh workflow run release.yml --ref dev` 会整 job 跳过，不会构建、不会推镜像。
+#   2) tag 触发必须指向 main 历史（merge-base --is-ancestor）。
+#      否则在 dev 的提交上打 v* tag 也能发布，绕开「main 只做发布」的语义。
 on:
   push:
     branches: [main]
@@ -23,10 +29,28 @@ concurrency:
 jobs:
   publish:
     name: build & publish ghcr.io image
+    # 只有 main 与 v* tag 允许发布；workflow_dispatch 选到 dev 等其它 ref 时整 job 跳过。
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      # 需要完整历史：tag 发布要跑 merge-base 判断祖先关系。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # tag 发布必须打在 main 的发布提交上：dev 上打 v* tag 不能绕过「只有 main 发布」。
+      # origin/main 在 fetch 之后才保证是远端最新引用，所以先 fetch 再判祖先关系。
+      - name: Verify tag is on main history
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git fetch --no-tags origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "tag $GITHUB_REF 指向 $GITHUB_SHA，在 origin/main 历史内，允许发布"
+          else
+            echo "::error::tag $GITHUB_REF 指向的提交不在 origin/main 历史内，拒绝发布；发布 tag 必须打在 main 上"
+            exit 1
+          fi
 
       # 镜像名必须小写；owner 可能含大写（如 Nnyjk），这里统一归一化。
       - name: Resolve image name
