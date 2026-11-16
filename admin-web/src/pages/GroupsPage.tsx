@@ -33,6 +33,7 @@ const SOURCE_OPTIONS: Array<{ value: '' | GroupSource; label: string }> = [
   { value: '', label: '全部来源' },
   { value: 'policy', label: GROUP_SOURCE_LABEL.policy },
   { value: 'managed', label: GROUP_SOURCE_LABEL.managed },
+  { value: 'builtin', label: GROUP_SOURCE_LABEL.builtin },
 ]
 
 /** priority / min_budget 都是整数；后端要求 priority ≥ 0、min_budget > 0，空串不当作 0。 */
@@ -159,8 +160,14 @@ export default function GroupsPage() {
       width: '104px',
       cell: (row) => (
         <Badge
-          tone={row.source === 'policy' ? 'accent' : 'neutral'}
-          title={row.source === 'policy' ? '策略组：由 config/policy.toml 维护，不可在此编辑' : 'managed'}
+          tone={row.source === 'managed' ? 'neutral' : 'accent'}
+          title={
+            row.source === 'policy'
+              ? '策略组：由 config/policy.toml 维护，不可在此编辑'
+              : row.source === 'builtin'
+                ? '内置组：后端合成的只读组，不可编辑或删除'
+                : '受管组：可在管理台编辑或删除'
+          }
         >
           {GROUP_SOURCE_LABEL[row.source]}
         </Badge>
@@ -228,8 +235,13 @@ export default function GroupsPage() {
           >
             查看
           </button>
-          {/* 策略组只读：不给禁用按钮，只保留来源徽标的 title 说明，避免每行重复一段文字。 */}
-          {row.source === 'managed' && (
+          {/* 策略组/内置组只读：不给禁用按钮，只用短提示与来源徽标说明，避免每行重复一段文字。 */}
+          {row.source === 'builtin' && (
+            <span className="row-note" title="内置组由后端合成，grantable=false">
+              不可编辑
+            </span>
+          )}
+          {row.source === 'managed' && row.grantable !== false && (
             <>
               <button
                 type="button"
@@ -260,7 +272,7 @@ export default function GroupsPage() {
       ? groupsQuery.isError
         ? '查询失败'
         : '查询中'
-      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，只读`
+      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，内置组由后端合成；受管组可在此维护`
 
   const clearFilter = () => {
     setDraftFilter(EMPTY_FILTER)
@@ -385,7 +397,7 @@ export default function GroupsPage() {
         )}
         {groupsQuery.data !== undefined && groups.length === 0 && !hasFilter && (
           <EmptyState
-            hint="还没有组定义。policy 组来自 config/policy.toml；managed 组可用右上角「新建组」创建。"
+            hint="还没有组定义。policy 组来自 config/policy.toml；内置组由后端合成；managed 组可用右上角「新建组」创建。"
             action={
               <button
                 type="button"

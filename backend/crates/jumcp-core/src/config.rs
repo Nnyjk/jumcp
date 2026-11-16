@@ -9,9 +9,16 @@ use std::path::Path;
 pub const MAX_GROUPS: usize = 20;
 /// 管理面新增组名的长度上限（字符数；组名只允许 ASCII，等价于字节数）。
 pub const MAX_GROUP_NAME_LEN: usize = 64;
-/// 保留组名：`builtin` 是常驻工具的保留组，`admin` 是维护通道的安全边界。
-/// 三个通道（配置/管理 API）都不得创建、修改或删除它们。
-pub const RESERVED_GROUP_NAMES: &[&str] = &["builtin", "admin"];
+/// 保留组名：`basic` 是常驻工具与"逐工具开放的上游工具"的公共基础通道，
+/// `builtin` 只是历史保留名（不再作为任何工具的组值），`admin` 是维护通道的安全边界。
+/// 三个通道（配置文件/管理 API）都不得创建、修改或删除它们。
+pub const RESERVED_GROUP_NAMES: &[&str] = &["basic", "builtin", "admin"];
+
+/// 代码内置的公共基础组：组本身不是可授权组，成员对所有 token 可见（仍受 allowlist 约束）。
+pub const BASIC_GROUP_NAME: &str = "basic";
+
+/// 仅作为拒绝创建的保留名存在：早期版本用它承载常驻工具的组值。
+pub const LEGACY_BUILTIN_GROUP_NAME: &str = "builtin";
 
 pub fn is_reserved_group_name(name: &str) -> bool {
     RESERVED_GROUP_NAMES.contains(&name)
@@ -281,6 +288,14 @@ impl TenantPolicy {
             // 不能因为加载旧配置就把进程打死（管理面新建仍走 validate_group_name）。
             if g.code.is_empty() {
                 return Err("组 code 不能为空".to_string());
+            }
+            // basic 由代码内置、builtin 只是历史保留名：配置文件定义它们会让
+            // "组索引里有一个不可治理的组"，启动即失败（admin 仍允许由策略定义）。
+            if g.code == BASIC_GROUP_NAME || g.code == LEGACY_BUILTIN_GROUP_NAME {
+                return Err(format!(
+                    "组 code {code} 是代码内置组名，配置文件不得定义",
+                    code = g.code
+                ));
             }
             validate_display_name("组展示名", &g.name)?;
             if !registered.insert(g.code.clone()) {
@@ -733,6 +748,36 @@ mod tests {
             ..Default::default()
         };
         assert!(p.validate().is_err());
+    }
+    #[test]
+    fn basic_is_builtin_and_cannot_be_defined_in_policy() {
+        assert!(is_reserved_group_name("basic"));
+        assert!(is_reserved_group_name("builtin"));
+        assert!(is_reserved_group_name("admin"));
+        for code in ["basic", "builtin"] {
+            let p = TenantPolicy {
+                groups: vec![GroupDef {
+                    code: code.into(),
+                    name: "内置组".into(),
+                    priority: 1,
+                    min_budget: 800,
+                }],
+                ..Default::default()
+            };
+            let err = p.validate().expect_err("内置组名不得出现在配置里");
+            assert!(err.contains(code), "错误信息必须点名 {code}: {err}");
+        }
+        // admin 仍允许作为配置组（它是维护通道的授权组）。
+        let p = TenantPolicy {
+            groups: vec![GroupDef {
+                code: "admin".into(),
+                name: "管理员".into(),
+                priority: 1,
+                min_budget: 800,
+            }],
+            ..Default::default()
+        };
+        assert!(p.validate().is_ok());
     }
     #[test]
     fn intersect_gate() {

@@ -10,12 +10,12 @@
 
 ## 能力
 
-- **三组内置工具**：`basic`（`search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template`）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）。分类只是 `tools/list` / 搜索 / 统计上的展示与检索标签，授权仍看组与 token allowlist。
+- **内置工具分类 + `basic` 内置组**：`basic`（`search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template`）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）是 `tools/list` / 搜索 / 统计上的**展示分类**；其中 `basic` 同时是后端合成的**不可编辑内置组**——5 个常驻内置工具的 `group` 就是 `basic`，上游只读工具可逐工具加入（见下文「上游 MCP router」）。`analysis` / `admin` 仍只是分类，`admin_*` 仍需组 `admin` 在 scope 内。
 - **动态上游 MCP server**：管理台或 `POST /admin/upstreams` 接入，工具以 `<server_id>__<tool>` 暴露在同一 `/mcp`；写成功后下一次 `tools/list` / `tools/call` 即生效，单个上游不可达只影响它自己。
 - **双传输**：stdio（默认，本地 agent 直接拉起）与 streamable-http（`POST /mcp`）。
-- **组 + token allowlist 双重约束**：`groups` 是 token 的硬上限（header / `_meta` 只能收窄），`builtin_tools` 是精确名字白名单（内置 id 与上游暴露名同表约束）；`admin_*` 另需组 `admin` 在 scope 内。管理台访问令牌卡片提供「MCP 接入」一键复制 HTTP MCP JSON 配置：服务名 `jumcp`、URL 为页面同源 `/mcp`、`headers.Authorization = Bearer <token>`；明文只在创建/重签发的响应里出现一次，已有 active 令牌需先重新签发（`POST /admin/tokens/{id}/reissue`，旧 token 立即失效）才能复制配置。
+- **组 + token allowlist 双重约束**：`groups` 是 token 的硬上限（header / `_meta` 只能收窄），`builtin_tools` 是精确名字白名单（内置 id 与上游暴露名同表约束）；`admin_*` 另需组 `admin` 在 scope 内；`basic` 成员不要求 token `groups` 含 `basic` 或上游组，但仍受 `builtin_tools` 精确 allowlist 与上游 `enabled`/`read_only` 约束——`basic` 不是授权组，不能写进令牌 `groups`。管理台访问令牌卡片提供「MCP 接入」一键复制 HTTP MCP JSON 配置：服务名 `jumcp`、URL 为页面同源 `/mcp`、`headers.Authorization = Bearer <token>`；明文只在创建/重签发的响应里出现一次，已有 active 令牌需先重新签发（`POST /admin/tokens/{id}/reissue`，旧 token 立即失效）才能复制配置。
 - **治理审计**：写操作与调用统一落哈希链审计（`admin_change` / `policy_decision`），管理台可按令牌 / 对象 / 事件检索并查看详情。
-- **管理台**：工作台看板、审核队列、工具台账与能力档案、组维护、访问令牌、MCP 接入、审计查询、例外与可见性、健康检查。
+- **管理台**：工作台看板、审核队列、工具台账与能力档案、组维护（内置 `basic` 只读不可编辑）、访问令牌、MCP 接入、上游维护（含「基础工具」弹层：逐工具开关、刷新、失效覆盖清理）、审计查询、例外与可见性、健康检查。
 - **只读边界**：数据源工具对**接入数据源只读**（只读账号 + 查询级 `readonly`，不存在写数据源的路径）；上游 MCP 工具默认 `read_only=true`，只有部署显式开启 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 才允许写上游（默认关闭）。agent 可修改的只有**本项目自有数据**（能力注册表，且只产草案、人工审批后发布，见 §4.4.6）。
 
 ## 快速开始
@@ -92,9 +92,9 @@ curl -X POST http://127.0.0.1:8000/admin/tokens \
 
 组与内置工具的双重约束：`groups` 是 token 的硬上限（header/`_meta` 只能收窄），`builtin_tools` 是内置工具的精确 allowlist；`admin_*` 还需 `groups` 含 `admin`。撤销用 `POST /admin/tokens/{id}/revoke`；只有已撤销或已过期的记录可用 `DELETE /admin/tokens/{id}` 硬删除（active 必须先撤销，删除写审计）。明文只在创建/重签发响应里出现一次，库里只有 hash：需要重新取回 MCP 接入配置时用 `POST /admin/tokens/{id}/reissue` 原地换钥匙（`id` 与全部授权不变，旧 token 立即失效，撤销/过期令牌 409）。完整契约见 `docs/audit-openness.md` §7.7–§7.11 与 §11。
 
-组与角色都是 **code + name 双轨**：`code` 是权限标识（token 的 `role` / `groups`、`capability.group`、审计 `actor.role`、scope 一律用 code），`name` 只是中文展示名，**不参与权限判定**。`GET /admin/roles` 返回 `{code,name,default_groups,default_budget}`；`GET /admin/groups?q=&source=&role=` 支持按 code/展示名包含、来源（policy|managed）与角色 code 过滤；`POST /admin/groups` 收 `{code,name,priority,min_budget,roles}`，`PUT /admin/groups/{code}` 改 `name/priority/min_budget/roles`（code 不可改）。配置里组写 `[[groups]] code=… name=…`，只写 `name` 的旧配置按 name=code 兼容。
+组与角色都是 **code + name 双轨**：`code` 是权限标识（token 的 `role` / `groups`、`capability.group`、审计 `actor.role`、scope 一律用 code），`name` 只是中文展示名，**不参与权限判定**。`GET /admin/roles` 返回 `{code,name,default_groups,default_budget}`；`GET /admin/groups?q=&source=&role=` 支持按 code/展示名包含、来源（policy|managed|builtin）与角色 code 过滤；`POST /admin/groups` 收 `{code,name,priority,min_budget,roles}`，`PUT /admin/groups/{code}` 改 `name/priority/min_budget/roles`（code 不可改）。`basic` 是唯一的 `source=builtin` 条目：`GET /admin/groups` 固定返回 `{code:"basic", name:"基础工具", grantable:false, roles:[], token_count:0, capability_count: 5 + 上游 basic 覆盖数}`，只读；创建/改名/删除一律 409 `MCP_GROUP_RESERVED`，配置文件 `[[groups]]` 也不得定义 `basic` 或 `builtin`。配置里组写 `[[groups]] code=… name=…`，只写 `name` 的旧配置按 name=code 兼容。
 
-**上游 MCP router**：同一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具，上游工具名为 `<server_id>__<tool>`（无 `/mcp/<upstream>` 透传端点）。内置工具按职责分为三个分类：`basic`（基础查询/计算：`search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template`）、`analysis`（工具列表分析与变更提交审计：`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（仅审计操作：`admin_audit_queries`）；分类只用于展示与检索过滤，授权仍看组和 token allowlist。上游配置在管理面 `GET/POST /admin/upstreams`、`PUT/DELETE /admin/upstreams/{id}`、`POST /admin/upstreams/{id}/refresh` 维护，写成功下一次 `tools/list` / `tools/call` 即生效（无需重启）；上游工具按注册时声明的组随 token 的 `groups` 收窄，且与内置工具共用 token 的 `builtin_tools` 名字白名单（要调用上游工具必须把 `<server_id>__<tool>` 列进去）；单个上游不可达只影响它自己。上游声明 `read_only=false` 需 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`；stdio 上游默认关闭，需 `JUMCP_MCP_UPSTREAM_STDIO=1`。字段、命名冲突、脱敏与审计契约见 `docs/mcp-router.md`。
+**上游 MCP router**：同一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具，上游工具名为 `<server_id>__<tool>`（无 `/mcp/<upstream>` 透传端点）。内置工具按职责分为三个**展示分类**：`basic`（基础查询/计算：`search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template`）、`analysis`（工具列表分析与变更提交审计：`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（仅审计操作：`admin_audit_queries`）；其中 `basic` 同时是代码内置组（5 个常驻工具的 `group` 就是它，上游只读工具可逐工具加入），`analysis`/`admin` 只是分类，`admin_*` 仍需组 `admin` 在 scope 内。上游配置在管理面 `GET/POST /admin/upstreams`、`PUT/DELETE /admin/upstreams/{id}`、`POST /admin/upstreams/{id}/refresh` 维护，写成功下一次 `tools/list` / `tools/call` 即生效（无需重启）；上游工具按注册时声明的组随 token 的 `groups` 收窄，且与内置工具共用 token 的 `builtin_tools` 名字白名单（要调用上游工具必须把 `<server_id>__<tool>` 列进去）；单个上游不可达只影响它自己。上游声明 `read_only=false` 需 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`；stdio 上游默认关闭，需 `JUMCP_MCP_UPSTREAM_STDIO=1`。逐工具基础组：`GET /admin/upstreams/{id}/tools` 只读缓存列出每个工具的生效组（`group`、`group_source`、`basic`、`overridden`、`eligible`、`orphaned`），`PUT /admin/upstreams/{id}/tools/basic` 用 `{"tools":{"<原始工具名>":true|false|null}}` 合并式增删（幂等，无变化不写审计）；上游级 `group` 不得为 `basic`（400 `MCP_UPSTREAM_INVALID`），只能逐工具加入。加入 `basic` 的工具对所有 scope 可见/可调（`X-MCP-Tool-Groups` 收窄不能隐藏它们），但仍受 token `builtin_tools` allowlist 与上游 `enabled`/`read_only` 约束；只有只读、`category≠admin`、工具名不以 `admin_` 开头的工具可以加入，`basic` 因此不会成为绕过组 `admin` 的通道。非 basic 的上游工具仍按上游组 + allowlist 双重判定。字段、命名冲突、脱敏与审计契约见 `docs/mcp-router.md`。
 
 策略与 `[[datasources]]` 同文件；数据源只写
 **环境变量名**（`dsn_env`），DSN 由部署注入。非法配置、DSN 缺失或 agent 握手失败时启动即退出（非零码）；L1 只读账号由部署与巡检独立验证，启动不执行写探测（当前联调账号为超级用户）。
@@ -178,7 +178,7 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 
 ## 文档索引
 
-- `docs/mcp-router.md`：router 模型——内置工具三组分类、上游配置与工具暴露规则。
+- `docs/mcp-router.md`：router 模型——内置工具分类与 `basic` 组、上游配置与逐工具基础组。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
 - `docs/plan/jumcp-preview.md`：架构与设计预览（§4.1–§4.4）。
 - `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、分支模型与发布流程、分支保护。

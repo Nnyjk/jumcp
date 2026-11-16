@@ -353,6 +353,11 @@ CREATE TABLE IF NOT EXISTS mcp_upstreams (
     created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_upstream_group ON mcp_upstreams(group_code);
+-- 逐工具组覆盖：只存显式覆盖（无行 = 继承 mcp_upstreams.group_code），目前只允许 basic。
+CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
+    upstream_id TEXT NOT NULL, tool_name TEXT NOT NULL, group_code TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (upstream_id, tool_name)
+);
 "#).map_err(|e| McpError::store(e.to_string()))?;
         // 旧库补列：CREATE TABLE IF NOT EXISTS 不会为已存在的表加列。
         for (table, column) in [
@@ -1342,6 +1347,8 @@ pub const UPSTREAM_CATEGORIES: &[&str] = &["basic", "analysis", "admin", "custom
 pub const RESERVED_UPSTREAM_IDS: &[&str] = &["admin", "analysis", "basic", "builtin", "jumcp"];
 pub const UPSTREAM_ID_MAX_LEN: usize = 32;
 pub const UPSTREAM_MAX_ITEMS: usize = 64;
+/// 单台上游可被覆盖到 `basic` 的工具数上限（与 args/env/headers 的条目上限同量级）。
+pub const UPSTREAM_TOOL_GROUP_MAX: usize = 64;
 pub const UPSTREAM_TIMEOUT_MAX_MS: i64 = 120_000;
 /// 对外工具名（`<server_id>__<tool>`）的字节上限；超限拒绝接入，不截断。
 pub const EXPOSED_TOOL_NAME_MAX: usize = 64;
@@ -1378,6 +1385,17 @@ pub struct UpstreamTool {
     pub description: String,
     pub input_schema: Value,
     pub annotations: Option<Value>,
+}
+
+/// 逐工具组覆盖：**只存显式覆盖**，无行 = 继承 `mcp_upstreams.group_code`。
+///
+/// 目前只允许 `group_code = basic`：单工具进公共基础通道是"开放一个只读工具"，
+/// 其他组仍按整台上游授权，避免出现"逐工具拆授权组"的第二套模型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamToolGroup {
+    pub upstream_id: String,
+    pub tool_name: String,
+    pub group_code: String,
 }
 
 /// 上游 id 门禁：`^[a-z][a-z0-9_-]{1,31}$`，且不含连续 `__`。
@@ -1806,14 +1824,23 @@ impl CapabilityStore {
         Ok(after)
     }
 
-    /// 删除上游：不存在 → 404；删除前的一侧配置进审计 changes。
+    /// 删除上游：不存在 → 404；逐工具组覆盖在同一事务里级联删除；删除前的一侧配置进审计 changes。
     pub fn delete_upstream(&self, id: &str, actor: impl IntoAuditOrigin) -> Result<(), McpError> {
         let origin = actor.into_audit_origin();
         let before = self.require_upstream(id)?;
         {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            conn.execute("DELETE FROM mcp_upstreams WHERE id=?", [id])
+            let tx = conn
+                .unchecked_transaction()
                 .map_err(|e| McpError::store(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM mcp_upstream_tool_groups WHERE upstream_id=?",
+                [id],
+            )
+            .map_err(|e| McpError::store(e.to_string()))?;
+            tx.execute("DELETE FROM mcp_upstreams WHERE id=?", [id])
+                .map_err(|e| McpError::store(e.to_string()))?;
+            tx.commit().map_err(|e| McpError::store(e.to_string()))?;
         }
         self.write_admin_audit(
             AdminChange::new("upstream", id, "delete")
@@ -1822,6 +1849,206 @@ impl CapabilityStore {
                 .with_data(before.audit_data()),
         )
     }
+
+    /// 全部逐工具组覆盖（按 `upstream_id, tool_name` 升序，输出稳定）。
+    ///
+    /// 目前只有 `basic` 一种取值：投影阶段用 `(upstream_id, tool_name) → group_code` 决定
+    /// 单个上游工具的生效组（无行 = 继承上游组）。
+    pub fn upstream_tool_groups(&self) -> Result<Vec<UpstreamToolGroup>, McpError> {
+        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT upstream_id, tool_name, group_code FROM mcp_upstream_tool_groups ORDER BY upstream_id, tool_name",
+            )
+            .map_err(|e| McpError::store(e.to_string()))?;
+        let mapped = stmt
+            .query_map([], row_to_tool_group)
+            .map_err(|e| McpError::store(e.to_string()))?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|e| McpError::store(e.to_string()))?);
+        }
+        Ok(rows)
+    }
+
+    /// 单台上游的覆盖行（管理面读视图用），按 `tool_name` 升序。
+    pub fn upstream_tool_groups_of(&self, id: &str) -> Result<Vec<UpstreamToolGroup>, McpError> {
+        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT upstream_id, tool_name, group_code FROM mcp_upstream_tool_groups WHERE upstream_id=? ORDER BY tool_name",
+            )
+            .map_err(|e| McpError::store(e.to_string()))?;
+        let mapped = stmt
+            .query_map([id], row_to_tool_group)
+            .map_err(|e| McpError::store(e.to_string()))?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|e| McpError::store(e.to_string()))?);
+        }
+        Ok(rows)
+    }
+
+    /// 归入 `basic` 的上游工具总数（`GET /admin/groups` 的 basic 条目计数）。
+    pub fn count_basic_upstream_tools(&self) -> Result<i64, McpError> {
+        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM mcp_upstream_tool_groups WHERE group_code=?",
+            [crate::config::BASIC_GROUP_NAME],
+            |r| r.get(0),
+        )
+        .map_err(|e| McpError::store(e.to_string()))
+    }
+
+    /// 合并式写入逐工具组覆盖：`set` 建/改行，`clear` 删行；单台上游上限
+    /// [`UPSTREAM_TOOL_GROUP_MAX`]。
+    ///
+    /// 语义：**合并**，不是整体替换——一次 PUT 只表达"这几个工具进 basic / 出 basic"。
+    /// 幂等：与现状无差异的行不写，无任何变化时不写审计并返回空 changes。
+    /// 上限检查与写入在同一事务内，避免两个并发 PUT 各自看到"未超限"后一起写超。
+    pub fn apply_upstream_tool_groups(
+        &self,
+        id: &str,
+        set: &[(String, String)],
+        clear: &[String],
+        actor: impl IntoAuditOrigin,
+    ) -> Result<Vec<Value>, McpError> {
+        let origin = actor.into_audit_origin();
+        let basic = crate::config::BASIC_GROUP_NAME;
+        for (_, group) in set {
+            if group != basic {
+                return Err(McpError::new(
+                    "MCP_VALIDATION_ERROR",
+                    json!({"field": "tools", "group": group, "hint": "逐工具覆盖只支持 basic"}),
+                ));
+            }
+        }
+        let before = self.upstream_tool_groups_of(id)?;
+        let known: std::collections::HashMap<&str, &str> = before
+            .iter()
+            .map(|r| (r.tool_name.as_str(), r.group_code.as_str()))
+            .collect();
+        {
+            let conn = self.conn.lock().map_err(|_| McpError::lock())?;
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| McpError::store(e.to_string()))?;
+            let exists: i64 = tx
+                .query_row("SELECT COUNT(*) FROM mcp_upstreams WHERE id=?", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| McpError::store(e.to_string()))?;
+            if exists == 0 {
+                return Err(McpError::new("MCP_UPSTREAM_NOT_FOUND", json!({"id": id})));
+            }
+            let now = now_iso();
+            {
+                let mut upsert = tx
+                    .prepare(
+                        "INSERT INTO mcp_upstream_tool_groups (upstream_id, tool_name, group_code, updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(upstream_id, tool_name) DO UPDATE SET group_code=excluded.group_code, updated_at=excluded.updated_at",
+                    )
+                    .map_err(|e| McpError::store(e.to_string()))?;
+                for (tool, group) in set {
+                    if known.get(tool.as_str()) == Some(&group.as_str()) {
+                        continue;
+                    }
+                    upsert
+                        .execute(rusqlite::params![id, tool, group, &now])
+                        .map_err(|e| McpError::store(e.to_string()))?;
+                }
+            }
+            {
+                let mut delete = tx
+                    .prepare(
+                        "DELETE FROM mcp_upstream_tool_groups WHERE upstream_id=?1 AND tool_name=?2",
+                    )
+                    .map_err(|e| McpError::store(e.to_string()))?;
+                for tool in clear {
+                    if !known.contains_key(tool.as_str()) {
+                        continue;
+                    }
+                    delete
+                        .execute(rusqlite::params![id, tool])
+                        .map_err(|e| McpError::store(e.to_string()))?;
+                }
+            }
+            let count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM mcp_upstream_tool_groups WHERE upstream_id=? AND group_code=?",
+                    rusqlite::params![id, basic],
+                    |r| r.get(0),
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            if count > UPSTREAM_TOOL_GROUP_MAX as i64 {
+                return Err(McpError::new(
+                    "MCP_VALIDATION_ERROR",
+                    json!({
+                        "field": "tools",
+                        "tool_count": count,
+                        "limit": UPSTREAM_TOOL_GROUP_MAX,
+                        "hint": "单台上游的 basic 工具数超过上限",
+                    }),
+                ));
+            }
+            tx.commit().map_err(|e| McpError::store(e.to_string()))?;
+        }
+        let after = self.upstream_tool_groups_of(id)?;
+        let mut changes: Vec<Value> = Vec::new();
+        for row in &after {
+            if known.get(row.tool_name.as_str()) != Some(&row.group_code.as_str()) {
+                changes.push(json!({
+                    "field": "tool_group",
+                    "tool": row.tool_name,
+                    "before": known.get(row.tool_name.as_str()).map(|g| json!(g)),
+                    "after": row.group_code,
+                }));
+            }
+        }
+        for row in &before {
+            if !after.iter().any(|r| r.tool_name == row.tool_name) {
+                changes.push(json!({
+                    "field": "tool_group",
+                    "tool": row.tool_name,
+                    "before": row.group_code,
+                    "after": Value::Null,
+                }));
+            }
+        }
+        changes.sort_by(|a, b| {
+            let key = |v: &Value| {
+                (
+                    v.get("tool")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    v.get("field")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            };
+            key(a).cmp(&key(b))
+        });
+        if changes.is_empty() {
+            return Ok(changes);
+        }
+        let basic_total = after.iter().filter(|r| r.group_code == basic).count();
+        self.write_admin_audit(
+            AdminChange::new("upstream", id, "update_tool_groups")
+                .with_origin(origin)
+                .with_changes(changes.clone())
+                .with_data(json!({"basic_total": basic_total})),
+        )?;
+        Ok(changes)
+    }
+}
+
+fn row_to_tool_group(row: &Row) -> rusqlite::Result<UpstreamToolGroup> {
+    Ok(UpstreamToolGroup {
+        upstream_id: row.get("upstream_id")?,
+        tool_name: row.get("tool_name")?,
+        group_code: row.get("group_code")?,
+    })
 }
 
 fn row_to_upstream(row: &Row) -> rusqlite::Result<McpUpstream> {
