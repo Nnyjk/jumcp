@@ -508,12 +508,45 @@ export interface TokenBuiltinToolOption {
   group: 'basic' | 'admin'
 }
 
+/** options 里的通配工具条目：`*` 表示全部工具（含后续安装的上游）。 */
+export interface TokenToolWildcardOption {
+  value: string
+  label: string
+}
+
+/** options.upstreams：已安装上游及其单台通配名 `<id>__*`。 */
+export interface TokenUpstreamOption {
+  id: string
+  name: string
+  group: string
+  enabled: boolean
+  tool_count: number
+  /** 单台上游全部工具的通配名，通常是 `<id>__*`。 */
+  wildcard: string
+}
+
+/** options.upstream_tools：已刷新上游的精确暴露名，可直接写进 allowlist。 */
+export interface TokenUpstreamToolOption {
+  /** 暴露名 `<upstream_id>__<tool>`，即 builtin_tools 里要写入的值。 */
+  name: string
+  upstream_id: string
+  tool: string
+  group: string
+  label: string
+}
+
 /** GET /admin/tokens/options：角色默认组、组来源与可选内置工具。 */
 export interface TokenOptions {
   roles: TokenRoleOption[]
   /** 组的权威来源是 GET /admin/groups；这里保留后端字段但不作为展示来源。 */
   groups: TokenGroupOption[]
   builtin_tools: TokenBuiltinToolOption[]
+  /** 通配工具（`*`）；旧后端不返回时按空数组处理。 */
+  tool_wildcards?: TokenToolWildcardOption[]
+  /** 已安装上游及其单台通配名；旧后端不返回时按空数组处理。 */
+  upstreams?: TokenUpstreamOption[]
+  /** 已刷新上游的精确工具；旧后端不返回时按空数组处理。 */
+  upstream_tools?: TokenUpstreamToolOption[]
 }
 
 /* ----------------------------- MCP 上游接入 ------------------------------ */
@@ -548,6 +581,9 @@ export interface UpstreamItem {
   tool_count: number
   last_checked_at: string | null
   updated_at: string
+  /** 通过安装目录创建时带目录项 id 与安装版本；手工接入没有这两个字段。 */
+  catalog_id?: string | null
+  catalog_version?: string | null
 }
 
 /**
@@ -626,4 +662,90 @@ export interface UpdatedBasicTools {
   changed: BasicToolChange[]
   basic_total: number
   tools: UpstreamToolItem[]
+}
+
+/* ----------------------------- MCP 安装目录 ------------------------------ */
+
+/** 目录表单字段的控件类型；password 只用于输入，任何响应都不回显。 */
+export type McpCatalogFieldKind = 'text' | 'password' | 'number'
+
+/**
+ * GET /admin/mcp/catalog 包定义里的一个安装字段。
+ * default 是目录给出的默认值（null 表示无默认）；secret 表示后端按敏感值存储。
+ */
+export interface McpCatalogField {
+  key: string
+  label: string
+  kind: McpCatalogFieldKind
+  required: boolean
+  secret: boolean
+  default: string | null
+  placeholder?: string | null
+  help?: string | null
+}
+
+/** 目录声明的工具名与用途说明（只用于展示，工具本身由后端注册）。 */
+export interface McpCatalogTool {
+  name: string
+  summary: string
+}
+
+/** 已安装实例：upstream_id 即 /admin/upstreams/{id} 的 id。 */
+export interface McpCatalogInstallation {
+  upstream_id: string
+  name: string
+  enabled: boolean
+  group: string
+  status: UpstreamStatus
+  /** 探测结论；正常时可能为 null。 */
+  status_message: string | null
+  tool_count: number
+  /** 安装时的包版本；与包当前 version 不一致即需要重装/核对。 */
+  catalog_version: string
+  updated_at: string
+}
+
+/** GET /admin/mcp/catalog 的单个安装包。 */
+export interface McpCatalogEntry {
+  id: string
+  name: string
+  summary: string
+  version: string
+  tags: string[]
+  transport: UpstreamTransport
+  /** true 表示需要后端开启 stdio 且可执行文件就位才能安装。 */
+  requires_stdio: boolean
+  stdio_enabled: boolean
+  binary_present: boolean
+  default_upstream_id: string
+  fields: McpCatalogField[]
+  tools: McpCatalogTool[]
+  installations: McpCatalogInstallation[]
+}
+
+/** GET /admin/mcp/catalog：目录不分页。 */
+export interface McpCatalogPage {
+  items: McpCatalogEntry[]
+}
+
+/**
+ * POST /admin/mcp/catalog/{id}/install 的 body。
+ * upstream_id/name 省略时由后端按默认值生成；config 只携带安装字段的键值。
+ */
+export interface McpInstallInput {
+  upstream_id?: string
+  name?: string
+  group: string
+  enabled?: boolean
+  config: Record<string, string>
+}
+
+/** POST install 的 200 响应：upstream 与 GET /admin/upstreams/{id} 同形。 */
+export interface McpInstallResult {
+  upstream: UpstreamItem
+}
+
+/** DELETE /admin/mcp/catalog/{id}/install/{upstream_id} 的 200 响应。 */
+export interface DeletedMcpInstallation {
+  deleted: boolean
 }

@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
-import { noticeMessage } from '../notice'
-import { Modal } from './Modal'
+import { ConfirmDialog } from './ConfirmDialog'
 import { DetailField, DetailGrid } from './DetailGrid'
 
 /**
@@ -26,29 +25,16 @@ export function SubmitConfirmDialog({
   onConfirm: () => void
 }) {
   return (
-    <Modal
-      size="md"
+    <ConfirmDialog
       title={`提交审核 · ${id}`}
       subtitle={`版本 v${version} · 草稿 → 待审`}
+      confirmLabel="确认提交审核"
+      pendingLabel="提交中…"
+      pending={pending}
+      error={error}
+      errorTitle="提交审核失败"
       onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={pending}
-            onClick={() => {
-              if (pending) return
-              onConfirm()
-            }}
-          >
-            {pending ? '提交中…' : '确认提交审核'}
-          </button>
-        </>
-      }
+      onConfirm={onConfirm}
     >
       <p className="hint">
         提交后该版本进入待审，等待审批人批准或退回；提交人不能自行撤回，只能由审批人退回草稿。
@@ -64,11 +50,6 @@ export function SubmitConfirmDialog({
           {status}
         </DetailField>
       </DetailGrid>
-      {error !== undefined && (
-        <p className="inline-error" role="alert">
-          {noticeMessage(error, '提交审核失败')}
-        </p>
-      )}
-    </Modal>
+    </ConfirmDialog>
   )
 }
