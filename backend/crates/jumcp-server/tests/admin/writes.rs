@@ -150,6 +150,87 @@ async fn deprecate_capability_updates_status_and_writes_admin_change() {
     );
 }
 
+/// 下架的四条拒绝路径：successor 缺失/自指/重复下架/未知目标都必须显式失败且不改库。
+#[tokio::test]
+async fn deprecate_rejects_bad_successor_and_repeat() {
+    let h = harness();
+    publish_capability(&h.store, "cap.old");
+    seed_capability(&h.store, "cap.new");
+
+    // successor 不存在：404 + 把不存在的 id 指出来，目标保持 published。
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.old/deprecate")
+            .body(json!({"successor_id": "cap.missing"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], json!("MCP_CAPABILITY_NOT_FOUND"));
+    assert_eq!(body["error"]["data"]["capability_id"], json!("cap.missing"));
+    let rec = h.store.get("cap.old").expect("get").expect("row");
+    assert_eq!(rec.status, "published");
+    assert_eq!(rec.successor_id, "");
+
+    // successor 自指：400，迁移指引不能指向自己。
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.old/deprecate").body(json!({"successor_id": "cap.old"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], json!("MCP_VALIDATION_ERROR"));
+
+    // 未知目标：404，不是静默成功。
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.ghost/deprecate")
+            .body(json!({"successor_id": "cap.new"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], json!("MCP_CAPABILITY_NOT_FOUND"));
+    assert_eq!(body["error"]["data"]["capability_id"], json!("cap.ghost"));
+
+    // 正常下架。
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.old/deprecate").body(json!({"successor_id": "cap.new"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["successor_id"], json!("cap.new"));
+
+    // 重复下架：409 且不覆盖既有 successor、不再写第二条 admin_change。
+    let before = h
+        .audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .expect("query")
+        .len();
+    let (status, body) = call(
+        &h.app,
+        Req::post("/admin/capabilities/cap.old/deprecate")
+            .body(json!({"successor_id": "cap.other"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], json!("MCP_STATE_TRANSITION_INVALID"));
+    assert_eq!(body["error"]["data"]["from"], json!("deprecated"));
+    assert_eq!(
+        h.store
+            .get("cap.old")
+            .expect("get")
+            .expect("row")
+            .successor_id,
+        "cap.new"
+    );
+    let after = h
+        .audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .expect("query")
+        .len();
+    assert_eq!(before, after, "被拒的下架不得写审计");
+}
+
 #[tokio::test]
 async fn write_endpoints_refuse_when_audit_disabled() {
     let store = Arc::new(CapabilityStore::open(":memory:", None).expect("store"));

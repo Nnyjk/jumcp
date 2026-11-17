@@ -316,6 +316,13 @@ async fn session_pin_rejects_version_switch() {
 async fn deprecated_template_reports_successor() {
     let value = template_value(SIMPLE_SQL, date_params(), json!({}));
     let registry = published_registry(&value);
+    // successor 必须是注册表里真实存在的能力（deprecate 落库校验）。
+    let successor = template_value(
+        SIMPLE_SQL,
+        date_params(),
+        json!({"template_id": "order.daily_summary.v2"}),
+    );
+    registry.register(&successor).expect("register successor");
     registry
         .deprecate("order.daily_summary", "order.daily_summary.v2")
         .expect("deprecate");

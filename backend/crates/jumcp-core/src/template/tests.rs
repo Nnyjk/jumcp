@@ -318,6 +318,31 @@ fn compiled_dialect_survives_roundtrip_and_registry_read() {
 }
 
 #[test]
+fn corrupt_variants_fail_loudly_instead_of_silently_dropping() {
+    let v = def_value(
+        "SELECT id FROM public.orders WHERE id > :n",
+        json!([{"name":"n","type":"int","required":true,"nullable":false}]),
+        json!([]),
+    );
+    let compiled = compile(TemplateDef::parse(&v).unwrap()).unwrap();
+    let stored = compiled.to_definition();
+    // 入库形态里的 variants 是编译产物；结构被破坏时必须报错，而不是静默当"没有变体"
+    // 回落到 base_sql（调用方会拿到与所选变体不同的结果集）。
+    let mut broken = stored.clone();
+    broken["variants"] =
+        json!([{"sql_id": "with_x", "when": {"x": "not_null"}, "sql": "SELECT 1"}]);
+    let e = CompiledTemplate::from_definition(&broken, Dialect::Postgres).unwrap_err();
+    assert_eq!(e.code, "MCP_TEMPLATE_INVALID");
+    assert_eq!(e.data["rule"], json!("variants_invalid"));
+
+    // 缺省字段仍是合法的"没有变体"。
+    let mut without = stored.clone();
+    without.as_object_mut().unwrap().remove("variants");
+    let restored = CompiledTemplate::from_definition(&without, Dialect::Postgres).unwrap();
+    assert!(restored.variants.is_empty());
+}
+
+#[test]
 fn pin_version_conflict() {
     let store = Arc::new(CapabilityStore::open(":memory:", None).unwrap());
     let reg = TemplateRegistry::new(store);

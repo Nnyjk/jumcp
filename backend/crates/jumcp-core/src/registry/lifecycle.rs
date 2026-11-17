@@ -572,6 +572,11 @@ impl CapabilityStore {
         }
     }
 
+    /// 下架：目标必须存在且尚未下架，successor 必须是注册表里真实存在的能力（且不自指）。
+    ///
+    /// 为什么 successor 要落库校验：它是下架后唯一的迁移指引，指向不存在的能力等于把调用方
+    /// 引到死路；而重复 deprecate 会覆盖既有 successor、把已下架的能力再"下架"一次，
+    /// 让审计里的下架时间与迁移目标都失真。
     pub fn deprecate(&self, id: &str, successor_id: &str) -> Result<CapabilityRecord, McpError> {
         ensure_mutable(id)?;
         if successor_id.is_empty() {
@@ -579,9 +584,34 @@ impl CapabilityStore {
                 "deprecated 必须带 successor_id".to_string(),
             ));
         }
+        let record = self.require(id)?;
+        if successor_id == id {
+            return Err(McpError::validation(
+                "deprecated 的 successor_id 不能指向自身".to_string(),
+            ));
+        }
+        if record.status == "deprecated" {
+            return Err(McpError::new(
+                "MCP_STATE_TRANSITION_INVALID",
+                json!({"capability_id": id, "from": record.status, "to": "deprecated", "reason": "already_deprecated"}),
+            ));
+        }
+        if self.get(successor_id)?.is_none() {
+            return Err(McpError::new(
+                "MCP_CAPABILITY_NOT_FOUND",
+                json!({"capability_id": successor_id}),
+            ));
+        }
         {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            conn.execute("UPDATE capabilities SET status='deprecated', discoverable=0, callable=0, successor_id=?1, updated_at=?2 WHERE capability_id=?3", rusqlite::params![successor_id, now_iso(), id]).map_err(|e| McpError::store(e.to_string()))?;
+            let changed = conn
+                .execute(
+                    "UPDATE capabilities SET status='deprecated', discoverable=0, callable=0, successor_id=?1, updated_at=?2 WHERE capability_id=?3 AND status!='deprecated'",
+                    rusqlite::params![successor_id, now_iso(), id],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            // 读状态与写状态之间可能被并发下架：条件不命中按冲突返回，不覆盖既有 successor。
+            Self::expect_transition(&conn, id, &record.status, "deprecated", changed)?;
         }
         let rec = self.get(id)?;
         match rec {

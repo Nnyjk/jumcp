@@ -334,6 +334,7 @@ async fn definition_edit_rejects_review_deprecated_and_builtin() {
 
     // deprecated：拒绝。
     publish_capability(&h.store, "cap.old");
+    seed_capability(&h.store, "cap.new");
     h.store.deprecate("cap.old", "cap.new").expect("deprecate");
     let (status, body) = call(
         &h.app,

@@ -218,6 +218,16 @@ async fn deprecated_capability_rejects_new_version() {
             json!({"description":"v1"}),
         )
         .expect("register");
+    // successor 必须是真实存在的能力（deprecate 落库校验）。
+    store
+        .register(
+            "cap2",
+            "tool",
+            "db.read.core",
+            "read",
+            json!({"description":"v2"}),
+        )
+        .expect("register successor");
     store.deprecate("cap1", "cap2").expect("deprecate");
     // 下架后只能保留 successor_id，不允许再追加版本（版本钉住语义）。
     let e = store

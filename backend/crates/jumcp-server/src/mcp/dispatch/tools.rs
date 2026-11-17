@@ -222,47 +222,49 @@ impl McpServer {
                 };
                 let cost = estimate_tokens(&cap.params_schema);
                 let key = crate::service::session_key(actor);
-                match self.service.check_schema(&key, cost) {
-                    Ok(result) if result.allowed => {
-                        if let Err(e) = self.service.record_schema(&key, cost) {
-                            return err_tool(id, &e);
-                        }
-                        if let Err(e) = self.service.audit_event(
-                            "capability_describe",
-                            audit_data(
-                                audit_base("capability", cap_id, "describe", "ok"),
-                                json!({"schema_tokens": cost}),
-                            ),
-                            actor,
-                        ) {
-                            return err_tool(id, &e);
-                        }
-                        ok(
-                            id,
-                            json!({
-                                "content": json!({
-                                    "id": cap.id,
-                                    "kind": cap.kind,
-                                    "group": cap.group,
-                                    "risk": cap.risk,
-                                    "one_line": cap.one_line,
-                                    "params_schema": cap.params_schema,
-                                    "source": cap.source,
-                                    "category": cap.category
-                                }),
-                                "isError": false,
-                                "schema_tokens": cost
-                            }),
-                        )
-                    }
-                    Ok(_) | Err(_) => {
-                        let e = McpError::new(
-                            "MCP_CONTEXT_BUDGET_EXHAUSTED",
-                            json!({"capability_id": cap_id, "incoming_tokens": cost}),
-                        );
-                        self.reject(id, actor, &e, json!({"tool": "describe_capability"}))
-                    }
+                // 预算查询本身失败是存储/锁错误，必须原样上抛：把它当"预算耗尽"
+                // 会把治理面的坏状态伪装成用量问题，调用方永远查不到根因。
+                let budget = match self.service.check_schema(&key, cost) {
+                    Ok(result) => result,
+                    Err(e) => return err_tool(id, &e),
+                };
+                if !budget.allowed {
+                    let e = McpError::new(
+                        "MCP_CONTEXT_BUDGET_EXHAUSTED",
+                        json!({"capability_id": cap_id, "incoming_tokens": cost}),
+                    );
+                    return self.reject(id, actor, &e, json!({"tool": "describe_capability"}));
                 }
+                if let Err(e) = self.service.record_schema(&key, cost) {
+                    return err_tool(id, &e);
+                }
+                if let Err(e) = self.service.audit_event(
+                    "capability_describe",
+                    audit_data(
+                        audit_base("capability", cap_id, "describe", "ok"),
+                        json!({"schema_tokens": cost}),
+                    ),
+                    actor,
+                ) {
+                    return err_tool(id, &e);
+                }
+                ok(
+                    id,
+                    json!({
+                        "content": json!({
+                            "id": cap.id,
+                            "kind": cap.kind,
+                            "group": cap.group,
+                            "risk": cap.risk,
+                            "one_line": cap.one_line,
+                            "params_schema": cap.params_schema,
+                            "source": cap.source,
+                            "category": cap.category
+                        }),
+                        "isError": false,
+                        "schema_tokens": cost
+                    }),
+                )
             }
             "list_groups" => {
                 let visible = match self

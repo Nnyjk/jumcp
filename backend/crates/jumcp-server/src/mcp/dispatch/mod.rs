@@ -279,6 +279,8 @@ fn session_scope_key(actor: &Actor) -> String {
 
 /// 上游调用参数的审计脱敏：命中密钥类 key（任意层级）的值一律记 `***`。
 ///
+/// 匹配是"小写后子串包含"，所以 `x-auth-token` / `Client-Secret` 这类带前缀或大小写差异的
+/// 头名同样命中；数组元素递归同类处理。
 /// 只用于上游调用；内置工具的入参（SQL/模板参数）按既有契约原样落审计。
 fn redact_arguments(value: &Value) -> Value {
     match value {
@@ -290,10 +292,18 @@ fn redact_arguments(value: &Value) -> Value {
                     "authorization",
                     "token",
                     "password",
+                    "passwd",
                     "secret",
+                    // `secret` 已覆盖该键；显式保留以免将来改成精确匹配时漏掉。
+                    "client_secret",
                     "api_key",
                     "apikey",
                     "cookie",
+                    "credential",
+                    "private_key",
+                    "signature",
+                    "bearer",
+                    "x-auth",
                 ]
                 .iter()
                 .any(|needle| lowered.contains(needle));
@@ -339,4 +349,82 @@ fn rpc_mcp_error(id: &Value, e: &McpError) -> Value {
 
 fn err_tool(id: &Value, e: &McpError) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":{"content":{"error":{"code":e.code,"message":e.message,"data":e.data}},"isError":true}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_arguments;
+    use serde_json::json;
+
+    /// 密钥类键的覆盖面：常见头名/凭证名，任意层级、任意大小写、数组元素内都必须变 `***`。
+    #[test]
+    fn redact_arguments_masks_common_secret_keys_at_any_depth() {
+        let args = json!({
+            "authorization": "Bearer abc",
+            "X-Auth-Token": "t",
+            "x-auth": "x",
+            "passwd": "p",
+            "private_key": "k",
+            "Signature": "sig",
+            "Bearer": "b",
+            "credential": "c",
+            "token": "tk",
+            "secret": "s",
+            "api_key": "ak",
+            "apikey": "ak2",
+            "cookie": "c2",
+            "password": "pw",
+            "headers": {
+                "client_secret": "cs",
+                "X-AUTH-KEY": "xk",
+                "Accept": "application/json"
+            },
+            "batch": [{"password": "p1"}, {"id": "keep"}],
+            "items": ["a", {"apikey": "ak3"}],
+            "query": "SELECT 1",
+            "limit": 10
+        });
+
+        let out = redact_arguments(&args);
+
+        for key in [
+            "authorization",
+            "X-Auth-Token",
+            "x-auth",
+            "passwd",
+            "private_key",
+            "Signature",
+            "Bearer",
+            "credential",
+            "token",
+            "secret",
+            "api_key",
+            "apikey",
+            "cookie",
+            "password",
+        ] {
+            assert_eq!(out[key], json!("***"), "{key} 必须脱敏");
+        }
+        assert_eq!(out["headers"]["client_secret"], json!("***"));
+        assert_eq!(out["headers"]["X-AUTH-KEY"], json!("***"));
+        assert_eq!(out["batch"][0]["password"], json!("***"));
+        assert_eq!(out["items"][1]["apikey"], json!("***"));
+
+        // 普通键与非对象元素原样保留：脱敏不能把审计内容糊成一团。
+        assert_eq!(out["headers"]["Accept"], json!("application/json"));
+        assert_eq!(out["batch"][1]["id"], json!("keep"));
+        assert_eq!(out["items"][0], json!("a"));
+        assert_eq!(out["query"], json!("SELECT 1"));
+        assert_eq!(out["limit"], json!(10));
+    }
+
+    /// 脱敏只产出副本：调用方手里传给上游的参数不能因此被改写。
+    #[test]
+    fn redact_arguments_does_not_mutate_input() {
+        let args = json!({"token": "tk", "nested": {"api_key": "ak"}});
+        let out = redact_arguments(&args);
+        assert_eq!(out["token"], json!("***"));
+        assert_eq!(args["token"], json!("tk"));
+        assert_eq!(args["nested"]["api_key"], json!("ak"));
+    }
 }
