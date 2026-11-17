@@ -9,7 +9,7 @@
 //!
 //! 本文件放状态、路由表与鉴权/分页共享件；handler 按资源分到 `surface`（自身与审计读）、
 //! `capabilities`（能力读）、`writes`（状态流转与人工维护写）、`stats`、`tokens`、`groups`、
-//! `upstreams`。
+//! `upstreams`、`packages`（可安装包的目录/安装/卸载）。
 
 use crate::service::Service;
 use axum::extract::{Extension, Path, Query, Request, State};
@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 mod capabilities;
 mod groups;
+mod packages;
 mod stats;
 mod surface;
 mod tokens;
@@ -47,6 +48,7 @@ mod writes;
 
 use self::capabilities::{capabilities, capability_detail, capability_versions};
 use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
+use self::packages::{install_package, list_catalog, uninstall_package};
 use self::stats::{tool_calls, tool_stats};
 pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
@@ -122,6 +124,12 @@ pub fn router(state: AdminState) -> Router {
         .route("/upstreams/{id}/refresh", post(refresh_upstream))
         .route("/upstreams/{id}/tools", get(upstream_tools))
         .route("/upstreams/{id}/tools/basic", put(set_upstream_basic_tools))
+        .route("/mcp/catalog", get(list_catalog))
+        .route("/mcp/catalog/{id}/install", post(install_package))
+        .route(
+            "/mcp/catalog/{id}/install/{upstream_id}",
+            delete(uninstall_package),
+        )
         .route("/capabilities/{id}/submit", post(submit))
         .route("/capabilities/{id}/publish", post(publish))
         .route("/capabilities/{id}/reject", post(reject_capability))
@@ -159,6 +167,7 @@ fn status_for(code: &str) -> StatusCode {
         | "MCP_SCHEMA_OUT_OF_SCOPE"
         | "MCP_UPSTREAM_INVALID"
         | "MCP_UPSTREAM_WRITE_FORBIDDEN"
+        | "MCP_UPSTREAM_BINARY_MISSING"
         | "MCP_UPSTREAM_STDIO_DISABLED" => StatusCode::BAD_REQUEST,
         "MCP_STATE_TRANSITION_INVALID" | "MCP_VERSION_CONFLICT" | "MCP_BUILTIN_IMMUTABLE" => {
             StatusCode::CONFLICT
@@ -172,6 +181,7 @@ fn status_for(code: &str) -> StatusCode {
         "MCP_CAPABILITY_NOT_FOUND"
         | "MCP_GROUP_NOT_FOUND"
         | "MCP_TOKEN_NOT_FOUND"
+        | "MCP_CATALOG_NOT_FOUND"
         | "MCP_UPSTREAM_NOT_FOUND" => StatusCode::NOT_FOUND,
         // 审计未启用 / 审计写失败：写端点必须整体失败，不能"写成功但无痕迹"。
         "MCP_AUDIT_ERROR" => StatusCode::INTERNAL_SERVER_ERROR,
@@ -348,5 +358,8 @@ pub fn routes() -> Vec<(&'static str, &'static str)> {
         ("POST", "/admin/upstreams/{id}/refresh"),
         ("GET", "/admin/upstreams/{id}/tools"),
         ("PUT", "/admin/upstreams/{id}/tools/basic"),
+        ("GET", "/admin/mcp/catalog"),
+        ("POST", "/admin/mcp/catalog/{id}/install"),
+        ("DELETE", "/admin/mcp/catalog/{id}/install/{upstream_id}"),
     ]
 }

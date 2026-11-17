@@ -314,9 +314,77 @@ pub(super) async fn token_options(
             })
         })
         .collect();
+    // 上游工具授予面：只读现有缓存（views/cached_tools 都不触网），未 refresh 的上游
+    // 也出现（tool_count=0、tools 为空），前端才能提示"安装后先刷新一次"。
+    let (tool_wildcards, upstreams, upstream_tools) = match &state.service.upstreams {
+        None => (Vec::new(), Vec::new(), Vec::new()),
+        Some(manager) => {
+            let wildcards = vec![json!({
+                "value": jumcp_core::registry::TOOL_WILDCARD_ALL,
+                "label": "全部工具（含后续安装的上游）"
+            })];
+            let overrides = state.store.upstream_tool_groups().map_err(|e| {
+                reject(
+                    &state,
+                    &actor,
+                    e,
+                    json!({"surface": "admin/tokens/options"}),
+                )
+            })?;
+            let mut views = manager.views().map_err(|e| {
+                reject(
+                    &state,
+                    &actor,
+                    e,
+                    json!({"surface": "admin/tokens/options"}),
+                )
+            })?;
+            views.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+            let mut upstreams: Vec<Value> = Vec::with_capacity(views.len());
+            let mut upstream_tools: Vec<Value> = Vec::new();
+            for (def, runtime) in views {
+                upstreams.push(json!({
+                    "id": def.id,
+                    "name": def.name,
+                    "group": def.group,
+                    "enabled": def.enabled,
+                    "tool_count": runtime.tool_count,
+                    "wildcard": format!("{}__*", def.id),
+                }));
+                for tool in manager.cached_tools(&def.id) {
+                    // 与 tools/list 共用同一条生效组判定：覆盖到 basic 但已不合格的工具
+                    // 在公共通道里不可见，不能出现在可授予清单里（勾选后看不到也调不到）。
+                    let overridden = overrides.iter().any(|o| {
+                        o.upstream_id == def.id
+                            && o.tool_name == tool.name
+                            && o.group_code == crate::discovery::BASIC_GROUP
+                    });
+                    let Some(group) =
+                        crate::upstream::effective_tool_group(&def, &tool, overridden)
+                    else {
+                        continue;
+                    };
+                    upstream_tools.push(json!({
+                        // 暴露名是 allowlist 与 tools/list 的同一形状（非法字符已转 `-`），
+                        // 按原始名拼接会给出一个根本授权不了的字符串。
+                        "name": crate::upstream::exposed_tool_name(&def.id, &tool.name),
+                        "upstream_id": def.id,
+                        "tool": tool.name,
+                        "group": group,
+                        "label": format!("{} / {}", def.name, tool.name),
+                    }));
+                }
+            }
+            upstream_tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            (wildcards, upstreams, upstream_tools)
+        }
+    };
     Ok(Json(json!({
         "roles": roles,
         "groups": groups,
-        "builtin_tools": builtin_tools
+        "builtin_tools": builtin_tools,
+        "tool_wildcards": tool_wildcards,
+        "upstreams": upstreams,
+        "upstream_tools": upstream_tools
     })))
 }

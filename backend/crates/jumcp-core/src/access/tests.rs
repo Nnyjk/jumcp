@@ -252,10 +252,16 @@ fn bootstrap_imports_only_once_and_tokens_still_work() {
     assert_eq!(rec.role, "admin");
     assert_eq!(rec.source, "bootstrap");
     assert_eq!(rec.groups, vec!["admin".to_string()]);
+    assert_eq!(
+        rec.builtin_tools,
+        vec!["*".to_string()],
+        "引导令牌用全量通配：安装的上游工具才可能被同一身份看见"
+    );
     assert!(
         rec.builtin_tools
-            .contains(&"admin_review_queue".to_string()),
-        "引导令牌保留内置工具全量，admin 组仍受双重判定"
+            .iter()
+            .any(|t| t == crate::registry::TOOL_WILDCARD_ALL),
+        "admin 组仍受双重判定（组 ∧ allowlist）"
     );
 }
 
@@ -299,6 +305,31 @@ fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
         )
         .unwrap_err();
     assert_eq!(e.code, "MCP_VALIDATION_ERROR");
+}
+
+/// allowlist 通配：`*` 与 `<server_id>__*` 通过创建校验；反解不到上游的形状仍被拒绝。
+#[test]
+fn validation_accepts_tool_allowlist_wildcards() {
+    let s = store();
+    for entry in [
+        "*",
+        "clickhouse__*",
+        "search_capabilities",
+        "clickhouse__query",
+    ] {
+        let mut spec = new_token("wildcard");
+        spec.builtin_tools = vec![entry.to_string()];
+        spec.validate()
+            .unwrap_or_else(|e| panic!("{entry} 应被接受: {e:?}"));
+        let issued = s.create_access_token(&spec, &actor()).unwrap();
+        assert_eq!(issued.record.builtin_tools, vec![entry.to_string()]);
+    }
+    for entry in ["", "**", "a__b__*", "*__x", "__*"] {
+        let mut spec = new_token("bad-wildcard");
+        spec.builtin_tools = vec![entry.to_string()];
+        let e = spec.validate().unwrap_err();
+        assert_eq!(e.code, "MCP_VALIDATION_ERROR", "{entry:?}");
+    }
 }
 
 #[test]

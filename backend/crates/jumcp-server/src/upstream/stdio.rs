@@ -5,10 +5,60 @@ use super::client::{next_request_id, rpc_result};
 use jumcp_core::registry::McpUpstream;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
+
+/// 把命令名解析成本机真实存在的可执行文件；找不到返回 `None`。
+///
+/// 查找顺序固定，因为两层都承载着语义：
+/// 1. `JUMCP_MCP_BUNDLED_BIN_DIR`——随包分发目录的覆盖口，只给开发/测试与非常规部署用；
+///    未设置时生产路径完全不经过它。
+/// 2. `current_exe()` 同目录——"连接器跟着服务一起发"，用户不必改 PATH。
+/// 3. PATH——保持既有部署方式（用户自己装的二进制）不变。
+///
+/// 带路径分隔符的命令被视为用户明确指定路径，**必须是已存在的文件**：不做名字查找、
+/// 不补 `.exe`、不按 PATH 解析，文件不存在就返回 `None`。目录页据此显示
+/// `binary_present=false`、安装校验回 400 `MCP_UPSTREAM_BINARY_MISSING`；但 spawn 侧对
+/// `None` 会退回原样命令交给系统处理，因此"这里解析失败"不等于"一定起不来"。
+/// 目录页与安装校验共用本函数：两处判断分叉会让用户看到"可安装"却在安装时被拒。
+pub(crate) fn bundled_binary(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.components().count() > 1 {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    if let Some(dir) = std::env::var_os("JUMCP_MCP_BUNDLED_BIN_DIR").filter(|dir| !dir.is_empty())
+        && let Some(found) = lookup_in_dir(Path::new(&dir), name)
+    {
+        return Some(found);
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        && let Some(found) = lookup_in_dir(&dir, name)
+    {
+        return Some(found);
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).find_map(|dir| lookup_in_dir(&dir, name))
+}
+
+fn lookup_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    let plain = dir.join(name);
+    if plain.is_file() {
+        return Some(plain);
+    }
+    // Windows 的裸可执行文件必须带 .exe，同名文件在目录里就是这么放的。
+    if cfg!(windows) {
+        let exe = dir.join(format!("{name}.exe"));
+        if exe.is_file() {
+            return Some(exe);
+        }
+    }
+    None
+}
 
 pub(super) struct StdioTransport {
     io: AsyncMutex<StdioIo>,
@@ -28,7 +78,12 @@ impl StdioTransport {
         def: &McpUpstream,
         env: BTreeMap<String, String>,
     ) -> Result<Self, UpstreamFailure> {
-        let mut command = Command::new(&def.command);
+        // 同一个解析函数也给目录页与安装校验用：显示"可安装"必须意味着真的能启动。
+        let program = match bundled_binary(&def.command) {
+            Some(path) => path.into_os_string(),
+            None => def.command.clone().into(),
+        };
+        let mut command = Command::new(program);
         command
             .args(&def.args)
             .envs(&env)

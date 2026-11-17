@@ -25,7 +25,7 @@ impl QueryExecutor for FakeExecutor {
     }
 }
 
-fn settings(stdio: bool, write: bool) -> Settings {
+pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
     let mut roles = std::collections::HashMap::new();
     roles.insert(
         "analyst".into(),
