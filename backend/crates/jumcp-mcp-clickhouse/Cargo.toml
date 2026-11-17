@@ -1,0 +1,21 @@
+[package]
+name = "jumcp-mcp-clickhouse"
+version = "0.1.0"
+edition = "2024"
+description = "ClickHouse 只读查询的 MCP stdio server（可安装包 clickhouse-basic 的可执行体）"
+
+[[bin]]
+name = "jumcp-mcp-clickhouse"
+path = "src/main.rs"
+
+[lib]
+name = "jumcp_mcp_clickhouse"
+path = "src/lib.rs"
+
+[dependencies]
+jumcp-connector-clickhouse = { path = "../jumcp-connector-clickhouse" }
+jumcp-connector-protocol = { path = "../jumcp-connector-protocol" }
+jumcp-sqlguard = { path = "../jumcp-sqlguard" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"], default-features = false }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "time"] }
