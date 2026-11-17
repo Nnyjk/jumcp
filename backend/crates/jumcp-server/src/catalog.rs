@@ -1,5 +1,5 @@
 // 能力抽象与内存目录：可见性 published ∧ discoverable ∧ group ∈ scope。
-// 为什么硬过滤在内部：防能力探测（§2.6），不可见与不存在同构。
+// 为什么硬过滤在内部：防能力探测，不可见与不存在同构。
 //
 // 本模块只描述"一条能力长什么样"以及如何在一个已确定可见的能力集合上检索；
 // 可见集合怎么拼（builtin ∪ store ∪ 内存目录 ∪ 上游）只有 `discovery` 一处。
@@ -104,7 +104,7 @@ pub fn is_visible(cap: &Capability, scope: &EffectiveScope) -> bool {
     cap.status == "published" && cap.discoverable && scope.groups.contains(&cap.group)
 }
 
-/// 调用谓词：已发布 ∧ 可调用 ∧ 组在 scope 内（与 `is_visible` 是两条不同谓词，§4.4.1）。
+/// 调用谓词：已发布 ∧ 可调用 ∧ 组在 scope 内（与 `is_visible` 是两条不同谓词）。
 pub fn is_callable(cap: &Capability, scope: &EffectiveScope) -> bool {
     cap.status == "published" && cap.callable && scope.groups.contains(&cap.group)
 }
@@ -150,12 +150,12 @@ pub fn find<'a>(capabilities: &'a [Capability], id: &str) -> Option<&'a Capabili
     capabilities.iter().find(|c| c.id == id)
 }
 
-/// 业务组索引：内置工具不是业务组（§4.2），上游工具按它注册时的组计数。
+/// 业务组索引：内置工具不是业务组，上游工具按它注册时的组计数。
 pub fn group_counts(capabilities: &[Capability]) -> Vec<Value> {
     use std::collections::BTreeMap;
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
     for c in capabilities {
-        // 常驻工具不是业务组：`list_groups` 是业务组索引（§4.2），不能让调用方以为存在
+        // 常驻工具不是业务组：`list_groups` 是业务组索引，不能让调用方以为存在
         // 一个叫 builtin 的组。
         if c.source == SOURCE_BUILTIN {
             continue;

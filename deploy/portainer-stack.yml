@@ -1,0 +1,88 @@
+version: "3.8"
+
+# jumcp 的 Swarm / Portainer Stack 定义。
+#
+# 用法：
+#   JUMCP_ADMIN_TOKENS="admin:<token>" docker stack deploy -c deploy/portainer-stack.yml jumcp
+#   Portainer：Stacks → Add stack → 粘贴本文件或连 Git，在 Environment variables 里填必需变量。
+#
+# 约束（与运行时设计一致，不要在生产改）：
+#   - 镜像只有 linux/amd64；Swarm 的 stack 格式不接受 `platform:` 键（`docker stack config` 会报
+#     "Additional property platform is not allowed"），因此平台用 placement constraints 固定。
+#   - registry/audit 是两个 SQLite 文件，单写者：只能 1 副本，更新用 stop-first，绝不能水平扩容。
+#   - `/data` 用命名卷，是节点本地卷：服务重调度到别的节点会拿到空库。
+
+services:
+  jumcp:
+    # 生产请把 JUMCP_IMAGE 固定到版本 tag 或 @sha256: digest；默认的 latest 每次 main 合并都会换版本。
+    # 版本 tag 形如 ghcr.io/nnyjk/jumcp:0.0.1.000（见 docs/ci-cd.md 的 tag 规则）。
+    image: ${JUMCP_IMAGE:-ghcr.io/nnyjk/jumcp:latest}
+
+    environment:
+      # 必填：`id:token` 逗号分隔，token 至少 16 位。未设置/为空时 interpolation 直接失败（fail-fast），
+      # 与镜像内「HTTP 模式缺 JUMCP_ADMIN_TOKENS 拒绝启动」的行为一致。
+      JUMCP_ADMIN_TOKENS: ${JUMCP_ADMIN_TOKENS:?必须设置 JUMCP_ADMIN_TOKENS（格式 id:token,id:token，token 至少 16 位）}
+      # 可选：`agent_id:role:token`，只在 access_tokens 表为空时一次性导入（引导用），表非空后不再生效。
+      JUMCP_AGENT_TOKENS: ${JUMCP_AGENT_TOKENS:-}
+      RUST_LOG: ${RUST_LOG:-info}
+
+    ports:
+      # 长语法 + ingress：任何一个 Swarm 节点上的 <node>:<JUMCP_PORT> 都会路由到唯一副本。
+      - target: 8000
+        published: ${JUMCP_PORT:-8000}
+        protocol: tcp
+        mode: ingress
+
+    volumes:
+      - jumcp-data:/data
+
+    stop_grace_period: 30s
+
+    healthcheck:
+      # 与镜像内置 HEALTHCHECK 相同的探针；显式声明以便 Swarm 依据它判断任务健康。
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 非 root（镜像 USER 10001:10001）不需要任何 capability。
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.platform.os == linux
+          - node.platform.arch == x86_64
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+        window: 120s
+      update_config:
+        # stop-first：先停旧任务再起新任务，避免两个进程同时写同一份 SQLite。
+        order: stop-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+        failure_action: rollback
+      rollback_config:
+        order: stop-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+
+volumes:
+  jumcp-data:
+    driver: local

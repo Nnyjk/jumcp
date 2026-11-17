@@ -1,6 +1,8 @@
+import type { BadgeTone } from './components/Badge'
 import type {
   AccessTokenStatus,
   AuditAction,
+  AuditChainState,
   AuditObjectType,
   AuditOutcome,
   CapabilityRisk,
@@ -38,7 +40,7 @@ export const RISK_LABEL: Record<CapabilityRisk, string> = {
   admin: '管理',
 }
 
-/** 审计事件类型：已删除从未写入的 session_init。 */
+/** 审计事件类型：闭集里没有 session_init（该事件从不写入）。 */
 export const EVENT_TYPE_LABEL: Record<string, string> = {
   tools_list_served: '工具列表下发',
   capability_search: '能力检索',
@@ -136,7 +138,6 @@ export const ERROR_CODE_LABEL: Record<string, string> = {
   MCP_STATE_TRANSITION_INVALID: '非法状态迁移',
   MCP_TEMPLATE_INVALID: '模板定义非法',
   MCP_UNSUPPORTED_COLUMN_TYPE: '不支持的列类型',
-  MCP_USE_DB_RUN_TEMPLATE: '请改用模板执行',
   MCP_VERSION_CONFLICT: '版本冲突',
   MCP_UPSTREAM_TOOL_UNKNOWN: '上游工具不存在或已变更',
   MCP_UPSTREAM_TOOL_NOT_READ_ONLY: '写工具不能归入基础组',
@@ -222,11 +223,11 @@ export const UPSTREAM_TRANSPORT_LABEL: Record<UpstreamTransport, string> = {
   stdio: 'stdio',
 }
 
-/** 上游分类：basic / analysis / admin 是三组内置工具，custom 为自定义接入。 */
+/** 上游分类：admin 指维护/管理类上游（docs/mcp-router.md §2），不是「审计」。 */
 export const UPSTREAM_CATEGORY_LABEL: Record<UpstreamCategory, string> = {
   basic: '基础',
   analysis: '分析',
-  admin: '审计',
+  admin: '管理',
   custom: '自定义',
 }
 
@@ -268,4 +269,25 @@ export function visibilityText(discoverable: boolean, callable: boolean): string
 export function errorCodeText(code: string | null | undefined): string {
   if (code === null || code === undefined || code === '') return '—'
   return ERROR_CODE_LABEL[code] ?? code
+}
+
+/** 审计链校验状态（看板 KPI 与健康页共用；两个页面的文案长短不同，色板相同）。 */
+export const CHAIN_TONE: Record<AuditChainState, BadgeTone> = {
+  valid: 'success',
+  tampered: 'danger',
+  error: 'danger',
+}
+
+/**
+ * 状态色板：上游探测状态与访问令牌状态共用一组语义值，含义一致才同色
+ * （ok/active 成功，degraded/expired 警示，error/revoked 危险，unknown 中性）。
+ */
+export const STATUS_TONE: Record<string, BadgeTone> = {
+  active: 'success',
+  ok: 'success',
+  degraded: 'warning',
+  expired: 'warning',
+  error: 'danger',
+  revoked: 'danger',
+  unknown: 'neutral',
 }

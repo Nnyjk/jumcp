@@ -1,9 +1,9 @@
 /**
  * 领域类型：与后端 admin API 的真实响应结构一一对应。
- * 审计事件按新契约建模：payload 只认结构化字段，旧事件不做过字段回退。
+ * 审计事件按结构化载荷建模：payload 只认结构化字段，缺失时不做字段回退。
  */
 
-/** §4.4.3 event_type 闭集。 */
+/** event_type 闭集。 */
 export type AuditEventType =
   | 'tools_list_served'
   | 'capability_search'
@@ -13,7 +13,7 @@ export type AuditEventType =
   | 'policy_decision'
   | 'admin_change'
 
-/** §4.4.3 actor{type,id,role}；MCP token 事件额外带来源与 token_id，旧事件没有这两个字段。 */
+/** actor{type,id,role}；MCP token 事件额外带来源与 token_id，非 token 事件没有这两个字段。 */
 export interface AuditActor {
   type: string
   id: string
@@ -77,8 +77,8 @@ export interface AuditApproval {
 }
 
 /**
- * 结构化审计载荷。旧事件可能整块缺失这些字段：`structuredPayload()` 会判定为旧格式，
- * 页面只展示原始载荷，不尝试从旧字段（capability_id/diff/approval_id）还原语义。
+ * 结构化审计载荷。非结构化事件整块缺失这些字段：`structuredPayload()` 判定为无结构化载荷，
+ * 页面只展示原始载荷，不尝试从 capability_id/diff/approval_id 还原语义。
  */
 export interface AuditPayload {
   object_type?: AuditObjectType | undefined
@@ -98,7 +98,7 @@ export interface AuditPayload {
   data?: Record<string, unknown> | undefined
 }
 
-/** §4.4.3 审计 envelope。hash/prev_hash 仅保留原始值，不再作为一等展示字段。 */
+/** 审计 envelope。hash/prev_hash 仅保留原始值，不作为一等展示字段。 */
 export interface AuditEnvelope {
   event_id: string
   ts: string
@@ -135,7 +135,7 @@ export interface AuditPage {
   order?: AuditOrder
 }
 
-/** §4.4.4 admin_audit_queries 支持的过滤条件（后端 FILTER_KEYS 白名单，已删除 session_id）。 */
+/** admin_audit_queries 支持的过滤条件（后端 FILTER_KEYS 白名单，不含 session_id）。 */
 export interface AuditQuery {
   tenant?: string | undefined
   event_type?: string | undefined
@@ -157,7 +157,7 @@ export interface AdminIdentity {
   type: string
 }
 
-/** §4.4.1 生命周期状态（与双布尔正交）。 */
+/** 生命周期状态（与双布尔正交）。 */
 export type CapabilityStatus = 'draft' | 'review' | 'published' | 'deprecated'
 
 export type CapabilityKind = 'tool' | 'template' | 'endpoint'
@@ -585,7 +585,7 @@ export interface UpstreamToolItem {
   group_source: UpstreamToolGroupSource
   /** 当前是否归属基础组。 */
   basic: boolean
-  /** 是否存在 basic 覆盖行（不一定当前生效：工具可能后来变成写工具/管理类）。 */
+  /** 是否存在 basic 覆盖行（不一定当前生效：工具可能现在是写工具/管理类）。 */
   overridden: boolean
   read_only: boolean
   /** 后端判定是否满足归入基础组的条件（只读、非管理类等）。 */

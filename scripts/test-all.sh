@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# ---------------------------------------------------------------- 结果记录
+# 结果记录
 STEP_NAMES=()
 STEP_STATUS=()
 STEP_SECONDS=()
@@ -164,13 +164,13 @@ run_step() {
   fail_step "$name" "$log"
 }
 
-# ---------------------------------------------------------------- 0. 参数后准备
+# 0. 参数后准备
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jumcp-testall.XXXXXX")"
 if [ -n "$CLICKHOUSE_DSN" ]; then
   export JUMCP_TEST_CLICKHOUSE_DSN="$CLICKHOUSE_DSN"
 fi
 
-# ---------------------------------------------------------------- 1. 环境探测
+# 1. 环境探测
 echo "==> env: toolchain probe"
 ENV_LOG="$TMP_DIR/env.log"
 MISSING=""
@@ -207,22 +207,28 @@ fi
 record "env: toolchain probe" "PASS" "0" "$ENV_LOG"
 cat "$ENV_LOG"
 
-# ---------------------------------------------------------------- 2. 后端
-run_step "backend: cargo fmt --check" "$BACKEND_DIR" cargo fmt --check
-run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --all-targets -- -D warnings
-run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace
+# 2. 后端
+run_step "backend: cargo fmt --all --check" "$BACKEND_DIR" cargo fmt --all --check
+run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --workspace --all-targets --locked -- -D warnings
+run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace --locked
 if [ -n "$CLICKHOUSE_DSN" ]; then
   cargo build --manifest-path "$BACKEND_DIR/Cargo.toml" -p jumcp-connector-clickhouse >/dev/null 2>&1 || true
-  run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace -- --ignored
+  run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace --locked -- --ignored
 fi
 
-# ---------------------------------------------------------------- 3. 前端
+# 2.5 脚本（CI 的 scripts job 同款：语法 + 发布 tag 解析用例）
+for f in "$REPO_ROOT"/scripts/*.sh; do
+  run_step "scripts: bash -n $(basename "$f")" "$REPO_ROOT" bash -n "$f"
+done
+run_step "scripts: release tag resolution" "$REPO_ROOT" bash scripts/test-release-tags.sh
+
+# 3. 前端
 run_step "frontend: npm ci" "$WEB_DIR" npm ci
 run_step "frontend: npm run typecheck" "$WEB_DIR" npm run typecheck
 run_step "frontend: npm run build" "$WEB_DIR" npm run build
 run_step "frontend: eslint src --max-warnings 0" "$WEB_DIR" npx eslint src --max-warnings 0
 
-# ---------------------------------------------------------------- 4. E2E 冒烟
+# 4. E2E 冒烟
 if [ "$SKIP_E2E" = "1" ]; then
   echo "跳过 E2E 冒烟（--skip-e2e）"
   print_summary
@@ -347,7 +353,7 @@ if [ "$code" != "200" ]; then
   echo "POST /mcp tools/list 期望 200，实际 $code"
   fail_step "e2e: mcp initialize + tools/list" ""
 fi
-if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups","db_query_readonly","db_run_template"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}' "$TOOLS_FILE" >>"$CHECK_LOG" 2>&1; then
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}' "$TOOLS_FILE" >>"$CHECK_LOG" 2>&1; then
   record "e2e: mcp initialize + tools/list" "FAIL" "$(( $(now_ms) - MCP_START ))" "$CHECK_LOG"
   fail_step "e2e: mcp initialize + tools/list（工具清单不完整）" "$CHECK_LOG" "$SERVER_LOG"
 fi
@@ -374,7 +380,11 @@ echo "==> e2e: admin token create + mcp tools/list filter"
 TOKEN_START="$(now_ms)"
 TOKEN_FILE="$TMP_DIR/token_create.json"
 TOKEN_BODY='{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data "$TOKEN_BODY" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
+# body 走临时文件而不是 argv：Windows 原生 curl.exe 会把含中文的 argv 按 ANSI 代码页（如 CP936）转码，
+# 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TMP_DIR 内随脚本清理。
+TOKEN_BODY_FILE="$TMP_DIR/token_create_body.json"
+printf '%s' "$TOKEN_BODY" >"$TOKEN_BODY_FILE"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data-binary "@$TOKEN_BODY_FILE" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
 if [ "$code" != "201" ]; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
   echo "POST /admin/tokens 期望 201，实际 $code"
@@ -388,7 +398,7 @@ PLATFORM_TOKEN="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(pro
 PLATFORM_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).item.id)' "$TOKEN_FILE")"
 PLATFORM_TOOLS="$TMP_DIR/platform_tools.json"
 curl -sS --connect-timeout 2 --max-time 5 -o "$PLATFORM_TOOLS" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $PLATFORM_TOKEN" --data "$LIST_BODY" "$BASE_URL/mcp" >/dev/null 2>&1 || true
-if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(",")+" names="+names.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}' "$PLATFORM_TOOLS" >>"$CHECK_LOG" 2>&1; then
+if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(",")+" names="+names.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}' "$PLATFORM_TOOLS" >>"$CHECK_LOG" 2>&1; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" "$CHECK_LOG"
   fail_step "e2e: admin token create + mcp tools/list filter（allowlist 过滤失败）" "$CHECK_LOG" "$SERVER_LOG"
 fi

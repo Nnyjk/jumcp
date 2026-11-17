@@ -1,5 +1,5 @@
 //! 预算模型：常驻 2000 / 单次 1500 / 会话累计 2500 / schema 12 / 峰值 7500，默认 fail。
-//! 为什么累计按会话：schema/result 常驻 transcript，按轮计会先破（§5.1）。
+//! 为什么累计按会话：schema/result 常驻 transcript，按轮计会先破。
 
 use crate::canonical::canonical_json;
 use crate::errors::McpError;
@@ -127,8 +127,7 @@ impl BudgetLedger {
             || projected_tokens > self.caps.max_schema_tokens
         {
             let suggestions = vec![
-                "改用模板调用（db_run_template / invoke_capability），不新增 schema 注入"
-                    .to_string(),
+                "缩小 X-MCP-Tool-Groups 或分页/摘要，不新增 schema 注入".to_string(),
                 format!(
                     "当前 {} 个 schema/{} tokens 已达上限 {}/3000，可通过缩小 X-MCP-Tool-Groups 释放组索引预算",
                     l.schema_count, l.schema_tokens, MAX_SCHEMA_COUNT

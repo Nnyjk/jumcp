@@ -171,7 +171,7 @@ if [ "$RESET_DATA" = "1" ] && [ -d "$DATA_DIR" ]; then
 fi
 mkdir -p "$LOG_DIR"
 
-# ------------------------------------------------------------ 配置：可选 ClickHouse 数据源
+# 配置：可选 ClickHouse 数据源
 POLICY_FILE="$BASE_POLICY"
 BACKEND_ENV=(env)
 if [ -n "$CLICKHOUSE_DSN" ]; then
@@ -190,10 +190,10 @@ EOF
   BACKEND_ENV+=(JUMCP_DEV_CLICKHOUSE_DSN="$CLICKHOUSE_DSN")
   echo "==> 已生成临时数据源配置：$POLICY_FILE（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
 else
-  echo "==> 未提供 --clickhouse-dsn：使用 config/policy.toml 原样（db_query_readonly 会返回 MCP_STORE_ERROR，属预期）"
+  echo "==> 未提供 --clickhouse-dsn：使用 config/policy.toml 原样（内置查询工具不接 ClickHouse，ClickHouse 需通过上游 MCP 接入）"
 fi
 
-# ------------------------------------------------------------ 后端
+# 后端
 # 1) 端口守卫：端口已有监听者说明多半是上一次遗留的旧后端；它会让新进程 bind 失败，
 #    而 /health 又会命中旧进程，从而被误判为“就绪”。这里直接失败，不自动杀进程。
 if port_listening "$BACKEND_PORT" "$BACKEND_HOST"; then
@@ -266,7 +266,7 @@ if [ "$CHAIN" != "valid" ]; then
   echo "警告：audit_chain = $CHAIN（审计链异常），服务仍继续运行，请检查 .dev-data/audit.sqlite3"
 fi
 
-# ------------------------------------------------------------ 前端
+# 前端
 WEB_PORT_USED=0
 if [ "$NO_WEB" != "1" ]; then
   candidate="$WEB_PORT"
@@ -308,7 +308,7 @@ if [ "$NO_WEB" != "1" ]; then
   fi
 fi
 
-# ------------------------------------------------------------ 横幅
+# 横幅
 if [ "$NO_WEB" = "1" ]; then
   WEB_LINE="管理台   （未启动：--no-web）"
 else
@@ -325,7 +325,7 @@ echo "停止     Ctrl+C（会同时停掉前后端）"
 echo "================================================="
 echo ""
 
-# ------------------------------------------------------------ 前台等待
+# 前台等待
 while :; do
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
     echo "后端已退出"

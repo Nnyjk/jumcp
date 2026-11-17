@@ -1,25 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchHealth } from '../api/admin'
 import type { AuditChainState, HealthDatasource } from '../api/types'
-import { Badge, type BadgeTone } from '../components/Badge'
+import { Badge } from '../components/Badge'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { DetailField, DetailGrid } from '../components/DetailGrid'
 import { InfoBar } from '../components/InfoBar'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../components/PageShell'
-import { formatDateTime } from '../format'
-import { HEALTH_STATUS_LABEL } from '../labels'
+import { DASH, formatDateTime } from '../format'
+import { inlineJson } from '../json'
+import { CHAIN_TONE, HEALTH_STATUS_LABEL } from '../labels'
 
 const CHAIN_LABEL: Record<AuditChainState, string> = {
   valid: '审计链完整',
   tampered: '审计链被篡改',
   error: '审计链校验失败',
-}
-
-const CHAIN_TONE: Record<AuditChainState, BadgeTone> = {
-  valid: 'success',
-  tampered: 'danger',
-  error: 'danger',
 }
 
 const DATASOURCE_COLUMNS: Array<DataTableColumn<HealthDatasource>> = [
@@ -41,7 +36,7 @@ export default function HealthPage() {
     queryFn: ({ signal }) => fetchHealth(signal),
   })
   const updatedLabel =
-    dataUpdatedAt > 0 ? formatDateTime(new Date(dataUpdatedAt).toISOString()) : '—'
+    dataUpdatedAt > 0 ? formatDateTime(new Date(dataUpdatedAt).toISOString()) : DASH
 
   const chain = data?.audit_chain
   const chainDetail = data?.audit_chain_detail
@@ -50,7 +45,7 @@ export default function HealthPage() {
       ? undefined
       : typeof chainDetail === 'string'
         ? chainDetail
-        : JSON.stringify(chainDetail)
+        : inlineJson(chainDetail)
 
   return (
     <PageShell>

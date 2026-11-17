@@ -21,7 +21,7 @@ pub const EVENT_TYPES: &[&str] = &[
 
 /// `admin_change` 的最小可读契约：主体/动作/对象/结果四件套必须显式给出。
 ///
-/// 定义哈希、前后态、审批等属于事件语义，缺省用 `null`，不再要求哨兵字符串。
+/// 定义哈希、前后态、审批等属于事件语义，缺省用 `null`，不用哨兵字符串。
 pub const ADMIN_REQUIRED_FIELDS: &[&str] = &["object_type", "object_id", "action", "outcome"];
 
 /// 业务载荷结构版本（固定值）。能力/模板自身的版本在 `payload.data.version`。
@@ -29,8 +29,7 @@ pub const PAYLOAD_VERSION: i64 = 1;
 
 /// 统一载荷骨架：所有 event_type 共用同一组键，缺省值一律 `null`/`[]`。
 ///
-/// 为什么集中在这里：写入点分散在 store / mcp / admin 三处，各拼一份 JSON 必然漂移
-/// （旧实现就出现过 `diff` 与 `changes` 两种前后态表达）。
+/// 为什么集中在这里：写入点分散在 store / mcp / admin 三处，各拼一份 JSON 必然漂移。
 pub fn payload(
     object_type: &str,
     object_id: &str,
@@ -286,13 +285,15 @@ impl AuditLog {
         }
         let conn = self.conn.lock().map_err(|_| McpError::lock())?;
         // 空表合法返回空种子；查询出错必须上抛，禁止把 prev_hash 重置成空导致链分叉。
-        let prev_hash: String = conn
-            .query_row(
-                "SELECT hash FROM audit_events ORDER BY rowid DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
+        let prev_hash: String = match conn.query_row(
+            "SELECT hash FROM audit_events ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(hash) => hash,
+            Err(rusqlite::Error::QueryReturnedNoRows) => String::new(),
+            Err(e) => return Err(McpError::audit(e.to_string())),
+        };
         let event_id = if event.event_id.is_empty() {
             uuid::Uuid::new_v4().simple().to_string()
         } else {
@@ -486,13 +487,14 @@ fn build_filter(filter: Option<&Value>) -> Result<(Vec<String>, Vec<String>), Mc
             "actor_id" => format!("json_extract(actor_json, '$.id') IN ({placeholders})"),
             "actor_role" => format!("json_extract(actor_json, '$.role') IN ({placeholders})"),
             "token_id" => format!("json_extract(actor_json, '$.token_id') IN ({placeholders})"),
+            // 时间键是区间而不是集合：每个取值单独成一条 AND 条件，占位符数量与绑定值一一对应。
             "ts_after" => {
-                clauses.push("ts >= ?".to_string());
+                clauses.extend(std::iter::repeat_n("ts >= ?".to_string(), vector.len()));
                 params.extend(vector);
                 continue;
             }
             "ts_before" => {
-                clauses.push("ts <= ?".to_string());
+                clauses.extend(std::iter::repeat_n("ts <= ?".to_string(), vector.len()));
                 params.extend(vector);
                 continue;
             }
@@ -669,5 +671,48 @@ mod tests {
                 event_id: "e2".into()
             }
         );
+    }
+
+    /// 时间键是区间：多个取值时占位符数量必须与绑定值一一对应，否则查询直接报错。
+    #[test]
+    fn time_range_filter_accepts_multiple_bounds() {
+        let log = AuditLog::open(":memory:").unwrap();
+        for (id, ts) in [
+            ("e1", "2026-01-01T00:00:00+00:00"),
+            ("e2", "2026-02-01T00:00:00+00:00"),
+            ("e3", "2026-03-01T00:00:00+00:00"),
+        ] {
+            let mut event = ev();
+            event.event_id = id.into();
+            event.ts = ts.into();
+            log.append(event).unwrap();
+        }
+        let filter = json!({"ts_after": [
+            "2026-01-01T00:00:00+00:00",
+            "2026-02-01T00:00:00+00:00"
+        ]});
+        let (rows, total) = log.query_page(Some(&filter), 10, 0, Order::Asc).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(rows[0].event_id, "e2");
+        assert_eq!(rows[1].event_id, "e3");
+        let filter = json!({
+            "ts_after": "2026-02-01T00:00:00+00:00",
+            "ts_before": "2026-02-01T00:00:00+00:00"
+        });
+        let (rows, total) = log.query_page(Some(&filter), 10, 0, Order::Asc).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].event_id, "e2");
+    }
+
+    /// prev_hash 读不出来时必须上抛，不能退回空种子让链分叉。
+    #[test]
+    fn broken_chain_read_is_fatal() {
+        let log = AuditLog::open(":memory:").unwrap();
+        log.append(ev()).unwrap();
+        {
+            let conn = log.conn.lock().unwrap();
+            conn.execute("DROP TABLE audit_events", []).unwrap();
+        }
+        assert!(log.append(ev()).is_err());
     }
 }

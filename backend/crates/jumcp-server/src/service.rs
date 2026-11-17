@@ -1,5 +1,5 @@
 //! 服务聚合：配置、catalog、执行委托、审计与按会话预算。
-//! 为什么预算放在 Service 而不是每个 handler：schema/result 累计必须跨调用共享（§5.1 按会话计）。
+//! 为什么预算放在 Service 而不是每个 handler：schema/result 累计必须跨调用共享。
 
 use crate::catalog::{Capability, Catalog};
 use crate::discovery;
@@ -176,8 +176,9 @@ impl Service {
         discovery::visible_capabilities(&self.catalog, self.store.as_deref(), scope)
     }
 
-    /// 调用面集合：`published ∧ callable ∧ group ∈ scope`（可见性不决定可调用性，§4.4.1）。
-    /// db_run_template 用它与发现面共享 predicate 实现，但不再要求 discoverable。
+    /// 调用面集合：`published ∧ callable ∧ group ∈ scope`（可见性不决定可调用性）。
+    /// 系统直调（连接器/上游）用它与发现面共享 predicate 实现，
+    /// 但不要求 discoverable。
     pub fn callable_capabilities(
         &self,
         scope: &EffectiveScope,
@@ -201,7 +202,7 @@ impl Service {
         Ok(discovery::merge_exposed(base, extra))
     }
 
-    /// 常驻 token 计量（§5.1 口径：每个工具 canonical JSON 字节数 / 4，逐个累加）。
+    /// 常驻 token 计量（口径：每个工具 canonical JSON 字节数 / 4，逐个累加）。
     pub fn resident_tokens(&self, tools: &[Value]) -> i64 {
         tools.iter().map(estimate_tokens).sum()
     }
@@ -227,28 +228,6 @@ impl Service {
         let mut ledger = self.budget.lock().map_err(|_| McpError::lock())?;
         ledger.record_schema(session_key, token_cost);
         Ok(())
-    }
-
-    pub fn check_result(
-        &self,
-        session_key: &str,
-        incoming_tokens: i64,
-    ) -> Result<BudgetCheckResult, McpError> {
-        let mut ledger = self.budget.lock().map_err(|_| McpError::lock())?;
-        Ok(ledger.check_result(session_key, incoming_tokens))
-    }
-
-    /// 结果记账：把本次结果 token 累加进会话账本，再返回**累计之后**的预算判定。
-    /// 为什么不能只调 check_result：check_result 只做预检不落账，会话 result_tokens 会永远是 0，
-    /// 累计上限与摘要模式随之失效（§5.1 按会话计）。
-    pub fn record_result(
-        &self,
-        session_key: &str,
-        token_cost: i64,
-    ) -> Result<BudgetCheckResult, McpError> {
-        let mut ledger = self.budget.lock().map_err(|_| McpError::lock())?;
-        ledger.record_result(session_key, token_cost);
-        Ok(ledger.check_result(session_key, 0))
     }
 
     /// 追加审计：审计写失败必须上抛（治理面不可静默失效）。
@@ -282,7 +261,7 @@ impl Service {
         .map(|env| env.event_id)
     }
 
-    /// 拒绝路径统一审计（§4.4.3 policy_decision）：统一载荷 + 人类可读错误信息。
+    /// 拒绝路径统一审计（policy_decision）：统一载荷 + 人类可读错误信息。
     pub fn policy_decision(
         &self,
         actor: &Actor,
@@ -414,7 +393,7 @@ pub fn health(settings: &Settings) -> Value {
 /// 多角色部署里角色名往往 `admin` 排最前，若按字典序取第一个，stdio 进程会直接拿到维护通道
 /// （`admin` 组）——默认身份不得持有维护通道。
 ///
-/// 取法：优先 `analyst`（历史默认、最小权限），否则按名字排序取第一个非 admin 角色。
+/// 取法：优先 `analyst`（默认角色、最小权限），否则按名字排序取第一个非 admin 角色。
 /// 全部角色都持 admin 组时返回 `None`：`process_actor` 得到空角色，后续 `require_scope()`
 /// 因策略里查不到该角色而失败，即 fail-closed——绝不回退到特权角色。
 fn default_role(settings: &Settings) -> Option<String> {
@@ -623,25 +602,5 @@ mod tests {
         let scope = service.scope_from_headers(&actor, &headers).unwrap();
         assert_eq!(scope.groups, vec!["db.read.new".to_string()]);
         assert_eq!(scope.source, "header");
-    }
-
-    #[test]
-    fn record_result_accumulates_and_flips_to_summary() {
-        let service = Service::new(settings()).with_budget_caps(BudgetCaps {
-            max_result_cumulative: 100,
-            ..Default::default()
-        });
-
-        // 第一次记账：累计 60，未达上限 100 → 不进摘要模式。
-        let first = service.record_result("default", 60).unwrap();
-        assert!(!first.summary, "累计 60 未超上限，不应进入摘要模式");
-
-        // 第二次记账：累计 120 > 100 → 摘要模式开启。
-        let second = service.record_result("default", 60).unwrap();
-        assert!(second.summary, "累计 120 超过上限 100，应进入摘要模式");
-
-        // 账本确实累加了：会话累计应为 120。
-        let view = service.check_result("default", 0).unwrap();
-        assert_eq!(view.detail["cumulative"], json!(120));
     }
 }

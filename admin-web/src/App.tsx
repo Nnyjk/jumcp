@@ -1,19 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Route, Routes, useLocation } from 'react-router-dom'
 import { BackButton } from './components/BackButton'
+import { LoadingState } from './components/PageShell'
 import { Sidebar, type NavEntry } from './components/Sidebar'
 import { TitleBar } from './components/TitleBar'
-import DashboardPage from './pages/DashboardPage'
-import ReviewQueuePage from './pages/ReviewQueuePage'
-import AuditQueryPage from './pages/AuditQueryPage'
-import ExceptionPage from './pages/ExceptionPage'
-import GroupsPage from './pages/GroupsPage'
-import TokensPage from './pages/TokensPage'
-import HealthPage from './pages/HealthPage'
-import ToolsPage from './pages/ToolsPage'
-import UpstreamsPage from './pages/UpstreamsPage'
-import CapabilityDossierPage, { CapabilityDossier } from './pages/CapabilityDossierPage'
+import DashboardPage from './pages/dashboard'
 import { AdminViewContext, VIEW_TITLE, useAdminViewStack } from './viewStack'
+
+// 路由级分包：工作台是入口页面保持静态，其余页面按需加载，避免单包超过 500 kB。
+const ReviewQueuePage = lazy(() => import('./pages/review-queue'))
+const AuditQueryPage = lazy(() => import('./pages/audit-query'))
+const ExceptionPage = lazy(() => import('./pages/ExceptionPage'))
+const GroupsPage = lazy(() => import('./pages/groups'))
+const TokensPage = lazy(() => import('./pages/tokens'))
+const HealthPage = lazy(() => import('./pages/HealthPage'))
+const ToolsPage = lazy(() => import('./pages/tools'))
+const UpstreamsPage = lazy(() => import('./pages/upstreams'))
+const CapabilityDossierPage = lazy(() => import('./pages/capability-dossier'))
+const CapabilityDossier = lazy(() =>
+  import('./pages/capability-dossier').then((module) => ({ default: module.CapabilityDossier })),
+)
 
 interface PageMeta extends NavEntry {
   title: string
@@ -43,12 +49,21 @@ const COLLAPSED_KEY = 'jumcp-admin-nav-collapsed'
 
 export default function App() {
   const location = useLocation()
-  const [collapsed, setCollapsed] = useState(
-    () => window.localStorage.getItem(COLLAPSED_KEY) === '1',
-  )
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(COLLAPSED_KEY) === '1'
+    } catch {
+      // 隐私模式/禁用存储时按未折叠渲染，不让整个管理台白屏。
+      return false
+    }
+  })
 
   useEffect(() => {
-    window.localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
+    try {
+      window.localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
+    } catch {
+      // 折叠偏好只是本地便利设置，写不进去不影响功能。
+    }
   }, [collapsed])
 
   // 跳转链接只改变 hash 不移动键盘焦点：手动把焦点交给 main，下一次 Tab 才从正文开始。
@@ -96,48 +111,56 @@ export default function App() {
         <div className="shell-main">
           <TitleBar title={title} />
           <main className="content" id="main-content" tabIndex={-1}>
-            {view === null ? (
-              <Routes>
-                <Route path="/" element={<DashboardPage />} />
-                <Route path="/review" element={<ReviewQueuePage />} />
-                <Route path="/tools" element={<ToolsPage />} />
-                <Route path="/upstreams" element={<UpstreamsPage />} />
-                <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
-                <Route path="/groups" element={<GroupsPage />} />
-                <Route path="/tokens" element={<TokensPage />} />
-                <Route path="/audit" element={<AuditQueryPage />} />
-                <Route path="/exceptions" element={<ExceptionPage />} />
-                <Route path="/health" element={<HealthPage />} />
-                <Route path="*" element={<DashboardPage />} />
-              </Routes>
-            ) : view.kind === 'tools' ? (
-              <>
-                <BackButton label={`返回${backLabel}`} onClick={back} />
-                <ToolsPage
-                  initialGroup={view.group}
-                  onOpenDossier={(id) => openDossier({ id })}
+            <Suspense
+              fallback={
+                <div className="page">
+                  <LoadingState rows={6} label="正在加载页面" />
+                </div>
+              }
+            >
+              {view === null ? (
+                <Routes>
+                  <Route path="/" element={<DashboardPage />} />
+                  <Route path="/review" element={<ReviewQueuePage />} />
+                  <Route path="/tools" element={<ToolsPage />} />
+                  <Route path="/upstreams" element={<UpstreamsPage />} />
+                  <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
+                  <Route path="/groups" element={<GroupsPage />} />
+                  <Route path="/tokens" element={<TokensPage />} />
+                  <Route path="/audit" element={<AuditQueryPage />} />
+                  <Route path="/exceptions" element={<ExceptionPage />} />
+                  <Route path="/health" element={<HealthPage />} />
+                  <Route path="*" element={<DashboardPage />} />
+                </Routes>
+              ) : view.kind === 'tools' ? (
+                <>
+                  <BackButton label={`返回${backLabel}`} onClick={back} />
+                  <ToolsPage
+                    initialGroup={view.group}
+                    onOpenDossier={(id) => openDossier({ id })}
+                  />
+                </>
+              ) : view.kind === 'dossier' ? (
+                <CapabilityDossier
+                  key={`dossier:${view.id}:${view.tab ?? ''}`}
+                  id={view.id}
+                  initialTab={view.tab}
+                  onBack={back}
+                  backLabel={`返回${backLabel}`}
                 />
-              </>
-            ) : view.kind === 'dossier' ? (
-              <CapabilityDossier
-                key={`dossier:${view.id}:${view.tab ?? ''}`}
-                id={view.id}
-                initialTab={view.tab}
-                onBack={back}
-                backLabel={`返回${backLabel}`}
-              />
-            ) : (
-              <AuditQueryPage
-                key={`audit:${view.tokenId ?? ''}:${view.objectId ?? ''}:${view.eventId ?? ''}`}
-                initial={{
-                  tokenId: view.tokenId,
-                  objectId: view.objectId,
-                  eventId: view.eventId,
-                }}
-                onBack={back}
-                backLabel={`返回${backLabel}`}
-              />
-            )}
+              ) : (
+                <AuditQueryPage
+                  key={`audit:${view.tokenId ?? ''}:${view.objectId ?? ''}:${view.eventId ?? ''}`}
+                  initial={{
+                    tokenId: view.tokenId,
+                    objectId: view.objectId,
+                    eventId: view.eventId,
+                  }}
+                  onBack={back}
+                  backLabel={`返回${backLabel}`}
+                />
+              )}
+            </Suspense>
           </main>
         </div>
       </div>

@@ -144,10 +144,10 @@ $script:CancelHandler = [System.ConsoleCancelEventHandler] {
 [Console]::add_CancelKeyPress($script:CancelHandler)
 
 try {
-  # ------------------------------------------------------------ 参数校验：单一主数据源
-  # 后端启动时只接受一个 readonly 数据源，这里不再需要互斥判定；保留 try 结构便于收尾。
+  # 参数校验：单一主数据源
+  # 后端启动时只接受一个 readonly 数据源，这里不需要互斥判定；保留 try 结构便于收尾。
 
-  # ------------------------------------------------------------ 准备数据目录
+  # 准备数据目录
   if ($ResetData -and (Test-Path $DataDir)) {
     Write-Host "==> 清空 $DataDir"
     Remove-Item -Recurse -Force $DataDir -ErrorAction SilentlyContinue
@@ -168,7 +168,7 @@ try {
     exit 1
   }
 
-  # ------------------------------------------------------------ 配置：可选 ClickHouse 数据源
+  # 配置：可选 ClickHouse 数据源
   $policyFile = $BasePolicy
   $backendEnv = @{}
   if ($ClickHouseDsn -ne '') {
@@ -188,10 +188,10 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     $backendEnv['JUMCP_DEV_CLICKHOUSE_DSN'] = $ClickHouseDsn
     Write-Host "==> 已生成临时数据源配置：$policyFile（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
   } else {
-    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（db_query_readonly 会返回 MCP_STORE_ERROR，属预期）'
+    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（内置查询工具不接 ClickHouse，ClickHouse 需通过上游 MCP 接入）'
   }
 
-  # ------------------------------------------------------------ 后端
+  # 后端
   # 1) 端口守卫：端口已有监听者说明多半是上一次遗留的旧后端；它会让新进程 bind 失败，
   #    而 /health 又会命中旧进程，从而被误判为“就绪”。这里直接失败，不自动杀进程。
   if (Test-PortListening $BackendPort $BackendHost) {
@@ -279,7 +279,7 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     Write-Host ("警告：audit_chain = {0}（审计链异常），服务仍继续运行，请检查 .dev-data/audit.sqlite3" -f $chain) -ForegroundColor Yellow
   }
 
-  # ------------------------------------------------------------ 前端
+  # 前端
   $webPortUsed = 0
   if (-not $NoWeb) {
     $candidate = $WebPort
@@ -332,7 +332,7 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     }
   }
 
-  # ------------------------------------------------------------ 横幅
+  # 横幅
   $webLine = "管理台   http://127.0.0.1:$webPortUsed （监听 0.0.0.0:$webPortUsed）"
   if ($NoWeb) { $webLine = '管理台   （未启动：-NoWeb）' }
   Write-Host ''
@@ -346,7 +346,7 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   Write-Host '================================================='
   Write-Host ''
 
-  # ------------------------------------------------------------ 前台等待
+  # 前台等待
   while ($true) {
     Start-Sleep -Milliseconds 500
     $dead = @()

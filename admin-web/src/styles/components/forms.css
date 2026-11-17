@@ -1,0 +1,264 @@
+/* 表单与详情通用块、JSON 代码块、分段控件。 */
+
+.btn-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-subtle);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.textarea {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 20px;
+  resize: vertical;
+}
+
+.filter-bar .field.field-grow {
+  flex: 1 1 240px;
+}
+
+.state-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.form-row .field {
+  flex: 1 1 180px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.row-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* 只读语义：内置行不渲染禁用按钮，改用文字说明为什么不能编辑。 */
+.row-note {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.basic-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.basic-tools-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.basic-tools-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.basic-tools-meta {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.basic-tools-counters {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.basic-tools-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.basic-tools-reason {
+  color: var(--warning);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.create-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.inline-error {
+  color: var(--danger);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.detail-heading {
+  margin-bottom: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-14);
+}
+
+.stat-value-sm {
+  font-family: var(--font-mono);
+  font-size: var(--fs-14);
+  font-weight: 500;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 详情 / JSON 代码块 */
+
+.audit-detail {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.audit-detail section {
+  min-width: 0;
+}
+
+.code-block {
+  max-height: 340px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--fill-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 18px;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.code-block-sql {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+}
+
+.json-block {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.json-block figcaption {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+/* 分段 */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-control);
+}
+
+.segmented button {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-12);
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.segmented button:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.segmented-count {
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+/* 900px 起卡片头必须能换行：标题 + 副标题 + 分段 + 主按钮在 768–900 会互相挤压，
+ * 副标题曾在此被压成 0 宽只剩省略号。副标题给一个可收缩的基准宽度，放不下才换行，
+ * 这样「只有副标题没有标题」的卡片（令牌/工具）不会出现一行空白。 */
+@media (max-width: 900px) {
+  .card-head {
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+  }
+
+  .card-head h2 {
+    white-space: normal;
+  }
+
+  .card-subtitle {
+    flex: 1 1 220px;
+    white-space: normal;
+  }
+
+  .card-head-actions {
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+}
+
+

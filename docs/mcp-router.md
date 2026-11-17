@@ -9,7 +9,7 @@
 
 | category | 职责 | 工具 | 可见性判定 |
 |---|---|---|---|
-| `basic` | 基础查询、计算：走查工具目录 + 直接取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_query_readonly`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
+| `basic` | 基础元工具：走查工具目录/取 schema | `search_capabilities`、`describe_capability`、`list_groups` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
 | `analysis` | 工具列表分析、变更提交审计 | `admin_review_queue`、`admin_register_template`、`admin_set_visibility` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
 | `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
 
@@ -22,21 +22,21 @@
 
 ### `basic` 是代码内置组，不是授权组
 
-`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻五件内置工具的 `group`
+`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻三件内置元工具的 `group`
 就是 `basic`，上游可以把**个别**只读工具逐工具加入 `basic`（见 §2.1）。它不是配置组
 （`config/policy.toml` 不得定义）、不是管理组、也不是可授权组：
 
 - `GET /admin/groups` 固定返回一条合成条目：`{code:"basic", name:"基础工具", source:"builtin",
-  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 5 + 上游 basic 覆盖数,
+  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 3 + 上游 basic 覆盖数,
   token_count:0}`；`source` 过滤接受 `policy|managed|builtin`。
 - 创建/改名/删除组一律 409 `MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在
   `RESERVED_GROUP_NAMES`）；`basic` 不能出现在令牌的 `groups` 里（`token_options.groups`
   不含它，创建令牌传它会得到"未知组"）。配置文件中出现 `basic` 或 `builtin` 组 → 启动校验失败。
-- `builtin` 只作为**拒绝创建的保留名**存在，不再作为任何工具的 `group` 值。
+- `builtin` 只作为**拒绝创建的保留名**存在，不作为任何工具的 `group` 值。
 
 分类**不是授权组**，不改变权限判定：`analysis`/`admin` 这两类不是 `scope.groups` 的取值，
 `X-MCP-Tool-Groups` 收窄也不会改变常驻工具的可见性。常驻性由代码常量
-`RESIDENT_TOOL_NAMES` 判定（`basic` 的五件全是常驻工具）；`analysis` 与 `admin` 里的
+`RESIDENT_TOOL_NAMES` 判定（`basic` 的三件全是常驻工具）；`analysis` 与 `admin` 里的
 `admin_*` 一律要求组 `admin` 在 scope 内 **且** token allowlist 命中（`discovery::admin_enabled`
 与 allowlist 双重判定），分类标签既不放宽也不收紧这条规则。
 

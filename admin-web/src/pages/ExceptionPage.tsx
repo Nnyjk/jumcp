@@ -6,6 +6,7 @@ import type { CapabilityItem, CapabilityQuery, GroupItem } from '../api/types'
 import { LifecycleBadge, RiskBadge } from '../components/Badge'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
+import { Field } from '../components/Field'
 import {
   EmptyState,
   ErrorState,
@@ -13,10 +14,9 @@ import {
   PageShell,
   Pagination,
 } from '../components/PageShell'
+import { DASH } from '../format'
 import { STATUS_LABEL, TOOL_KIND_LABEL } from '../labels'
 import { useAdminView } from '../viewStack'
-
-const DASH = '—'
 
 const EMPTY_FILTER: CapabilityQuery = { status: '', group: '', q: '' }
 
@@ -130,8 +130,7 @@ export default function ExceptionPage() {
             setFilter(draft)
           }}
         >
-          <label className="field">
-            <span>状态</span>
+          <Field label="状态">
             <select
               className="select"
               value={draft.status ?? ''}
@@ -143,25 +142,23 @@ export default function ExceptionPage() {
               <option value="published">{STATUS_LABEL.published}</option>
               <option value="deprecated">{STATUS_LABEL.deprecated}</option>
             </select>
-          </label>
-          <label className="field">
-            <span>组</span>
+          </Field>
+          <Field label="组">
             <input
               className="input"
               value={draft.group ?? ''}
               onChange={(event) => setDraft({ ...draft, group: event.target.value })}
               placeholder="组名"
             />
-          </label>
-          <label className="field">
-            <span>关键字</span>
+          </Field>
+          <Field label="关键字">
             <input
               className="input"
               value={draft.q ?? ''}
               onChange={(event) => setDraft({ ...draft, q: event.target.value })}
               placeholder="关键字"
             />
-          </label>
+          </Field>
           <div className="filter-actions">
             <button type="submit" className="btn btn-primary">
               查询
@@ -192,7 +189,7 @@ export default function ExceptionPage() {
         }
         flush
         footer={
-          data !== undefined && data.items.length > 0 ? (
+          data !== undefined && data.total > 0 ? (
             <Pagination
               total={data.total}
               offset={data.offset}
@@ -209,7 +206,13 @@ export default function ExceptionPage() {
         {isPending && <LoadingState rows={7} label="正在查询能力清单" />}
         {isError && <ErrorState error={error} />}
         {data !== undefined && data.items.length === 0 && (
-          <EmptyState hint="没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。" />
+          <EmptyState
+            hint={
+              data.total > 0
+                ? '当前页没有记录，请用下方的上一页返回。'
+                : '没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。'
+            }
+          />
         )}
         {data !== undefined && data.items.length > 0 && (
           <DataTable

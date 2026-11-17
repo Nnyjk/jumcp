@@ -1,7 +1,7 @@
 //! 发现面的唯一可见集：`builtin 常驻工具 ∪ 注册表可见行 ∪ 内存目录可见条目`。
 //!
 //! 为什么只允许一个生产函数：`search_capabilities` / `describe_capability` / `list_groups` /
-//! `tools/list` 的平铺 / `db_run_template` 的可见性判定必须同一口径，否则会出现
+//! `tools/list` 的平铺 / 模板与上游工具的可见性判定必须同一口径，否则会出现
 //! "搜得到但调不了"或"调得了但搜不到"的双套口径漂移。
 //!
 //! 为什么不缓存：每次请求按 scope 从 SQLite 现查（本地读，代价可接受），
@@ -312,7 +312,7 @@ pub fn visible_capabilities(
 
 /// 调用面集合：`published ∧ callable ∧ group ∈ scope`。
 ///
-/// 与可见集**不是**同一个集合（§4.4.1 D3：`discoverable=false, callable=true` 是合法的
+/// 与可见集**不是**同一个集合（`discoverable=false, callable=true` 是合法的
 /// "系统直调"状态）。两条谓词共用 `CapabilityStore::visible` / `CapabilityStore::callable`
 /// 背后的同一处 SQL 拼装，因此不会各写一份 WHERE。
 pub fn callable_capabilities(

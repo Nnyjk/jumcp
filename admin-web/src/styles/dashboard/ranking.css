@@ -1,0 +1,101 @@
+/* 工具排名 */
+
+.rank-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rank-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 52px;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rank-id {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank-track {
+  height: 12px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--fill-subtle);
+}
+
+.rank-bar {
+  display: flex;
+  min-width: 2px;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+}
+
+.rank-seg {
+  display: block;
+  height: 100%;
+  min-width: 0;
+}
+
+.rank-seg-success {
+  background: var(--success);
+}
+
+.rank-seg-failure {
+  background: var(--danger);
+}
+
+.rank-rate {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* 失败榜 */
+
+.fail-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.fail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px 56px 56px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-12);
+}
+
+.fail-row:last-child {
+  border-bottom: 0;
+}
+
+.fail-head {
+  padding-top: 0;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.fail-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.fail-num-danger {
+  color: var(--danger);
+}
+

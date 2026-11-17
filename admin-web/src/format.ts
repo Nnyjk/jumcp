@@ -1,4 +1,26 @@
-const DASH = '—'
+/** 空值占位：表格里「没有数据」不能读成 0 或空串。 */
+export const DASH = '—'
+
+/** 0–1 比率 → 百分比；无样本给破折号，不用 0% 冒充。 */
+export function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return DASH
+  return `${(value * 100).toFixed(1)}%`
+}
+
+/** 单值展示：null / undefined / 空白串 → 破折号；其余保留原文本（0 与 false 正常显示）。 */
+export function dashText(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return DASH
+  if (typeof value === 'string') return value.trim() === '' ? DASH : value
+  return String(value)
+}
+
+/** 单行预览：折叠连续空白后按字符截断，超长补省略号；空值给破折号。 */
+export function truncateInline(value: string | null | undefined, max = 72): string {
+  if (value === null || value === undefined) return DASH
+  const oneLine = value.replace(/\s+/g, ' ').trim()
+  if (oneLine === '') return DASH
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine
+}
 
 /**
  * RFC3339 允许任意位数的小数秒（Rust chrono 默认带纳秒），而 V8 只稳定解析到毫秒；

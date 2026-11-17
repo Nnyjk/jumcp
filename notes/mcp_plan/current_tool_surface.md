@@ -1,5 +1,7 @@
 # 当前工具面盘点（改造成 MCP router / 三组切分前的基线）
 
+> **当前事实（覆盖下文历史盘点）**：ClickHouse 内置只读查询 `db_query_readonly` 与模板执行 `db_run_template` 已移除，`basic` 组不再有数据源查询/执行入口。现在常驻内置工具只有三个元工具：`search_capabilities`、`describe_capability`、`list_groups`；`basic` 作为代码内置组与契约继续存在（不可配置、不可授权），上游 MCP 只读工具可按工具逐项加入 `basic`（`<server_id>__<tool>`）。ClickHouse 等数据源查询改由上游 MCP server 提供工具接入。下文是改造前的工具面基线，仅作历史参考。
+
 结论先行：内置工具共 **9 个**（常驻 5 + 维护 4），全部硬编码在 `mcp.rs`，**没有 group 字段**、**没有上游转发**、**没有动态注册**。
 组语义只有两档：`builtin`（常驻、恒可见）与 `admin`（组内可见），`basic/analysis/admin` 三分不存在；
 `basic/analysis` 目前没有对应实现，也不是现有组 code。

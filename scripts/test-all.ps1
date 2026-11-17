@@ -169,7 +169,7 @@ function Resolve-Tool {
 }
 
 try {
-  # ------------------------------------------------------------ 1. 环境探测
+  # 1. 环境探测
   Write-Host '==> env: toolchain probe'
   $envLog = Get-LogPath 'env: toolchain probe'
   $toolCandidates = @{
@@ -208,7 +208,7 @@ try {
   Add-Step 'env: toolchain probe' 'PASS' 0 $envLog
   $envLines | ForEach-Object { Write-Host $_ }
 
-  # ------------------------------------------------------------ 2. 后端
+  # 2. 后端
   Invoke-Step 'backend: cargo fmt --check' $BackendDir { & cargo fmt --check } | Out-Null
   Invoke-Step 'backend: cargo clippy -D warnings' $BackendDir { & cargo clippy --all-targets -- -D warnings } | Out-Null
   Invoke-Step 'backend: cargo test --workspace' $BackendDir { & cargo test --workspace } | Out-Null
@@ -218,13 +218,13 @@ try {
     Invoke-Step 'backend: cargo test --ignored (真库)' $BackendDir { & cargo test --workspace -- --ignored } | Out-Null
   }
 
-  # ------------------------------------------------------------ 3. 前端
+  # 3. 前端
   Invoke-Step 'frontend: npm ci' $WebDir { & npm ci } | Out-Null
   Invoke-Step 'frontend: npm run typecheck' $WebDir { & npm run typecheck } | Out-Null
   Invoke-Step 'frontend: npm run build' $WebDir { & npm run build } | Out-Null
   Invoke-Step 'frontend: eslint src --max-warnings 0' $WebDir { & npx eslint src --max-warnings 0 } | Out-Null
 
-  # ------------------------------------------------------------ 4. E2E 冒烟
+  # 4. E2E 冒烟
   if ($SkipE2E) {
     Write-Host '跳过 E2E 冒烟（-SkipE2E）'
     Write-Summary
@@ -357,7 +357,7 @@ try {
     $sw.Stop()
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds '' ("POST /mcp tools/list 期望 200，实际 {0}" -f $code)
   }
-  $ok = Invoke-NodeCheck $toolsFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups","db_query_readonly","db_run_template"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}'
+  $ok = Invoke-NodeCheck $toolsFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const want=["search_capabilities","describe_capability","list_groups"];const missing=want.filter(n=>!names.includes(n));if(missing.length){console.error("tools/list 缺少: "+missing.join(","));process.exit(1)}'
   $sw.Stop()
   if (-not $ok) {
     Fail-E2E 'e2e: mcp initialize + tools/list' $sw.Elapsed.TotalSeconds $script:CheckLog 'tools/list 工具清单不完整'
@@ -385,7 +385,11 @@ try {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $tokenFile = Join-Path $script:TempDir 'token_create.json'
   $tokenBody = '{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data $tokenBody "$base/admin/tokens" 2>$null | Out-String).Trim()
+  # body 走临时文件而不是 argv：Windows 原生 curl.exe 会把含中文的 argv 按 ANSI 代码页（如 CP936）转码，
+  # 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TempDir 内随脚本清理。
+  $tokenBodyFile = Join-Path $script:TempDir 'token_create_body.json'
+  [System.IO.File]::WriteAllText($tokenBodyFile, $tokenBody, [System.Text.UTF8Encoding]::new($false))
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data-binary "@$tokenBodyFile" "$base/admin/tokens" 2>$null | Out-String).Trim()
   if ($code -ne '201') {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens 期望 201，实际 {0}" -f $code)
@@ -400,7 +404,7 @@ try {
   $platformTokenId = $tokenJson.item.id
   $platformTools = Join-Path $script:TempDir 'platform_tools.json'
   & $curl -sS --connect-timeout 2 --max-time 5 -o $platformTools -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $platformToken" --data $listBody "$base/mcp" 2>$null | Out-Null
-  $ok = Invoke-NodeCheck $platformTools 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups","db_query_readonly","db_run_template"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}'
+  $ok = Invoke-NodeCheck $platformTools 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const names=((d.result||{}).tools||[]).map(t=>t.name);const need=["search_capabilities","describe_capability"];const miss=need.filter(n=>!names.includes(n));if(miss.length){console.error("缺少 allowlist 内工具: "+miss.join(","));process.exit(1)}const forbidden=names.filter(n=>["list_groups"].includes(n)||n.startsWith("admin_"));if(forbidden.length){console.error("出现未授权工具: "+forbidden.join(","));process.exit(1)}'
   if (-not $ok) {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog 'allowlist 过滤失败'

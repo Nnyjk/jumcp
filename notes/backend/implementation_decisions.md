@@ -1,6 +1,6 @@
 # 后端实现决策与坑（Rust）
 
-配套：`docs/plan/jumcp-preview.md`、`docs/plan/implementation-plan.md`。
+配套：`../mcp_plan/architecture_preview.md`、`../mcp_plan/implementation_plan.md`（历史设计记录，不作为当前契约）。
 
 ## 已定决策
 

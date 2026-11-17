@@ -1,0 +1,146 @@
+/* 文本与摘要：通用文本、只读布尔、摘要与变更列表。 */
+
+.muted {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+}
+
+/* 只读布尔值：是=成功色文本，否=弱化文本；不借用开关控件外观。 */
+.flag-yes {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.flag-no {
+  color: var(--text-tertiary);
+}
+
+/* 摘要 / 变更 */
+
+.summary-block {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+  background: var(--accent-subtle);
+}
+
+.summary-sentence {
+  font-size: var(--fs-14);
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.summary-reason {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.changes-table,
+.kv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-12);
+}
+
+.changes-table th,
+.changes-table td,
+.kv-table th,
+.kv-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.changes-table th,
+.kv-table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.changes-value {
+  max-width: 340px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kv-table td {
+  overflow-wrap: anywhere;
+}
+
+.bound-params {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bound-params li {
+  display: flex;
+  gap: var(--space-2);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--fill-subtle);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.bound-index {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.raw-payload {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--fill-subtle);
+}
+
+.raw-payload > summary {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.raw-payload[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* 第二行文本与首行都要能省略：父级 .cell-text 的 ellipsis 对内部块级内容不生效。 */
+.cell-stack > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-sub {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+/* 数值列的上下两行（调用 / 失败）右对齐，与表头右对齐的 numeric 列一致。 */
+.cell-stack-end {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.cell-sub-danger {
+  color: var(--danger);
+}
+

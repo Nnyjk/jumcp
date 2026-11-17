@@ -1,6 +1,6 @@
 # 审计开放化：当前契约
 
-本文件记录**当前实现**的审计事件契约、管理面接口字段与统计口径。字段名与取值以代码为准；库中改造前写入的旧事件按「旧行边界」处理，不参与本契约。
+本文件记录**当前实现**的审计事件契约、管理面接口字段与统计口径。字段名与取值以代码为准；库中旧格式事件按「旧行边界」处理，不参与本契约。
 
 ## 1. 事件信封
 
@@ -17,7 +17,7 @@
 | `event_type` | 闭集：`tools_list_served`、`capability_search`、`capability_describe`、`tool_call`、`template_run`、`policy_decision`、`admin_change` |
 | `prev_hash` / `hash` | 哈希链；`hash = sha256(canonical(envelope 去 hash) + prev_hash)`，SHA-256 64 位小写 hex。首条 `prev_hash` 为空串 |
 
-`session_id` 只存在于信封与数据库列，不进入业务载荷；当前实现固定为 `default`（改造前部分管理面事件写入空串，属旧行）。
+`session_id` 只存在于信封与数据库列，不进入业务载荷；当前实现固定为 `default`（旧格式事件该值为空串）。
 
 ## 2. payload 的 14 个键
 
@@ -44,7 +44,7 @@
 
 - `schema_version`：**载荷结构**版本，固定在 payload 顶层，当前恒为 `1`。它与能力/模板自身版本无关，也不随业务版本变化。
 - `data.version`：**业务版本**，即能力/模板的 `version`（注册表版本号）。每次定义修订或发布时 +1。
-- 两者曾因同名 `version` 混淆，因此顶层结构版本键固定叫 `schema_version`；不要用它判断业务版本。
+- 命名按用途区分：结构版本叫 `schema_version`，业务版本叫 `data.version`；不要用前者判断业务版本。
 
 ### 2.2 `admin_change` 的必填约束
 
@@ -53,7 +53,7 @@
 ### 2.3 `changes` 的形态
 
 - 值一律是**真实前后值**：新增字段 `before=null`，删除字段 `after=null`，不做字符串化。
-- 能力定义修订（`create` / `update_definition`）：按 `definition` **递归展开对象为点路径**生成，例如 `template.description`、`template.constraints.auto_limit`；数组与标量是叶子，给完整 `before`/`after`。新增字段 `before=null`，删除字段 `after=null`。递归深度上限 6 段，超过上限的子树整体作为一行（`field` 为当前点路径）。`create` 相当于与 `{}` 比较，同样逐字段展开，不再输出整份 `template` 对象。
+- 能力定义修订（`create` / `update_definition`）：按 `definition` **递归展开对象为点路径**生成，例如 `template.description`、`template.constraints.auto_limit`；数组与标量是叶子，给完整 `before`/`after`。新增字段 `before=null`，删除字段 `after=null`。递归深度上限 6 段，超过上限的子树整体作为一行（`field` 为当前点路径）。`create` 相当于与 `{}` 比较，同样逐字段展开，不输出整份 `template` 对象。
 - 组变更：固定字段 `priority`、`min_budget`、`roles`。
 - 状态迁移：`[{field:"status", before:"draft", after:"review"}]`。
 - 可见性：`discoverable` / `callable` 两项。
@@ -94,7 +94,7 @@
 | `capability` | `create`、`submit`、`reject`、`publish`、`update_definition`、`visibility`、`deprecate`、`describe` |
 | `group` | `group_create`、`group_update`、`group_delete` |
 | `token` | `token_create`、`token_revoke`、`token_delete` |
-| `tool` | `invoke`（内置工具调用，如 `db_query_readonly`） |
+| `tool` | `invoke`（内置工具调用，如 `search_capabilities`） |
 | `template` | `invoke`（模板执行） |
 | `catalog` | `search`、`list_tools` |
 | `request` | `deny`（策略拒绝，`object_id` 为被拒工具/模板/能力 id，均不可判定时用 `request`） |
@@ -112,7 +112,7 @@
 
 执行前被拒绝的调用会写两条事件，顺序固定：
 
-1. 先写 `tool_call`（或 `template_run`）记录本次失败，`correlation_id=null`；
+1. 先写 `tool_call`（或 `template_run`）记录该次失败，`correlation_id=null`；
 2. 再写 `policy_decision`，其 `correlation_id` 等于上一条的 `event_id`。
 
 `policy_decision` 的 `object_type` 为 `request`、`action=deny`、`outcome=denied`，`object_id` 依次尝试 `detail.object_id` → `detail.tool` → `detail.capability_id` → `detail.template_id` → `detail.filter`，都没有则 `request`。无前置调用的拒绝（如未认证请求）`correlation_id` 为 `null`。
@@ -127,7 +127,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 - `source` 恒为 `"external"`：本系统没有接入外部审批系统，只留痕。
 - `verified` 恒为 `false`：单号真伪不由本系统校验，如实标注。
 - `id` 来自发布或已发布定义修订请求体的 `approval_id`，格式不受约束。
-- `submitted_by` 取提审时的鉴权派生身份；`approved_by` 取本次发布或定义修订请求的鉴权派生身份（表单不能自述批准人）。两者如实记录，当前不限制二者相同。
+- `submitted_by` 取提审时的鉴权派生身份；`approved_by` 取发布或定义修订请求的鉴权派生身份（表单不能自述批准人）。两者如实记录，当前不限制二者相同。
 
 ## 6. 审计查询
 
@@ -143,7 +143,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 - `limit` 默认 50、上限 200（越界夹紧）；`offset` 最小 0。
 - `object_type` / `object_id` 由 `json_extract(payload, …)` 匹配，因此**只命中新格式事件**（旧行没有这些键）。
 - `token_id` 由 `json_extract(actor_json, '$.token_id')` 匹配，同样只命中带 token 来源的新事件；旧事件与管理面静态 token 事件不被命中。
-- `event_type` 不做闭集校验，未知/已移除的类型返回空集。
+- `event_type` 不做闭集校验，未知类型返回空集。
 - 非法过滤键或非法 `order` 返回 `MCP_FILTER_UNSUPPORTED` / `MCP_BAD_REQUEST`，并写一条 `policy_decision`。
 
 ## 7. 管理面接口
@@ -165,7 +165,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 - `last_changed_at`：**任意**变更（含可见性）的最后时间。
 - `submitted_by` / `submitted_at`：最近一次提交审核的主体与时间；未提交过为 `null`。
 - `definition_updated_at`：最新版本行的创建时间（定义本身的更新时间），与 `last_changed_at` 分开。
-- 不再有 `updated` 字段。
+- 无 `updated` 字段；定义更新时间见 `definition_updated_at`，任意变更见 `last_changed_at`。
 
 `GET /admin/capabilities?status=&group=&q=&limit=&offset=` 返回 `{items,total,limit,offset}`，条目字段同上去掉 `definition`/`definition_updated_at`。`status` 可逗号分隔多个值（`draft,review`），非法值返回 400；`q` 匹配 id 与描述（小写包含）。
 
@@ -176,7 +176,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
            submitted_by, submitted_at, approved_by, approved_at, approval_id }], total }
 ```
 
-按 `version` 升序。改造前的版本行没有审批元数据，这些键**仍然输出，值为 `null`**（不是缺键）；`definition` 与 `definition_hash` 始终可读。
+按 `version` 升序。旧版本行没有审批元数据，这些键**仍然输出，值为 `null`**（不是缺键）；`definition` 与 `definition_hash` 始终可读。
 
 ### 7.4 `GET /admin/review-queue`
 
@@ -185,7 +185,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
            submitted_by, submitted_at, last_changed_at }], total }
 ```
 
-只含 `draft` / `review`。不再有 `updated`。响应无 `limit`/`offset`（队列是全量）。
+只含 `draft` / `review`。响应无 `limit`/`offset`（队列是全量）。
 
 ### 7.5 `GET /admin/tools/stats?window_days=&limit=`
 
@@ -198,7 +198,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
   last_call_at, last_outcome, recent_tokens }] }
 ```
 
-- `lifecycle_status`：注册表生命周期（`draft`/`review`/`published`/`deprecated`）；内置工具恒 `published`，未注册 id 为 `unknown`。不再有 `status` 字段。
+- `lifecycle_status`：注册表生命周期（`draft`/`review`/`published`/`deprecated`）；内置工具恒 `published`，未注册 id 为 `unknown`。`lifecycle_status` 是唯一状态字段（没有 `status`）。
 - 调用里出现过但注册表没有的 id 也会成行：`kind=unknown`、`group=""`、`risk`/`discoverable`/`callable` 为 `null`、`source=managed`。
 - `risk` / `discoverable` / `callable` / `version` / `last_changed_at` 来自注册表；内置工具为 `read`/`true`/`true`/`null`/`null`。
 - `window_days` 默认 7、上限 30；`limit` 默认 200、上限 200。
@@ -215,7 +215,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 ```
 
 - `event_type` 区分 `tool_call` 与 `template_run`（同一能力可能两类都有记录）。
-- 错误信息以 `error_code` / `error_message` 呈现；不再有 `mcp_code`。
+- 错误信息以 `error_code` / `error_message` 呈现（没有 `mcp_code`）。
 - 不含 `session_id`（会话只保留在审计信封与库列中）。
 - `actor.source` / `actor.token_id` 为可选键：MCP token 调用会带出配置的 `source` 与 token id；管理面/stdio/旧事件没有这两个键（省略，不写 null）。
 - `window_days` 默认 30、上限 90；时间倒序，同秒按写入顺序倒排。
@@ -300,7 +300,7 @@ body: { name, role, groups: string[], builtin_tools: string[],
 - 角色与组都返回 `code` + `name`：`code` 是权限标识（token.role、token.groups、审计 actor.role 一律用它），`name` 只是中文展示名，**不参与**任何权限判定；
 - `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；旧的「name=code」语义已删除；
 - `groups` 是配置组 + 管理组合并（`Service::effective_policy`）后的结果，`token_count` 是该组被多少个**未撤销** token 引用；
-- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/只读查询/模板执行/登记模板草案/审核队列/审计查询/改可见性）。
+- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/登记模板草案/审核队列/审计查询/改可见性）。
 
 ### 7.11 角色与组的 code / name 双轨
 
@@ -323,7 +323,7 @@ GET /admin/groups?q=&source=&role=
 
 - `basic` 是代码内置组，固定出现在列表首位（`source:"builtin"`、`name:"基础工具"`、
   `priority:0`、`min_budget:800`、`roles:[]`、`grantable:false`、`token_count:0`）；
-  `capability_count` 是常驻内置工具数（5）加当前逐工具加入 `basic` 的上游工具数；
+  `capability_count` 是常驻内置工具数（3）加当前逐工具加入 `basic` 的上游工具数；
 - `q` 对 code/name 做不区分大小写的包含匹配；`source` 只接受 `policy`|`managed`|`builtin`
   （其他值 400 `MCP_VALIDATION_ERROR`）；`role` 是角色 code，精确匹配条目的 `roles`；
 - 三层过滤同时生效，`total` 是过滤后的条数；
@@ -342,7 +342,7 @@ DELETE /admin/groups/{code}
 - `config/policy.toml` 的 `[[groups]]` 不得定义 `basic` 或 `builtin`（启动校验失败）；`admin` 仍允许作为配置组存在；
 - 配置组只读：POST 重名 / PUT / DELETE 返回 409 `MCP_GROUP_CONFLICT`；
 - 组被能力或 token 引用时删除返回 409 `MCP_GROUP_IN_USE`，`error.data` 同时给 `capability_count` 与 `token_count`；
-- 管理组表沿用 `groups.name` 列存 code，展示名存 `groups.display_name`（`ensure_column` 补列；旧行空串时 API 回退 code），编辑只改展示列。
+- 管理组表用 `groups.name` 列存 code，展示名存 `groups.display_name`（该列为空串时 API 回退 code），编辑只改展示列。
 
 审计：`object_type=group`、`object_id=code`；`changes` 记录 `name` / `priority` / `min_budget` / `roles` 的真实变化（`name` 是展示名），`data.group` 带 `{ code, name, priority, min_budget, roles }`。
 
@@ -355,7 +355,7 @@ DELETE /admin/groups/{code}
 
 可见性判定只看组名与调用方角色；组的 `min_budget` / `priority` 不改变可见范围。
 
-## 9. 旧行边界（改造前写入的事件）
+## 9. 旧行边界（旧格式事件）
 
 审计表是 append-only（`BEFORE UPDATE` / `BEFORE DELETE` trigger 直接 `RAISE(ABORT)`），因此：
 
@@ -380,7 +380,7 @@ DELETE /admin/groups/{code}
 - `/mcp` **只**接受 `Authorization: Bearer <平台生成的 access token>`；token 必须命中 `access_tokens` 且状态为 `active`（未撤销、未过期）。缺 token / 未知 / 撤销 / 过期一律 `MCP_UNAUTHORIZED`（HTTP 200 + JSON-RPC 错误，与既有入口一致），不存在静态 token 兜底。
 - 成功鉴权后刷新 `last_used_at`；刷新失败只记日志，不让已认证请求失败。
 - 管理面 `/admin/*` 仍只认 `JUMCP_ADMIN_TOKENS`（静态，必需），数据库 token 不能访问管理面。
-- HTTP 启动**不再要求** `JUMCP_AGENT_TOKENS`；管理面 token 仍必需。
+- HTTP 启动只要求管理面 token（`JUMCP_ADMIN_TOKENS`），不要求 `JUMCP_AGENT_TOKENS`。
 
 ### 11.2 Actor 与来源
 

@@ -1,4 +1,4 @@
-//! 静态客户端路径（§5.2 / W2.4）：平铺阈值、收缩形态、常驻预算与 `_meta` 通道。
+//! 静态客户端路径：平铺阈值、收缩形态、常驻预算与 `_meta` 通道。
 
 use jumcp_core::budget::BudgetCaps;
 use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
@@ -271,4 +271,26 @@ async fn meta_groups_out_of_scope_rejected_in_strict_mode() {
         resp["error"]["data"]["offending_groups"],
         json!(["db.admin.schema"])
     );
+}
+
+/// 回归：ClickHouse 内置取数工具移除后，`tools/list` 不含它们，调用落到 unknown-tool 路径。
+#[tokio::test]
+async fn removed_data_tools_are_not_listed_nor_callable() {
+    let server = server_with(catalog_with(1, "db.read.core"), 40, "fail", None);
+    let names = tool_names(&tools_list(&server).await);
+    for id in ["db_query_readonly", "db_run_template"] {
+        assert!(
+            !names.contains(&id.to_string()),
+            "{id} 不得出现在 tools/list：{names:?}"
+        );
+        let resp = server
+            .handle(&json!({
+                "jsonrpc":"2.0","id":7,"method":"tools/call",
+                "params":{"name": id, "arguments": {}}
+            }))
+            .await;
+        assert_eq!(resp["error"]["code"], json!(-32602), "{id}: {resp}");
+        assert_eq!(resp["error"]["message"], json!("Unknown tool"), "{id}");
+        assert_eq!(resp["error"]["data"]["tool"], json!(id));
+    }
 }

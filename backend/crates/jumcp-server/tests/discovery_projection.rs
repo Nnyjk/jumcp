@@ -1,4 +1,4 @@
-//! 发现面契约（W6）：单一可见集 = builtin ∪ 注册表可见行；管理面发布后无需重启即可见。
+//! 发现面契约：单一可见集 = builtin ∪ 注册表可见行；管理面发布后无需重启即可见。
 //!
 //! 装配真实 `CapabilityStore`（`:memory:`）+ `TemplateRegistry`，只把执行器换成 fake，
 //! 因此这里验证的是"注册表 → 发现面"这条真实链路，而不是内存目录的替身。
@@ -192,18 +192,6 @@ async fn tool_names(server: &McpServer) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn run_template(server: &McpServer, template_id: &str) -> Value {
-    server
-        .handle(&json!({
-            "jsonrpc":"2.0","id":5,"method":"tools/call",
-            "params":{"name":"db_run_template","arguments":{
-                "template_id":template_id,
-                "params":{"start_date":"2026-11-01","end_date":"2026-11-02"}
-            }}
-        }))
-        .await
-}
-
 fn err_code(resp: &Value) -> String {
     resp["result"]["content"]["error"]["code"]
         .as_str()
@@ -227,7 +215,7 @@ async fn published_template_becomes_visible_without_restart() {
     h.registry
         .register(&template_value())
         .expect("register draft");
-    // draft 不可见（§4.4 审核前不暴露）。
+    // draft 不可见（审核前不暴露）。
     assert!(
         search(&h.server, "order.daily_summary").await.is_empty(),
         "draft 能力不得出现在发现面"
@@ -302,12 +290,7 @@ async fn published_template_becomes_visible_without_restart() {
         "发布新版本后下一个请求必须看到新定义"
     );
 
-    // 可调用：db_run_template 与发现面同一判定。
-    let ran = run_template(&h.server, "order.daily_summary").await;
-    assert_eq!(ran["result"]["isError"], json!(false), "{ran}");
-    assert_eq!(ran["result"]["cache"], json!("miss"));
-
-    // 下架（同时关闭可发现与可调用）：同一进程内立刻从发现面与调用面消失。
+    // 下架（同时关闭可发现与可调用）：同一进程内立刻从发现面消失。
     h.registry
         .set_visibility("order.daily_summary", Some(false), Some(false), "alice")
         .expect("hide");
@@ -319,16 +302,12 @@ async fn published_template_becomes_visible_without_restart() {
         err_code(&describe(&h.server, "order.daily_summary").await),
         "MCP_CAPABILITY_NOT_FOUND"
     );
-    assert_eq!(
-        err_code(&run_template(&h.server, "order.daily_summary").await),
-        "MCP_CAPABILITY_NOT_FOUND"
-    );
 }
 
-/// §4.4.1 / D3：`published ∧ discoverable=false ∧ callable=true` 是合法的系统直调状态——
-/// 不可见不等于不可调用；只有 callable=false 才是"停用调用"。
+/// `published ∧ discoverable=false ∧ callable=true` 是合法的系统直调状态——
+/// 不可见不等于不可调用。MCP 面没有模板直调通道，这里锁 store 的状态语义与发现面投影。
 #[tokio::test]
-async fn hidden_but_callable_template_stays_callable() {
+async fn hidden_but_callable_template_stays_invisible_but_callable() {
     let h = harness();
     let id = "order.daily_summary";
     h.registry.register(&template_value()).expect("register");
@@ -343,21 +322,17 @@ async fn hidden_but_callable_template_stays_callable() {
         err_code(&describe(&h.server, id).await),
         "MCP_CAPABILITY_NOT_FOUND"
     );
-    let ran = run_template(&h.server, id).await;
-    assert_eq!(
-        ran["result"]["isError"],
-        json!(false),
-        "可调用性不得依赖 discoverable：{ran}"
-    );
+    let record = h.store.get(id).expect("store").expect("record");
+    assert!(record.callable, "可调用性不得依赖 discoverable");
+    assert!(!record.discoverable);
 
-    // 停用调用（callable=false）后必须拒绝，且与不存在同构。
+    // 停用调用（callable=false）：状态随之关闭，发现面投影不变。
     h.registry
         .set_visibility(id, None, Some(false), "alice")
         .expect("visibility");
-    assert_eq!(
-        err_code(&run_template(&h.server, id).await),
-        "MCP_CAPABILITY_NOT_FOUND"
-    );
+    let record = h.store.get(id).expect("store").expect("record");
+    assert!(!record.callable, "停用调用后 callable 必须为 false");
+    assert!(search(&h.server, id).await.is_empty());
 }
 
 #[tokio::test]
@@ -414,7 +389,7 @@ async fn published_capability_outside_scope_is_invisible() {
         "越界组不得出现在组索引：{groups:?}"
     );
 
-    // db_run_template 与发现面同一判定：越界组的模板即使已发布已开放，也调不到。
+    // 越界组的模板即使已发布已开放，也不进入发现面（与组授权同一判定）。
     let mut admin_template = template_value();
     admin_template["template_id"] = json!("order.admin_only");
     admin_template["group"] = json!("db.admin.schema");
@@ -428,9 +403,9 @@ async fn published_capability_outside_scope_is_invisible() {
     publish_through_admin_surface(&h, "order.admin_only", true);
     assert!(search(&h.server, "order.admin_only").await.is_empty());
     assert_eq!(
-        err_code(&run_template(&h.server, "order.admin_only").await),
+        err_code(&describe(&h.server, "order.admin_only").await),
         "MCP_CAPABILITY_NOT_FOUND",
-        "越界组的模板不得可调用"
+        "越界组的模板不得出现在发现面"
     );
 }
 
@@ -441,7 +416,7 @@ async fn builtin_ids_reject_every_maintenance_write() {
     let e = h
         .store
         .register(
-            "db_query_readonly",
+            "search_capabilities",
             "tool",
             "db.read.core",
             "read",
@@ -453,12 +428,12 @@ async fn builtin_ids_reject_every_maintenance_write() {
     // 模板层（registry）同样不能对内置 id 改可见性。
     let e = h
         .registry
-        .set_visibility("db_run_template", Some(false), None, "alice")
+        .set_visibility("search_capabilities", Some(false), None, "alice")
         .unwrap_err();
     assert_eq!(e.code, "MCP_BUILTIN_IMMUTABLE");
 
     // 内置能力仍然可被检索/描述：拒绝写不等于拒绝读。
-    let described = describe(&h.server, "db_query_readonly").await;
+    let described = describe(&h.server, "search_capabilities").await;
     assert_eq!(described["result"]["content"]["source"], json!("builtin"));
 }
 
@@ -480,17 +455,17 @@ async fn tools_list_keeps_one_copy_of_each_builtin() {
     }
 
     // describe 内置工具：schema 与 tools/list 同源（tool_definitions），且标记 builtin。
-    let described = describe(&h.server, "db_query_readonly").await;
+    let described = describe(&h.server, "search_capabilities").await;
     assert_eq!(described["result"]["isError"], json!(false));
     let content = &described["result"]["content"];
     assert_eq!(content["source"], json!("builtin"));
     assert_eq!(content["kind"], json!("tool"));
     assert_eq!(
-        content["params_schema"]["properties"]["sql"]["type"],
+        content["params_schema"]["properties"]["query"]["type"],
         json!("string")
     );
 
-    // 常驻工具不是业务组：即使可见集里只有 5 个 builtin，组索引也必须为空。
+    // 常驻工具不是业务组：即使可见集里只有 3 个 builtin，组索引也必须为空。
     let groups = list_groups(&h.server).await;
     assert!(
         !groups.contains(&"basic".to_string()),

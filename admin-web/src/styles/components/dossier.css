@@ -1,0 +1,314 @@
+/* 能力档案：视图头、定义视图、时间线、版本历史、审批。 */
+
+/* 操作视图（工具台账 / 能力档案 / 审计查询）的返回行；视图不写 URL，返回是唯一退出入口。 */
+.view-back {
+  display: flex;
+}
+
+.dossier-head {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* 头部固定四项（类型/组/版本/最近变更）：1440 下用四列，避免第四项掉到第二行只占 1/3。 */
+.dossier-head .detail-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .dossier-head .detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .dossier-head .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dossier-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.dossier-title h2 {
+  font-size: var(--fs-20);
+  line-height: 26px;
+  overflow-wrap: anywhere;
+}
+
+.dossier-status {
+  max-width: var(--measure);
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--accent-border);
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  line-height: 18px;
+}
+
+.dossier-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  align-items: start;
+  gap: var(--space-4);
+}
+
+/* 卡片内字段最多两列：时间戳与角色名在窄三列布局里会被迫断行。 */
+.dossier-columns .detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .dossier-columns .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.tab {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-14);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.tab:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.tab[aria-selected='true'] {
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 分栏内容与页面同级：tab-panel 是 Card 的兄弟（不是 .tabbar 的相邻兄弟），必须无条件命中。 */
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 定义视图 */
+
+.definition-view {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.definition-desc {
+  max-width: var(--measure);
+  color: var(--text-secondary);
+  font-size: var(--fs-14);
+  line-height: 20px;
+}
+
+.definition-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.constraint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+}
+
+.kv-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: var(--space-2);
+  font-size: var(--fs-12);
+}
+
+.kv-row dt {
+  color: var(--text-tertiary);
+}
+
+.kv-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 时间线 */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-item:last-child {
+  border-bottom: 0;
+}
+
+.timeline-time {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+}
+
+.timeline-text {
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .timeline-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 版本历史 */
+
+.version-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.version-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--fill-subtle);
+}
+
+.version-summary {
+  display: grid;
+  grid-template-columns:
+    56px 76px 250px minmax(0, 1fr) minmax(0, 1fr) 190px 96px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  font-size: var(--fs-12);
+  cursor: pointer;
+  list-style: none;
+}
+
+.version-summary::-webkit-details-marker {
+  display: none;
+}
+
+.version-no {
+  font-weight: 600;
+}
+
+.version-status {
+  color: var(--text-secondary);
+}
+
+.version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  min-width: 0;
+  color: var(--text-tertiary);
+}
+
+.version-approval,
+.version-hash {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-body {
+  padding: 0 12px var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 1100px) {
+  .version-summary {
+    grid-template-columns: 56px 76px minmax(0, 1fr);
+  }
+}
+
+/* 审批 */
+
+.approval-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.publish-visibility {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.publish-visibility legend {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.required-mark {
+  color: var(--danger);
+}
+
+.approval-reject {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+/* 不支持 backdrop-filter 时退回不透明面，否则半透明叠在背景上会牺牲正文对比度。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .card,
+  .infobar,
+  .stat {
+    background: var(--surface-opaque);
+  }
+}
+
