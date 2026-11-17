@@ -40,6 +40,7 @@ export default function DashboardPage() {
     failureTools,
     datasources,
     trendPoints,
+    trendTruncated,
     trendPending,
     trendBothError,
     trendPartialError,
@@ -134,6 +135,9 @@ export default function DashboardPage() {
                 <p className="hint dash-card-note">
                   按浏览器本地日期聚合审计 v2 的 tool_call / template_run 事件，与「总调用」同口径；
                   旧格式事件不计入，最多覆盖最近 {DASHBOARD_EVENT_LIMIT} 条/类型。
+                  {trendTruncated
+                    ? `当前时间窗内事件超过 ${DASHBOARD_EVENT_LIMIT} 条/类型，图表只统计最近的部分，合计低于「总调用」。`
+                    : ''}
                 </p>
                 {trendPartialError && (
                   <p className="hint dash-card-note">

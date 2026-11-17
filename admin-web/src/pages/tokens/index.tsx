@@ -72,7 +72,8 @@ export default function TokensPage() {
     }
     for (const item of tokensQuery.data?.items ?? []) {
       counts[''] += 1
-      counts[item.status] += 1
+      // 后端新增状态值时不让计数变成 NaN；未知状态仍按原值出现在卡片状态徽标里。
+      counts[item.status] = (counts[item.status] ?? 0) + 1
     }
     return counts
   }, [tokensQuery.data])

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { publishCapability, setCapabilityVisibility } from '../../api/admin'
 import { ApiError } from '../../api/client'
+import { roleLabel, useRoleIndex } from '../../api/queries'
 import type { AdminIdentity, ReviewQueueItem } from '../../api/types'
 import { LifecycleBadge } from '../../components/Badge'
 import { Field } from '../../components/Field'
@@ -32,6 +33,7 @@ export function PublishDialog({
   const [discoverable, setDiscoverable] = useState(true)
   const [callable, setCallable] = useState(true)
   const [formError, setFormError] = useState<string | undefined>(undefined)
+  const roleIndex = useRoleIndex()
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -94,6 +96,7 @@ export function PublishDialog({
         className="create-form"
         onSubmit={(event) => {
           event.preventDefault()
+          if (mutation.isPending) return
           if (approvalId.trim() === '') {
             setFormError('外部审批单号不能为空。')
             return
@@ -107,7 +110,7 @@ export function PublishDialog({
             {mePending ? '读取中…' : (me?.id ?? DASH)}
           </DetailField>
           <DetailField label="当前主体角色">
-            {me === undefined ? DASH : `${me.role} · ${me.type}`}
+            {me === undefined ? DASH : `${roleLabel(roleIndex, me.role)} · ${me.type}`}
           </DetailField>
           <DetailField label="提审人" mono>
             {row.submitted_by ?? '未记录'}

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { noticeMessage } from '../notice'
 import { Modal } from './Modal'
 import { DetailField, DetailGrid } from './DetailGrid'
 
@@ -11,6 +12,7 @@ export function SubmitConfirmDialog({
   version,
   status,
   pending,
+  error,
   onClose,
   onConfirm,
 }: {
@@ -18,6 +20,8 @@ export function SubmitConfirmDialog({
   version: number
   status: ReactNode
   pending: boolean
+  /** 提交失败原因；弹层会盖住页面顶部 InfoBar，所以必须在这里展示。 */
+  error?: unknown
   onClose: () => void
   onConfirm: () => void
 }) {
@@ -32,7 +36,15 @@ export function SubmitConfirmDialog({
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             取消
           </button>
-          <button type="button" className="btn btn-primary" disabled={pending} onClick={onConfirm}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={pending}
+            onClick={() => {
+              if (pending) return
+              onConfirm()
+            }}
+          >
             {pending ? '提交中…' : '确认提交审核'}
           </button>
         </>
@@ -52,6 +64,11 @@ export function SubmitConfirmDialog({
           {status}
         </DetailField>
       </DetailGrid>
+      {error !== undefined && (
+        <p className="inline-error" role="alert">
+          {noticeMessage(error, '提交审核失败')}
+        </p>
+      )}
     </Modal>
   )
 }

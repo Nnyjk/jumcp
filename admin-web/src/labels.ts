@@ -223,11 +223,11 @@ export const UPSTREAM_TRANSPORT_LABEL: Record<UpstreamTransport, string> = {
   stdio: 'stdio',
 }
 
-/** 上游分类：basic / analysis / admin 是三组内置工具，custom 为自定义接入。 */
+/** 上游分类：admin 指维护/管理类上游（docs/mcp-router.md §2），不是「审计」。 */
 export const UPSTREAM_CATEGORY_LABEL: Record<UpstreamCategory, string> = {
   basic: '基础',
   analysis: '分析',
-  admin: '审计',
+  admin: '管理',
   custom: '自定义',
 }
 

@@ -189,7 +189,7 @@ export default function ExceptionPage() {
         }
         flush
         footer={
-          data !== undefined && data.items.length > 0 ? (
+          data !== undefined && data.total > 0 ? (
             <Pagination
               total={data.total}
               offset={data.offset}
@@ -206,7 +206,13 @@ export default function ExceptionPage() {
         {isPending && <LoadingState rows={7} label="正在查询能力清单" />}
         {isError && <ErrorState error={error} />}
         {data !== undefined && data.items.length === 0 && (
-          <EmptyState hint="没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。" />
+          <EmptyState
+            hint={
+              data.total > 0
+                ? '当前页没有记录，请用下方的上一页返回。'
+                : '没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。'
+            }
+          />
         )}
         {data !== undefined && data.items.length > 0 && (
           <DataTable

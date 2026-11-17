@@ -161,25 +161,32 @@ export function CallTable({ id, windowDays }: { id: string; windowDays: number }
         </div>
       )}
       {data !== undefined && data.calls.length === 0 && (
-        <EmptyState hint={`最近 ${windowDays} 天没有该对象的调用记录。可扩大时间窗后再查。`} />
+        <EmptyState
+          hint={
+            data.total > 0
+              ? '当前页没有记录（时间窗变化后数据可能不足一页），请用下方的上一页返回。'
+              : `最近 ${windowDays} 天没有该对象的调用记录。可扩大时间窗后再查。`
+          }
+        />
       )}
       {data !== undefined && data.calls.length > 0 && (
-        <>
-          <DataTable
-            label={`${id} 的调用记录`}
-            meta={`最近 ${windowDays} 天 · 按时间倒序`}
-            columns={callColumns(roleIndex, setSelected)}
-            rows={data.calls}
-            rowKey={(call) => call.event_id}
-            minWidth="1340px"
-          />
-          <Pagination
-            total={data.total}
-            offset={data.offset}
-            limit={data.limit}
-            onChange={setOffset}
-          />
-        </>
+        <DataTable
+          label={`${id} 的调用记录`}
+          meta={`最近 ${windowDays} 天 · 按时间倒序`}
+          columns={callColumns(roleIndex, setSelected)}
+          rows={data.calls}
+          rowKey={(call) => call.event_id}
+          minWidth="1340px"
+        />
+      )}
+      {/* 分页按 total 渲染：本页为空时仍要能回到上一页。 */}
+      {data !== undefined && data.total > 0 && (
+        <Pagination
+          total={data.total}
+          offset={data.offset}
+          limit={data.limit}
+          onChange={setOffset}
+        />
       )}
 
       {selected !== null && (

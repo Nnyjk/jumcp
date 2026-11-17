@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchAuditEvents } from '../../api/admin'
 import { useGroupIndex } from '../../api/queries'
 import type { AuditEnvelope } from '../../api/types'
-import { auditSummary, isStructuredEvent } from '../../audit'
+import { actorLabel, auditSummary, isStructuredEvent } from '../../audit'
 import { formatDateTime } from '../../format'
 import { EVENT_TYPE_LABEL } from '../../labels'
 import { AuditDetail } from '../../components/AuditDetail'
@@ -54,7 +54,7 @@ export function AuditTab({ id }: { id: string }) {
       header: '主体',
       width: '140px',
       mono: true,
-      cell: (row) => (row.actor.id.trim() === '' ? '未认证调用方' : row.actor.id),
+      cell: (row) => actorLabel(row.actor),
     },
     {
       key: 'actions',
@@ -80,7 +80,7 @@ export function AuditTab({ id }: { id: string }) {
       subtitle={query.data === undefined ? '查询中' : '按时间倒序'}
       flush
       footer={
-        query.data !== undefined && query.data.events.length > 0 ? (
+        query.data !== undefined && query.data.total > 0 ? (
           <Pagination
             total={query.data.total}
             offset={query.data.offset}
@@ -93,7 +93,13 @@ export function AuditTab({ id }: { id: string }) {
       {query.isPending && <LoadingState rows={6} label="正在查询对象审计" />}
       {query.isError && <ErrorState error={query.error} />}
       {query.data !== undefined && query.data.events.length === 0 && (
-        <EmptyState hint="该对象还没有审计事件；提交、发布、可见性调整或调用后会出现。" />
+        <EmptyState
+          hint={
+            query.data.total > 0
+              ? '当前页没有记录（数据可能在翻页后发生了变化），请用下方的上一页返回。'
+              : '该对象还没有审计事件；提交、发布、可见性调整或调用后会出现。'
+          }
+        />
       )}
       {query.data !== undefined && query.data.events.length > 0 && (
         <DataTable
