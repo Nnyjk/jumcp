@@ -64,8 +64,10 @@ const CLICKHOUSE_DANGEROUS_FUNCTIONS: &[&str] = &[
     "executable",
     "format",
     "input",
+    "cluster",
     "clusterallreplicas",
     "distributed",
+    "merge",
     "zookeeper",
     "arrowflight",
 ];
@@ -625,6 +627,11 @@ fn normalize_part(part: &sqlparser::ast::ObjectNamePart) -> Option<String> {
 fn collect_tables(collector: &Collector) -> Vec<Vec<String>> {
     let mut tables: Vec<Vec<String>> = Vec::new();
     for parts in &collector.relations {
+        if parts.is_empty() {
+            // 全部片段都是方言生成的函数名（非标识符）时既无 schema 也无表名可判定，
+            // 记录为空会让下游按下标取 qualifier 时越界。
+            continue;
+        }
         if parts.len() == 1 && collector.cte_names.contains(&parts[0]) {
             continue;
         }
