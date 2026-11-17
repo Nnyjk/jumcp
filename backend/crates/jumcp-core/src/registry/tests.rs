@@ -721,3 +721,36 @@ fn draft_revision_rejects_builtin() {
         assert_eq!(e.code, "MCP_BUILTIN_IMMUTABLE");
     }
 }
+
+/// 状态迁移的 UPDATE 带源状态条件：并发提审只能有一次成功，另一次按冲突返回。
+#[test]
+fn concurrent_submit_lets_exactly_one_win() {
+    use std::sync::{Arc, Barrier};
+    let s = Arc::new(store());
+    s.register(
+        "cap1",
+        "tool",
+        "db.read.core",
+        "read",
+        json!({"description":"x"}),
+    )
+    .unwrap();
+    let barrier = Arc::new(Barrier::new(4));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let s = Arc::clone(&s);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                s.submit_for_review("cap1", "alice").is_ok()
+            })
+        })
+        .collect();
+    let ok = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(ok, 1, "并发提交只允许一个请求把 draft 推进到 review");
+    assert_eq!(s.get("cap1").unwrap().unwrap().status, "review");
+}

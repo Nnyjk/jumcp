@@ -244,6 +244,36 @@ impl CapabilityStore {
         }
     }
 
+    /// 状态迁移的 UPDATE 必须带"源状态"条件：读状态与写状态分属两把锁，
+    /// 条件不命中说明记录已被并发迁移，按冲突返回而不是覆盖。
+    fn expect_transition(
+        conn: &rusqlite::Connection,
+        id: &str,
+        expected_from: &str,
+        to: &str,
+        changed: usize,
+    ) -> Result<(), McpError> {
+        if changed > 0 {
+            return Ok(());
+        }
+        let actual: String = conn
+            .query_row(
+                "SELECT status FROM capabilities WHERE capability_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string());
+        Err(McpError::new(
+            "MCP_STATE_TRANSITION_INVALID",
+            json!({
+                "capability_id": id,
+                "from": actual,
+                "expected_from": expected_from,
+                "to": to
+            }),
+        ))
+    }
+
     /// review → published：盖章当前版本行 + 更新生命周期 + 写一条可读审计。
     fn transition_to_published(
         &self,
@@ -270,11 +300,13 @@ impl CapabilityStore {
         let now = now_iso();
         {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            conn.execute(
-                "UPDATE capabilities SET status='published', updated_at=? WHERE capability_id=?",
-                rusqlite::params![now, id],
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
+            let changed = conn
+                .execute(
+                    "UPDATE capabilities SET status='published', updated_at=? WHERE capability_id=? AND status=?",
+                    rusqlite::params![now, id, record.status.as_str()],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            Self::expect_transition(&conn, id, &record.status, "published", changed)?;
             conn.execute(
                 "UPDATE capability_versions SET status='published', approved_by=?, approved_at=?, approval_id=? WHERE capability_id=? AND version=?",
                 rusqlite::params![approved_by, now, approval_id, id, record.version],
@@ -323,11 +355,13 @@ impl CapabilityStore {
         {
             let now = now_iso();
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            conn.execute(
-                "UPDATE capabilities SET status='review', submitted_by=?, submitted_at=?, updated_at=? WHERE capability_id=?",
-                rusqlite::params![submitted_by, now, now, id],
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
+            let changed = conn
+                .execute(
+                    "UPDATE capabilities SET status='review', submitted_by=?, submitted_at=?, updated_at=? WHERE capability_id=? AND status='draft'",
+                    rusqlite::params![submitted_by, now, now, id],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            Self::expect_transition(&conn, id, "draft", "review", changed)?;
             conn.execute(
                 "UPDATE capability_versions SET status='review', submitted_by=?, submitted_at=?, approved_by='', approved_at='', approval_id='' WHERE capability_id=? AND version=?",
                 rusqlite::params![submitted_by, now, id, record.version],
@@ -371,11 +405,13 @@ impl CapabilityStore {
         }
         {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            conn.execute(
-                "UPDATE capabilities SET status='draft', submitted_by='', submitted_at='', updated_at=? WHERE capability_id=?",
-                rusqlite::params![now_iso(), id],
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
+            let changed = conn
+                .execute(
+                    "UPDATE capabilities SET status='draft', submitted_by='', submitted_at='', updated_at=? WHERE capability_id=? AND status='review'",
+                    rusqlite::params![now_iso(), id],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            Self::expect_transition(&conn, id, "review", "draft", changed)?;
             conn.execute(
                 "UPDATE capability_versions SET status='draft', submitted_by='', submitted_at='', approved_by='', approved_at='', approval_id='' WHERE capability_id=? AND version=?",
                 rusqlite::params![id, record.version],
@@ -444,8 +480,13 @@ impl CapabilityStore {
                 .map_err(|e| McpError::store(e.to_string()))?;
             tx.execute("INSERT INTO capability_versions (capability_id, version, definition_json, definition_hash, approval_id, created_at, submitted_by, submitted_at, approved_by, approved_at, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?6,?8,?6,'published')",
                 rusqlite::params![id, new_version, canon, dhash, approval_id, now, submitted_by, approved_by]).map_err(|_| McpError::new("MCP_VERSION_CONFLICT", json!({"capability_id": id, "version": new_version})))?;
-            tx.execute("UPDATE capabilities SET version=?1, definition_json=?2, definition_hash=?3, updated_at=?4 WHERE capability_id=?5",
-                rusqlite::params![new_version, canon, dhash, now, id]).map_err(|e| McpError::store(e.to_string()))?;
+            let changed = tx
+                .execute(
+                    "UPDATE capabilities SET version=?1, definition_json=?2, definition_hash=?3, updated_at=?4 WHERE capability_id=?5 AND status=?6",
+                    rusqlite::params![new_version, canon, dhash, now, id, record.status.as_str()],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            Self::expect_transition(&tx, id, &record.status, &record.status, changed)?;
             tx.commit().map_err(|e| McpError::store(e.to_string()))?;
         }
         let approval =
@@ -502,8 +543,13 @@ impl CapabilityStore {
                 .map_err(|e| McpError::store(e.to_string()))?;
             tx.execute("INSERT INTO capability_versions (capability_id, version, definition_json, definition_hash, approval_id, created_at, status) VALUES (?1,?2,?3,?4,?5,?6,'draft')",
                 rusqlite::params![id, new_version, canon, dhash, approval_id, now]).map_err(|_| McpError::new("MCP_VERSION_CONFLICT", json!({"capability_id": id, "version": new_version})))?;
-            tx.execute("UPDATE capabilities SET version=?1, definition_json=?2, definition_hash=?3, updated_at=?4 WHERE capability_id=?5",
-                rusqlite::params![new_version, canon, dhash, now, id]).map_err(|e| McpError::store(e.to_string()))?;
+            let changed = tx
+                .execute(
+                    "UPDATE capabilities SET version=?1, definition_json=?2, definition_hash=?3, updated_at=?4 WHERE capability_id=?5 AND status='draft'",
+                    rusqlite::params![new_version, canon, dhash, now, id],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            Self::expect_transition(&tx, id, "draft", "draft", changed)?;
             tx.commit().map_err(|e| McpError::store(e.to_string()))?;
         }
         self.write_admin_audit(
