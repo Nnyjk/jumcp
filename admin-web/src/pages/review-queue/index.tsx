@@ -174,7 +174,7 @@ export default function ReviewQueuePage() {
 
   const draftColumns: Array<DataTableColumn<ReviewQueueItem>> = [
     { key: 'id', header: '能力 ID', mono: true, width: '190px', cell: (row) => row.id },
-    { key: 'kind', header: '类型', width: '76px', cell: (row) => row.kind },
+    { key: 'kind', header: '类型', width: '76px', cell: (row) => TOOL_KIND_LABEL[row.kind] ?? row.kind },
     {
       key: 'group',
       header: '组',
@@ -302,7 +302,12 @@ export default function ReviewQueuePage() {
           version={dialog.row.version}
           status={<LifecycleBadge status={dialog.row.status} />}
           pending={submitMutation.isPending}
-          onClose={() => setDialog(null)}
+          error={submitMutation.error ?? undefined}
+          onClose={() => {
+            setDialog(null)
+            // 失败原因属于本次尝试；不清掉会让下次打开弹层看到旧错误。
+            submitMutation.reset()
+          }}
           onConfirm={() => submitMutation.mutate(dialog.row)}
         />
       )}
@@ -328,7 +333,11 @@ export default function ReviewQueuePage() {
           key={`${dialog.row.id}@${dialog.row.version}`}
           row={dialog.row}
           pending={rejectMutation.isPending}
-          onClose={() => setDialog(null)}
+          error={rejectMutation.error ?? undefined}
+          onClose={() => {
+            setDialog(null)
+            rejectMutation.reset()
+          }}
           onSubmit={(reason) => rejectMutation.mutate({ row: dialog.row, reason })}
         />
       )}

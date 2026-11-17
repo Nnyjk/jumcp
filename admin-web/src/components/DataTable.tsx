@@ -80,7 +80,15 @@ export function DataTable<T>({
           )}
         </div>
       )}
-      <div className="table-scroll" ref={scrollRef} data-overflowing={overflowing ? 'true' : 'false'}>
+      <div
+        className="table-scroll"
+        ref={scrollRef}
+        data-overflowing={overflowing ? 'true' : 'false'}
+        // 出现横向滚动时给键盘用户一个可聚焦的滚动区域；不溢出时不额外增加 Tab 停留点。
+        tabIndex={overflowing ? 0 : undefined}
+        role={overflowing ? 'region' : undefined}
+        aria-label={overflowing ? `${label}（可横向滚动）` : undefined}
+      >
         <table
           ref={tableRef}
           className="data-table"

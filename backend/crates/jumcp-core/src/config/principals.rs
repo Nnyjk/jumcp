@@ -1,15 +1,33 @@
 //! 管理面与 agent 的主体令牌：token 派生身份，自述头不可信；比较一律常量时间。
 
 /// 管理面主体：token 派生身份，`X-Admin-Actor` 只是自述（不可信）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AdminPrincipal {
     pub id: String,
     pub token: String,
 }
 
-#[derive(Debug, Clone, Default)]
+/// token 是凭据：`{:?}` 只打 id，避免把明文写进日志。
+impl std::fmt::Debug for AdminPrincipal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminPrincipal")
+            .field("id", &self.id)
+            .field("token", &"***")
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct AdminTokens {
     principals: Vec<AdminPrincipal>,
+}
+
+impl std::fmt::Debug for AdminTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminTokens")
+            .field("principals", &self.principals)
+            .finish()
+    }
 }
 
 impl AdminTokens {
@@ -85,16 +103,35 @@ pub fn is_principal_id(id: &str) -> bool {
 ///
 /// 为什么单独一组 token：HTTP `/mcp` 必须按请求派生身份（`Actor.actor_id` 即 agent_id），
 /// 否则所有 agent 共用进程默认角色，审计无法追责，admin 组也无从区分。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AgentPrincipal {
     pub id: String,
     pub role: String,
     pub token: String,
 }
 
-#[derive(Debug, Clone, Default)]
+/// token 是凭据：`{:?}` 只打 id/role，避免把明文写进日志。
+impl std::fmt::Debug for AgentPrincipal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPrincipal")
+            .field("id", &self.id)
+            .field("role", &self.role)
+            .field("token", &"***")
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct AgentTokens {
     principals: Vec<AgentPrincipal>,
+}
+
+impl std::fmt::Debug for AgentTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentTokens")
+            .field("principals", &self.principals)
+            .finish()
+    }
 }
 
 impl AgentTokens {

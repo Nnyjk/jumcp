@@ -223,6 +223,17 @@ fn admin_tokens_reject_bad_inputs() {
 }
 
 #[test]
+fn token_debug_output_never_contains_secret() {
+    let admin = AdminTokens::parse("alice:tok_alice_000000000").unwrap();
+    let agent = AgentTokens::parse("analyst-1:analyst:tok_a_000000000000").unwrap();
+    // Settings 派生 Debug 会直接打出这两个容器，因此容器自身的 Debug 必须脱敏。
+    let dumped = format!("{admin:?} {agent:?}");
+    assert!(!dumped.contains("tok_alice_000000000"), "{dumped}");
+    assert!(!dumped.contains("tok_a_000000000000"), "{dumped}");
+    assert!(dumped.contains("alice"), "主体 id 仍需可用于排障");
+}
+
+#[test]
 fn agent_tokens_parse_and_authenticate() {
     let tokens = AgentTokens::parse(
         "analyst-1:analyst:tok_a_000000000000, bot-admin:admin:tok_b_000000000000",

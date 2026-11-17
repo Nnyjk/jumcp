@@ -10,10 +10,10 @@
 notes
 docs
 
-# 宿主机工具链产物（镜像内重新构建）
-backend/target
-admin-web/node_modules
-admin-web/dist
+# 宿主机工具链产物（镜像内重新构建）：兼容 workspace 成员目录与任意层级的构建产物
+**/target
+**/node_modules
+**/dist
 
 # 本地数据与凭据：镜像不携带任何 sqlite / 日志 / env
 data
@@ -26,6 +26,14 @@ logs
 .env
 .env.*
 !.env.example
+
+# 证书 / 私钥 / 归档：构建上下文不需要，别把宿主机的密钥或镜像 tar 带进来
+*.pem
+*.key
+*.p12
+*.pfx
+*.tar.gz
+*.tgz
 
 # 容器与 CI 自身（构建无需它们参与上下文）
 Dockerfile

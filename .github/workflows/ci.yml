@@ -100,11 +100,34 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # ---------------------------------------------------------------- 脚本
+  # scripts/ 被 CI、release 与本地共同调用：语法错误或发布 tag 规则错误会直接毁掉一次发版。
+  scripts:
+    name: scripts (bash -n / release tags)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f"
+            echo "ok $f"
+          done
+
+      # 发布 tag 解析不依赖网络与 docker：main / v1.2.3 / v0.0.1.000 / 非法格式都在这里断言。
+      - name: Release tag resolution
+        run: bash scripts/test-release-tags.sh
+
   # ---------------------------------------------------------------- 容器镜像
   image:
     name: image (linux/amd64 build / smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # 后端或管理台先挂掉时不必再烧一次 90 分钟的镜像构建；
+    # 镜像仍从仓库源码各自重编（不消费上游 artifact），依赖关系只影响排队顺序。
+    needs: [backend, web]
     steps:
       - uses: actions/checkout@v4
 

@@ -398,11 +398,19 @@ impl CompiledTemplate {
                     .collect()
             })
             .unwrap_or_default();
-        let variants: Vec<CompiledVariant> = value
-            .get("variants")
-            .cloned()
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        let variants: Vec<CompiledVariant> = match value.get("variants") {
+            // 缺省即"没有变体"：旧定义只存 base_sql，语义无歧义。
+            None => Vec::new(),
+            // 有值但反序列化失败必须显式报错。原先 `unwrap_or_default` 会静默吞成空向量，
+            // 运行期于是回落到 base_sql——调用方以为选中的变体被丢掉，结果集可能完全不同。
+            Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| {
+                template_error(
+                    "variants_invalid",
+                    &format!("variants 解析失败: {e}"),
+                    json!({}),
+                )
+            })?,
+        };
         Ok(Self {
             definition_hash: definition_hash(value),
             def,

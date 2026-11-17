@@ -19,7 +19,7 @@ import { ErrorState } from '../../components/PageShell'
 import { InfoBar } from '../../components/InfoBar'
 import { SubmitConfirmDialog } from '../../components/SubmitConfirmDialog'
 import { ToggleSwitch } from '../../components/ToggleSwitch'
-import { noticeFromError, type Notice } from '../../notice'
+import { noticeMessage, type Notice } from '../../notice'
 import { useAdminView } from '../../viewStack'
 import { hasMissingApprovalMeta, latestVersion } from './dossierFormat'
 
@@ -56,6 +56,7 @@ export function ApprovalPanel({
   // 发布与退回是两个独立表单：共用一份错误态会把退回校验错误渲染到发布表单里，看起来像「点了没反应」。
   const [publishError, setPublishError] = useState<string | undefined>(undefined)
   const [rejectError, setRejectError] = useState<string | undefined>(undefined)
+  const [visibilityError, setVisibilityError] = useState<string | undefined>(undefined)
 
   const submittedBy = (detail.submitted_by ?? '').trim()
 
@@ -71,7 +72,9 @@ export function ApprovalPanel({
       })
       onChanged()
     },
-    onError: (error) => onNotice(noticeFromError(error, '提交审核失败')),
+    onError: () => {
+      // 失败原因由 SubmitConfirmDialog 通过 mutation.error 原地展示，弹层不关闭。
+    },
   })
 
   const publishMutation = useMutation({
@@ -90,9 +93,9 @@ export function ApprovalPanel({
           severity: 'warning',
           title: '已发布但未开放',
           description:
-            '发布成功，但第二步可见性保存失败；调用方仍然看不到该能力。请在下方「当前可见性」重试保存。',
+            '发布成功，但第二步可见性保存失败；调用方仍然看不到该能力。请在「审批动作」卡片重试保存可见性。',
           meta:
-            result.visibilityFailed && result.error instanceof ApiError
+            result.error instanceof ApiError
               ? `${result.error.code} · HTTP ${result.error.status}`
               : undefined,
         })
@@ -105,14 +108,16 @@ export function ApprovalPanel({
         })
       }
       setApprovalId('')
+      setPublishError(undefined)
       onChanged()
     },
-    onError: (error) => onNotice(noticeFromError(error, '发布失败')),
+    onError: (error) => setPublishError(noticeMessage(error, '发布失败')),
   })
 
   const visibilityMutation = useMutation({
     mutationFn: () => setCapabilityVisibility(detail.id, { discoverable, callable }),
     onSuccess: () => {
+      setVisibilityError(undefined)
       onNotice({
         severity: 'success',
         title: '可见性已保存',
@@ -121,13 +126,14 @@ export function ApprovalPanel({
       })
       onChanged()
     },
-    onError: (error) => onNotice(noticeFromError(error, '保存可见性失败')),
+    onError: (error) => setVisibilityError(noticeMessage(error, '保存可见性失败')),
   })
 
   const rejectMutation = useMutation({
     mutationFn: () => rejectCapability(detail.id, reason.trim()),
     onSuccess: (result) => {
       setReason('')
+      setRejectError(undefined)
       onNotice({
         severity: 'success',
         title: '已退回',
@@ -136,7 +142,7 @@ export function ApprovalPanel({
       })
       onChanged()
     },
-    onError: (error) => onNotice(noticeFromError(error, '退回失败')),
+    onError: (error) => setRejectError(noticeMessage(error, '退回失败')),
   })
 
   const busy =
@@ -185,7 +191,10 @@ export function ApprovalPanel({
               type="button"
               className="btn btn-primary"
               disabled={busy}
-              onClick={() => setConfirmSubmit(true)}
+              onClick={() => {
+                submitMutation.reset()
+                setConfirmSubmit(true)
+              }}
             >
               {submitMutation.isPending ? '提交中…' : '提交审核'}
             </button>
@@ -198,6 +207,7 @@ export function ApprovalPanel({
             version={detail.version}
             status={<LifecycleBadge status={detail.status} />}
             pending={submitMutation.isPending}
+            error={submitMutation.error ?? undefined}
             onClose={() => setConfirmSubmit(false)}
             onConfirm={() => submitMutation.mutate()}
           />
@@ -208,6 +218,7 @@ export function ApprovalPanel({
             className="create-form"
             onSubmit={(event) => {
               event.preventDefault()
+              if (busy) return
               if (approvalId.trim() === '') {
                 setPublishError('外部审批单号不能为空。')
                 return
@@ -284,10 +295,18 @@ export function ApprovalPanel({
               type="button"
               className="btn btn-secondary"
               disabled={busy}
-              onClick={() => visibilityMutation.mutate()}
+              onClick={() => {
+                if (busy) return
+                visibilityMutation.mutate()
+              }}
             >
               {visibilityMutation.isPending ? '保存中…' : '保存可见性'}
             </button>
+            {visibilityError !== undefined && (
+              <p className="inline-error" role="alert">
+                {visibilityError}
+              </p>
+            )}
           </div>
         )}
 
@@ -296,6 +315,7 @@ export function ApprovalPanel({
             className="create-form approval-reject"
             onSubmit={(event) => {
               event.preventDefault()
+              if (busy) return
               if (reason.trim() === '') {
                 setRejectError('退回原因不能为空。')
                 return

@@ -40,6 +40,8 @@ RUN npm run build \
 # ---------------------------------------------------------------------------- 运行时
 FROM ${RUNTIME_IMAGE}
 
+# 不带默认值重新声明：继承上面的全局默认或 --build-arg，供 base.name 标签写出真实基础镜像。
+ARG RUNTIME_IMAGE
 ARG VERSION=dev
 ARG REVISION=unknown
 
@@ -51,7 +53,7 @@ LABEL org.opencontainers.image.title="jumcp" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.base.name="docker.io/library/debian:bookworm-slim"
+      org.opencontainers.image.base.name="${RUNTIME_IMAGE}"
 
 # tini 负责 pid 1 的信号转发（STOPSIGNAL SIGTERM 才能真正优雅停机）；
 # curl 供 HEALTHCHECK 使用；ca-certificates 供上游 MCP / ClickHouse 的 TLS 校验。

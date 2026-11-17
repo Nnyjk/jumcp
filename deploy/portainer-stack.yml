@@ -14,6 +14,8 @@ version: "3.8"
 
 services:
   jumcp:
+    # 生产请把 JUMCP_IMAGE 固定到版本 tag 或 @sha256: digest；默认的 latest 每次 main 合并都会换版本。
+    # 版本 tag 形如 ghcr.io/nnyjk/jumcp:0.0.1.000（见 docs/ci-cd.md 的 tag 规则）。
     image: ${JUMCP_IMAGE:-ghcr.io/nnyjk/jumcp:latest}
 
     environment:

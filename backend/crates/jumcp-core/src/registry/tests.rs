@@ -81,11 +81,39 @@ fn new_version_not_inplace() {
 #[test]
 fn deprecate_needs_successor() {
     let s = store();
-    s.register("cap1", "tool", "db.read.core", "read", json!({}))
-        .unwrap();
-    assert!(s.deprecate("cap1", "").is_err());
+    for id in ["cap1", "cap2"] {
+        s.register(id, "tool", "db.read.core", "read", json!({}))
+            .unwrap();
+    }
+    // 空 successor：校验错误（文案由 store 唯一裁定）。
+    assert_eq!(
+        s.deprecate("cap1", "").unwrap_err().code,
+        "MCP_VALIDATION_ERROR"
+    );
+    // successor 不存在：不能把调用方指向空指针。
+    let e = s.deprecate("cap1", "cap.missing").unwrap_err();
+    assert_eq!(e.code, "MCP_CAPABILITY_NOT_FOUND");
+    assert_eq!(e.data["capability_id"], json!("cap.missing"));
+    // successor 自指：下架后唯一指引必须指向别处。
+    assert_eq!(
+        s.deprecate("cap1", "cap1").unwrap_err().code,
+        "MCP_VALIDATION_ERROR"
+    );
     let r = s.deprecate("cap1", "cap2").unwrap();
     assert_eq!(r.status, "deprecated");
+    // 重复下架：错误码明确，且不覆盖已有 successor。
+    let e = s.deprecate("cap1", "cap.other").unwrap_err();
+    assert_eq!(e.code, "MCP_STATE_TRANSITION_INVALID");
+    assert_eq!(e.data["from"], json!("deprecated"));
+    assert_eq!(
+        s.get("cap1").unwrap().unwrap().successor_id,
+        "cap2",
+        "重复下架不得覆盖既有 successor"
+    );
+    // 未知目标：不存在即不存在，不是静默 no-op。
+    let e = s.deprecate("cap.unknown", "cap2").unwrap_err();
+    assert_eq!(e.code, "MCP_CAPABILITY_NOT_FOUND");
+    assert_eq!(e.data["capability_id"], json!("cap.unknown"));
 }
 #[test]
 fn versions_append_only_trigger_blocks_update() {
@@ -720,4 +748,37 @@ fn draft_revision_rejects_builtin() {
             .unwrap_err();
         assert_eq!(e.code, "MCP_BUILTIN_IMMUTABLE");
     }
+}
+
+/// 状态迁移的 UPDATE 带源状态条件：并发提审只能有一次成功，另一次按冲突返回。
+#[test]
+fn concurrent_submit_lets_exactly_one_win() {
+    use std::sync::{Arc, Barrier};
+    let s = Arc::new(store());
+    s.register(
+        "cap1",
+        "tool",
+        "db.read.core",
+        "read",
+        json!({"description":"x"}),
+    )
+    .unwrap();
+    let barrier = Arc::new(Barrier::new(4));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let s = Arc::clone(&s);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                s.submit_for_review("cap1", "alice").is_ok()
+            })
+        })
+        .collect();
+    let ok = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(ok, 1, "并发提交只允许一个请求把 draft 推进到 review");
+    assert_eq!(s.get("cap1").unwrap().unwrap().status, "review");
 }

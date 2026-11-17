@@ -1,12 +1,13 @@
 name: Release
 
-# 触发：main push（发布分支，产出 latest + main）、版本 tag（semver）、手动。
+# 触发：main push（发布分支，产出 latest + main）、版本 tag（v + 3 或 4 段数字）、手动。
 # 仓库默认分支是 dev（集成分支），它不触发本 workflow，也不产出镜像。
 #
-# 两道来源防线（github.ref 层面的触发已经排除 dev，但 workflow_dispatch 可以选择任意 ref）：
+# 三道来源防线（github.ref 层面的触发已经排除 dev，但 workflow_dispatch 可以选择任意 ref）：
 #   1) publish job 的 if 限定 github.ref 只能是 main 或 v* tag；
 #      因此 `gh workflow run release.yml --ref dev` 会整 job 跳过，不会构建、不会推镜像。
-#   2) tag 触发必须指向 main 历史（merge-base --is-ancestor）。
+#   2) tag 名必须是 v + 3 或 4 段数字（v1.2.3 / v0.0.1.000），其它格式在 scripts/release-tags.sh 里直接失败。
+#   3) tag 触发必须指向 main 历史（merge-base --is-ancestor）。
 #      否则在 dev 的提交上打 v* tag 也能发布，绕开「main 只做发布」的语义。
 on:
   push:
@@ -39,6 +40,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 镜像名必须小写；owner 可能含大写（如 Nnyjk），这里统一归一化。
+      - name: Resolve image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "ref=ghcr.io/${OWNER,,}/jumcp" >> "$GITHUB_OUTPUT"
+
+      # 唯一的 tag/版本规则来源（scripts/release-tags.sh），本地可用同一脚本复算：
+      #   main push → version=main，tags=latest,main,sha-<7 位>
+      #   v1.2.3    → version=1.2.3，tags=1.2.3,1.2,sha-<7 位>
+      #   v0.0.1.000 → version=0.0.1.000，tags=0.0.1.000,0.0.1,0.0,sha-<7 位>（四段版本额外产出三段兼容 tag）
+      # 非法 tag 格式、非 main 分支在这里直接失败，不构建镜像。
+      - name: Compute version & tags
+        id: meta
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: bash scripts/release-tags.sh --image "$IMAGE" --github-output
+
       # tag 发布必须打在 main 的发布提交上：dev 上打 v* tag 不能绕过「只有 main 发布」。
       # origin/main 在 fetch 之后才保证是远端最新引用，所以先 fetch 再判祖先关系。
       - name: Verify tag is on main history
@@ -52,13 +72,6 @@ jobs:
             exit 1
           fi
 
-      # 镜像名必须小写；owner 可能含大写（如 Nnyjk），这里统一归一化。
-      - name: Resolve image name
-        id: image
-        run: |
-          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          echo "ref=ghcr.io/${owner}/jumcp" >> "$GITHUB_OUTPUT"
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -69,27 +82,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags & labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.image.outputs.ref }}
-          # branch / sha / semver；latest 只给 main（发布分支）。
-          # 默认分支是 dev，所以不能再用 is_default_branch 判 latest。
-          tags: |
-            type=ref,event=branch
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-          flavor: |
-            latest=false
-          labels: |
-            org.opencontainers.image.title=jumcp
-            org.opencontainers.image.description=jumcp MCP 聚合 router：Rust 后端 + 同源管理台静态资源
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.licenses=MIT
-
       - name: Build and push (linux/amd64)
         id: build
         uses: docker/build-push-action@v6
@@ -99,7 +91,13 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            org.opencontainers.image.title=jumcp
+            org.opencontainers.image.description=jumcp MCP 聚合 router：Rust 后端 + 同源管理台静态资源
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           provenance: true
           sbom: true
           cache-from: type=gha,scope=jumcp-image
@@ -122,11 +120,18 @@ jobs:
         run: bash scripts/smoke-image.sh "$IMAGE_REF"
 
       - name: Publish summary
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           {
             echo "### jumcp image published"
             echo
-            echo "- image: \`${{ steps.image.outputs.ref }}\`"
-            echo "- digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- tags: \`${{ steps.meta.outputs.version }}\`（完整列表见构建日志）"
+            echo "- image: \`$IMAGE\`"
+            echo "- digest: \`$DIGEST\`"
+            echo "- version: \`$VERSION\`"
+            echo "- tags:"
+            printf '%s\n' "$TAGS" | tr ',' '\n' | sed 's/^/- `/; s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"

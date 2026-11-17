@@ -203,7 +203,7 @@ export default function AuditQueryPage({
         }
         flush
         footer={
-          data !== undefined && data.events.length > 0 ? (
+          data !== undefined && data.total > 0 ? (
             <Pagination
               total={data.total}
               offset={data.offset}
@@ -216,7 +216,13 @@ export default function AuditQueryPage({
         {isPending && <LoadingState rows={8} label="正在查询审计事件" />}
         {isError && <ErrorState error={error} />}
         {data !== undefined && data.events.length === 0 && (
-          <EmptyState hint="没有符合条件的审计事件。放宽时间范围/对象/主体过滤后重试。" />
+          <EmptyState
+            hint={
+              data.total > 0
+                ? '当前页没有记录（数据可能在翻页后发生了变化），请用下方的上一页返回。'
+                : '没有符合条件的审计事件。放宽时间范围/对象/主体过滤后重试。'
+            }
+          />
         )}
         {data !== undefined && data.events.length > 0 && (
           <DataTable
