@@ -4,7 +4,7 @@
 
 | workflow | 触发 | 作用 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、镜像构建与冒烟、PR 依赖审查 |
+| `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、镜像构建与冒烟、Swarm stack 配置校验、PR 依赖审查 |
 | `.github/workflows/release.yml` | push `main`、tag `v*`（必须指向 `main` 历史）、`workflow_dispatch`（只有 `main` / `v*` tag 真正发布） | 构建并推送 GHCR 镜像，回拉 digest 再冒烟 |
 
 CI 只订阅 `dev` 的 push：`main` 上的改动只能经 `dev → main` 的发版 PR 进入，合并后的全量发布校验由 release 承担，避免同一 ref 上重复跑两遍。PR 则同时接受目标 `dev`（日常）与 `main`（发版 PR）。
@@ -71,10 +71,11 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 ### `image`（timeout 90 分钟）
 
 1. `docker/setup-buildx-action`
-2. `docker/build-push-action`：`context: .`、`platforms: linux/amd64`、`tags: jumcp:ci`、`load: true`、`provenance: false`、`sbom: false`（load 模式不支持这两项），GHA 缓存 `type=gha,scope=jumcp-image`
-3. `bash scripts/smoke-image.sh jumcp:ci`（见下文）
-4. `docker save jumcp:ci | gzip -1 > jumcp-linux-amd64-image.tar.gz`
-5. 上传 artifact `jumcp-linux-amd64-image`（上面的压缩镜像，保留 7 天）
+2. `JUMCP_ADMIN_TOKENS=ci-placeholder docker stack config -c deploy/portainer-stack.yml >/dev/null`（步骤名 `Validate stack file`）：只做配置解析，校验 `deploy/portainer-stack.yml` 落在 **Swarm** 接受的 compose 子集内（见 [portainer-swarm.md](portainer-swarm.md)）；不部署、不登录 registry。dummy token 只为满足 `${JUMCP_ADMIN_TOKENS:?…}` 的 fail-fast——`platform` 这类 Swarm 会拒绝的键在这里就直接失败，不用等真部署
+3. `docker/build-push-action`：`context: .`、`platforms: linux/amd64`、`tags: jumcp:ci`、`load: true`、`provenance: false`、`sbom: false`（load 模式不支持这两项），GHA 缓存 `type=gha,scope=jumcp-image`
+4. `bash scripts/smoke-image.sh jumcp:ci`（见下文）
+5. `docker save jumcp:ci | gzip -1 > jumcp-linux-amd64-image.tar.gz`
+6. 上传 artifact `jumcp-linux-amd64-image`（上面的压缩镜像，保留 7 天）
 
 不登录 registry、不 push。
 
@@ -115,6 +116,7 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
   - `JUMCP_MCP_CONFIG_FILE=/app/config/policy.toml`
   - `JUMCP_MCP_REGISTRY_PATH=/data/registry.sqlite3`、`JUMCP_MCP_AUDIT_PATH=/data/audit.sqlite3`
 - `JUMCP_ADMIN_TOKENS` **没有任何默认值**：HTTP 模式下不配就拒绝启动（fail-closed）。镜像里不含任何 token/secret
+- 部署形态：单容器 `docker run` 见下文「运行命令」；Portainer / Docker Swarm 用 `deploy/portainer-stack.yml`（单副本、`stop-first`、命名卷），前置条件与边界见 [portainer-swarm.md](portainer-swarm.md)
 
 ## 运行命令
 

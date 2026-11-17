@@ -111,11 +111,13 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
 
 - `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
 - 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
-- CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
+- CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；`linux/amd64` 镜像构建 + 容器冒烟 + Swarm stack 配置校验（`docker stack config`）；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
 - release（`.github/workflows/release.yml`）：仅由 `main` push、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`（branch/sha/semver；`latest` 只给 `main`，带 provenance 与 SBOM），按 digest 回拉后再冒烟。`publish` job 限定 `refs/heads/main` 与 `refs/tags/v*`：对 `dev` 手动 dispatch 会整 job 跳过，`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验），所以在 `dev` 上既不能手动发布也不能靠打 tag 发布。
 - 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`）。
 
 完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
+
+**Portainer / Swarm**：`deploy/portainer-stack.yml` 是可直接粘贴进 Portainer（Stacks → Add stack）或 `docker stack deploy -c` 的部署定义——单副本、`stop-first` 更新与回滚（SQLite 单写者，不能多副本）、`/data` 挂命名卷、`JUMCP_ADMIN_TOKENS` 必填 fail-fast、镜像与端口可用 `JUMCP_IMAGE` / `JUMCP_PORT` 覆盖。前置条件、Portainer 操作步骤、鉴权边界、备份升级与多节点限制见 `docs/portainer-swarm.md`。
 
 分支模型：`main` 只做发布、不接受日常直接 push，且只接受 `dev` 的发版 PR（另有 `release source is dev` 检查来源）；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 release。发版后要把 `main` 合回 `dev` 做同步，否则 `strict` 保护会挡住下一次发版 PR。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
 
@@ -156,6 +158,7 @@ scripts/test-all.sh            # Linux / macOS / CI
 - `backend/crates/jumcp-connector-clickhouse/`：ClickHouse connector agent（stdin/stdout 按行 JSON-RPC；只做连接/绑定/执行/取数）
 - `admin-web/`：React + Vite 管理台（jumcp 治理面）；`npm run typecheck` / `build` / `lint`
 - `config/`：`policy.toml`（组、角色、数据源、预算与只读策略）
+- `deploy/`：`portainer-stack.yml`（Portainer / Docker Swarm stack 定义，见 `docs/portainer-swarm.md`）
 - `scripts/`：`dev.ps1` / `dev.sh`（一键启动）、`test-all.ps1` / `test-all.sh`（一键测试）
 - `docs/`：当前契约与路由文档（见下方文档索引）
 - `CONTRIBUTING.md`：分支模型、开发流程、PR 要求与发版步骤
@@ -179,6 +182,7 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 - `docs/mcp-router.md`：架构与 router 模型——内置工具分类与 `basic` 组、上游配置与逐工具基础组。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
 - `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、分支模型与发布流程、分支保护。
+- `docs/portainer-swarm.md`：Portainer / Docker Swarm 部署（`deploy/portainer-stack.yml`）、数据与鉴权边界、升级回滚与单副本限制。
 - `docs/web-hosting.md`：管理台静态资源同源托管的启动校验、路由优先级与缓存策略。
 - `docs/repository-structure.md`：目录结构与各层职责（root、Rust workspace、管理台、config/scripts/docs/notes、`.github`）。
 - `CONTRIBUTING.md`：分支模型、开发流程、本地校验、PR 与发版步骤。

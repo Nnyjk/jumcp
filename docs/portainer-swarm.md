@@ -1,0 +1,75 @@
+# Portainer / Docker Swarm 部署
+
+用 `deploy/portainer-stack.yml` 把 jumcp 部署成单副本 Swarm service：Portainer 的 **Stacks** 页面（Swarm 模式）直接用它当 stack 定义，命令行等价于 `docker stack deploy`。镜像、平台与运行时约定见 [ci-cd.md](ci-cd.md)「镜像」段。
+
+## 前置条件
+
+- 目标环境已 `docker swarm init`（单节点也可以：`docker swarm init --advertise-addr <内网 IP>`），部署节点是 **manager**；Portainer 已连到该 Swarm。
+- 调度节点必须是 **linux/amd64**：镜像只发布 `linux/amd64`（没有 `arm64` manifest）。stack 用 placement constraints 限定，只有满足条件的节点会跑任务；全是 arm64 节点时会一直 `pending`，`docker service ps jumcp_jumcp` 会显示 `no suitable node`。
+- 镜像可拉取：`ghcr.io/nnyjk/jumcp`。package 为 public 时无需登录；为 private 时在 Portainer 里注册 GHCR registry（用户名 + PAT，scope 至少 `read:packages`），并确保 stack 的镜像地址与凭据对应同一个 registry。
+- `latest` 只由 `main` 的 push 产出（见 ci-cd.md 的 tag 规则）。生产建议固定语义化 tag（`X.Y.Z`）或 digest，不要跟 `latest`，否则每次 `main` 合并后 redeploy 都会换版本。
+
+## 用 Portainer 部署
+
+1. **Stacks → Add stack**，Name 填 `jumcp`（服务名会变成 `jumcp_jumcp`，卷 `jumcp_jumcp-data`）。
+2. Build method 二选一：
+   - **Web editor**：把 `deploy/portainer-stack.yml` 的内容粘进去；
+   - **Repository**：连 Git，Compose path 填 `deploy/portainer-stack.yml`，分支填要部署的分支（生产用 `main` 的 tag，不要用 `dev`）。
+3. 同一页面的 **Environment variables** 里填（Portainer 会把它作为 stack 的 interpolation 输入）：
+
+   | 变量 | 必填 | 说明 |
+   |---|---|---|
+   | `JUMCP_ADMIN_TOKENS` | ✅ | 管理面凭证，`id:token,id:token` 形式，每个 token 至少 16 位（如 `admin:<openssl rand -hex 24>`）。未设置或为空时 `docker stack deploy` / Portainer 会在 interpolation 阶段直接失败 |
+   | `JUMCP_AGENT_TOKENS` | — | `agent_id:role:token,agent_id:role:token`，**只在 `access_tokens` 表为空时**一次性导入（引导用）。表非空后不再生效，令牌请用管理面 `POST /admin/tokens` 生成 |
+   | `JUMCP_IMAGE` | — | 覆盖镜像，默认 `ghcr.io/nnyjk/jumcp:latest`。生产填固定 tag 或 `@sha256:` digest |
+   | `JUMCP_PORT` | — | 对外发布的端口，默认 `8000`（ingress，任意节点该端口都可达） |
+   | `RUST_LOG` | — | 默认 `info` |
+
+   **不要把 token 提交进仓库**：stack 文件里只有变量引用、没有任何默认凭证。Portainer 把这些变量随 stack 存在自己的数据库里，不要改成写死在 YAML 里。
+4. **Deploy the stack**。首次启动等 healthcheck 转为 `healthy`（`start_period: 20s` + `interval: 30s`）。
+
+## 访问与鉴权边界
+
+- 管理台 UI：`http://<任意 swarm 节点>:8000/`（用 `JUMCP_PORT` 覆盖过端口时换成对应端口号）
+- 健康检查：`GET /health`（容器与外部探针用 JSON 分支；浏览器带 `Accept: text/html` 时返回管理台健康页）
+- MCP endpoint：`POST /mcp`，客户端带 `Authorization: Bearer <agent token>`
+- 管理面 API 仍要由网关/BFF 在**同源** `/admin/*` 路径注入 Bearer：管理台是薄前端，浏览器不发 `Authorization`。**直接把 8000 端口暴露出去时，管理台 UI 能加载，但所有管理请求都是 401**——这是设计上的 fail-closed，不是部署故障。
+- 因此建议只在内网或反向代理（Nginx/Traefik/Caddy 等）后面暴露，并在反代上补同源 Bearer 注入与访问控制。Swarm 的 `ingress` 会在**每个**节点上开放发布端口，只在单节点可达需要额外用防火墙/安全组收口，或改成 `mode: host` 并配合 placement 固定节点。
+
+## 数据与升级
+
+- `/data` 是命名卷 `jumcp-data`（Compose 项目下实际名 `jumcp_jumcp-data`），存 `registry.sqlite3` 与 `audit.sqlite3`。
+- **命名卷是节点本地卷**（`driver: local`）：卷跟着节点走，不跟着任务走。任务被重调度到另一个节点时会挂上一个**新的空卷**，表现为治理数据与审计链「消失」。单节点部署没有这个问题；多节点部署请用 placement 把任务固定到持有数据的节点（`node.hostname == <node>`），或改用共享存储。
+- 备份：库里是两个 SQLite 文件，**先停服务**（`docker service scale jumcp_jumcp=0`）再拷 `/data`，或用 `sqlite3 <db> ".backup '<目标>'"` 做一致性备份；直接 `cp` 正在被写的库可能拿到损坏副本。
+- 升级：Portainer 里改 `JUMCP_IMAGE` 后 **Update the stack**（勾选 re-pull image），或命令行 `docker service update --image ghcr.io/nnyjk/jumcp:<tag> jumcp_jumcp`。
+- 回滚：Portainer 的 **Rollback the stack**，或 `docker service rollback jumcp_jumcp`。
+- `update_config.order: stop-first`（回滚同样）意味着升级是**先停后起**：会有短暂停机，换来的是同一时刻只有一个进程写 SQLite。`failure_action: rollback` + `monitor: 30s` 让新任务起不来时自动回滚到上一个 spec。
+
+## 多节点 / 高可用边界
+
+- 当前存储是 SQLite 单写者：**不支持水平扩展**。不要 `--replicas >1`，也不要给多个 service 挂同一个 `/data`——并发写会破坏库。
+- rollback/update 全部是 `stop-first`；多副本即使能起，也会因为卷共享或各写各的副本产生数据分裂。
+- 需要真正的 HA 必须先改存储方案（外部数据库或单写者代理），属于存储层改造，不在本部署定义范围内。当前推荐形态：单节点 + 可靠备份 + 快速重建。
+
+## 本地 / 命令行验证
+
+只做配置解析（不改本机 Docker 状态、不需要 Swarm）：
+
+```bash
+JUMCP_ADMIN_TOKENS=ci-placeholder docker stack config -c deploy/portainer-stack.yml
+JUMCP_ADMIN_TOKENS=ci-placeholder docker compose -f deploy/portainer-stack.yml config
+```
+
+两者都退出 0 即 YAML 合法、变量引用可解析。`docker compose config` 会提示 `version` 已废弃（Compose v2+ 的警告，可忽略；`docker stack` 仍按 3.8 解析）。
+
+真正部署（需要已初始化的 Swarm manager）：
+
+```bash
+JUMCP_ADMIN_TOKENS="admin:$(openssl rand -hex 24)" \
+  docker stack deploy -c deploy/portainer-stack.yml jumcp
+docker service ps jumcp_jumcp          # 任务状态与调度失败原因
+docker service logs -f jumcp_jumcp     # 日志
+docker stack rm jumcp                  # 移除服务（命名卷保留）
+```
+
+CI 在 `image` job 里用同一份 `docker stack config` 校验该文件（见 ci-cd.md），因此写错键（例如 Swarm 不接受的 `platform`）会在构建前失败。
