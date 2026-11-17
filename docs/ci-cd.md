@@ -76,7 +76,7 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 
 ### `image`（timeout 90 分钟）
 
-`needs: [backend, web]`：上游失败时不再排队一次 90 分钟的镜像构建；镜像仍从源码各自重编，不消费上游 artifact。
+`needs: [backend, web]`：上游失败时不再排队一次 90 分钟的镜像构建；镜像仍从源码各自重编，不消费上游 artifact。镜像冒烟同时覆盖可安装包的安装链路（起容器时带 `JUMCP_MCP_UPSTREAM_STDIO=1`，见 `scripts/smoke-image.sh` 第 8 步）。
 
 1. `docker/setup-buildx-action`
 2. `JUMCP_ADMIN_TOKENS=ci-placeholder docker stack config -c deploy/portainer-stack.yml >/dev/null`（步骤名 `Validate stack file`）：只做配置解析，校验 `deploy/portainer-stack.yml` 落在 **Swarm** 接受的 compose 子集内（见 [portainer-swarm.md](portainer-swarm.md)）；不部署、不登录 registry。dummy token 只为满足 `${JUMCP_ADMIN_TOKENS:?…}` 的 fail-fast——`platform` 这类 Swarm 会拒绝的键在这里就直接失败，不用等真部署
@@ -125,7 +125,9 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
 - 三个基础镜像用浮动 tag 跟随 Debian 12 / Node 22 / Rust stable，与 CI 的 `dtolnay/rust-toolchain@stable` 保持一致；需要钉死时用 `--build-arg RUST_IMAGE=<tag|digest>`、`NODE_IMAGE=…`、`RUNTIME_IMAGE=…` 覆盖（`Dockerfile` 只认这三个 ARG）
 - 运行时只装 `ca-certificates`、`curl`（HEALTHCHECK）、`tini`（ENTRYPOINT，`STOPSIGNAL SIGTERM` 才能正常转发）
 - 非 root：UID/GID `10001`（`docker run` 里可用 `id -u` 验证）
-- `/data` 是 `VOLUME` 且属主 `10001`：registry/audit 两个 SQLite 都在这里
+- `/data` 是 `VOLUME` 且属主 `10001`：registry/audit 两个 SQLite 都在这里；可安装包安装出来的是 registry SQLite 里的一条上游记录（带 `catalog_id` / `catalog_version` 坐标），因此安装状态随数据卷持久化，不需要额外卷
+- 镜像在 `/usr/local/bin` 同时提供 `jumcp-server` / `jumcp-connector-clickhouse` / `jumcp-mcp-clickhouse`（最后一个是 `clickhouse-basic` 可安装包的可执行体，与 `jumcp-server` 同目录即被解析，无需挂载）
+- 可安装包安装需要 `JUMCP_MCP_UPSTREAM_STDIO=1`：镜像不默认开（默认 `0`），关闭时 `POST /admin/mcp/catalog/{id}/install` 返回 400 `MCP_UPSTREAM_STDIO_DISABLED`
 - 默认 env（镜像内置）：
   - `JUMCP_MCP_WEB_DIR=/app/web`（管理台静态资源，同源提供）
   - `JUMCP_MCP_TRANSPORT=streamable-http`、`JUMCP_MCP_HOST=0.0.0.0`、`JUMCP_MCP_PORT=8000`
@@ -147,9 +149,12 @@ docker buildx build --platform linux/amd64 -t jumcp:local --load .
 ```bash
 docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
   -e JUMCP_ADMIN_TOKENS="admin:$(openssl rand -hex 24)" \
+  -e JUMCP_MCP_UPSTREAM_STDIO=1 \
   -v jumcp-data:/data \
   jumcp:local
 ```
+
+`JUMCP_MCP_UPSTREAM_STDIO=1` 是安装 `clickhouse-basic` 这类可安装 MCP 包的前提（安装产物是 stdio 上游）；不装可安装包时可以不加。
 
 `JUMCP_AGENT_TOKENS` 只在 `access_tokens` 表为空时把静态 token 一次性导入数据库（引导用），生产令牌请用 `POST /admin/tokens` 在管理面生成。
 
@@ -186,6 +191,7 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 - 需要：`docker`、`curl`、`jq`
 - 容器参数：`/data` 用 `--tmpfs /data:rw,mode=1777,size=64m`（非 root 可写 + 每次干净空库），端口默认随机（`-p 127.0.0.1::8000`，也可 `--port` 指定）
 - 注入凭证：`JUMCP_ADMIN_TOKENS=smoke:<token>`、`JUMCP_AGENT_TOKENS=agent-analyst:analyst:<token>`；可用 `JUMCP_SMOKE_ADMIN_TOKEN`、`JUMCP_SMOKE_AGENT_TOKEN` 覆盖
+- 容器还以 `JUMCP_MCP_UPSTREAM_STDIO=1` 启动（可安装包安装链路的前提，见断言第 8 条）
 - 断言：
   1. `/health` 探针分支（无 `Accept` / `Accept: application/json`）200 + `application/json` 且 `audit_chain == "valid"`——监控与容器探针不会被前端劫持
   2. `GET /health` 且 `Accept: text/html` → 200 `text/html` 且含 `id="root"`（浏览器导航落管理台健康页）
@@ -194,7 +200,8 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
   5. `/assets/*.js` 200 且非空
   6. 匿名 `/admin/review-queue` → 401；带管理 token → 200 且 `items` 是数组
   7. `/mcp` 用 agent token `initialize` 200、`tools/list` 200 且含 `search_capabilities`
-  8. `id -u` = `10001`
+  8. 可安装包链路：容器以 `JUMCP_MCP_UPSTREAM_STDIO=1` 启动；断言 `/admin/mcp/catalog` 里 `clickhouse-basic` 的 `binary_present` 与 `stdio_enabled` 均为 `true`；安装（`dsn` 指向不可达地址 `127.0.0.1:1`，只验证进程拉起与工具缓存，不验证真库）→ `POST /admin/upstreams/{id}/refresh` 后 `status=ok`、`tool_count=3`；agent token 的 `tools/list` 含 `clickhouse__query`；最后 `DELETE` 卸载且 `deleted=true`
+  9. `id -u` = `10001`
 - 失败时打印容器状态与日志尾部，然后清理容器与临时目录
 - 退出码：0 通过、1 断言失败、2 参数或工具缺失
 

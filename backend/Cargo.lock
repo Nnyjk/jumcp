@@ -832,6 +832,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jumcp-mcp-clickhouse"
+version = "0.1.0"
+dependencies = [
+ "jumcp-connector-clickhouse",
+ "jumcp-connector-protocol",
+ "jumcp-sqlguard",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "jumcp-server"
 version = "0.1.0"
 dependencies = [

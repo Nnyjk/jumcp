@@ -247,6 +247,12 @@ async fn options_lists_roles_groups_and_builtin_labels() {
     assert_eq!(by_name("search_capabilities")["group"], json!("basic"));
     assert_eq!(by_name("admin_set_visibility")["label"], json!("改可见性"));
     assert_eq!(by_name("admin_set_visibility")["group"], json!("admin"));
+
+    // 该 harness 没有上游管理器：授予面三个字段退化为空数组，而不是缺字段。
+    let wildcards = body["tool_wildcards"].as_array().expect("tool_wildcards");
+    assert_eq!(wildcards.len(), 0);
+    assert_eq!(body["upstreams"], json!([]));
+    assert_eq!(body["upstream_tools"], json!([]));
 }
 
 /// active 令牌拒绝删除：409 带状态与提示，记录仍在列表，且不写 token_delete 审计。

@@ -39,6 +39,8 @@ pub fn default_message(code: &str) -> &str {
         "MCP_TOKEN_NOT_FOUND" => "令牌不存在",
         "MCP_TOKEN_ALREADY_REVOKED" => "令牌已撤销，不能重复撤销",
         "MCP_UPSTREAM_NOT_FOUND" => "上游 MCP server 不存在",
+        "MCP_CATALOG_NOT_FOUND" => "可安装 MCP 包不存在",
+        "MCP_UPSTREAM_BINARY_MISSING" => "上游可执行文件不存在（同目录与 PATH 均未找到）",
         "MCP_UPSTREAM_CONFLICT" => "上游 id 或工具名冲突",
         "MCP_UPSTREAM_INVALID" => "上游配置不合法",
         "MCP_UPSTREAM_WRITE_FORBIDDEN" => "上游声明可写需要 JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1",

@@ -166,15 +166,15 @@ impl NewAccessToken {
                 json!({"field": "groups", "hint": "groups 不能为空"}),
             ));
         }
-        // allowlist 同时约束内置与上游工具：内置 id，或上游暴露名 `<server_id>__<tool>`。
-        // 上游名不要求此刻已注册（令牌可以先于上游创建），但必须符合命名规则。
+        // allowlist 同时约束内置与上游工具：内置 id、上游暴露名 `<server_id>__<tool>`，
+        // 或两种通配（`*` 全部工具、`<server_id>__*` 某个上游的全部工具）。
+        // 上游名不要求此刻已注册（令牌可以先于上游创建，也可以先授权再安装），
+        // 但形状必须能反解，否则 `tools/list` 永远匹配不上。
         let unknown: Vec<&str> = self
             .builtin_tools
             .iter()
             .map(String::as_str)
-            .filter(|id| {
-                !BUILTIN_CAPABILITY_IDS.contains(id) && !crate::registry::is_upstream_tool_name(id)
-            })
+            .filter(|entry| !crate::registry::is_tool_allowlist_entry(entry))
             .collect();
         if !unknown.is_empty() {
             return Err(McpError::new(
@@ -183,7 +183,8 @@ impl NewAccessToken {
                     "field": "builtin_tools",
                     "unknown": unknown,
                     "allowed": BUILTIN_CAPABILITY_IDS,
-                    "upstream_rule": "<server_id>__<tool>（两侧 [A-Za-z0-9_-]，整名 ≤64）"
+                    "upstream_rule": "<server_id>__<tool>（两侧 [A-Za-z0-9_-]，整名 ≤64）",
+                    "wildcards": ["*", "<server_id>__*"]
                 }),
             ));
         }
@@ -763,18 +764,17 @@ impl CapabilityStore {
 
     /// 启动引导：`access_tokens` 为空时把 `JUMCP_AGENT_TOKENS` 的静态 token 一次性导入。
     ///
-    /// 导入的是同一明文的 sha256，因此原静态 token 仍可继续使用；`builtin_tools`
-    /// 取全部内置 id（常驻工具恒可见、admin 组令牌可见维护工具）。
+    /// 导入的是同一明文的 sha256，因此原静态 token 仍可继续使用；`builtin_tools` 写 `*`
+    /// （全部工具）：环境令牌是部署方自备的身份，工具范围交给授权组与上游开关约束。
+    /// 写死内置 id 会让"之后安装的上游"永远进不了这个身份的可见集——令牌创建后不可改
+    /// （只能重签），运维无法事后补名。
     pub fn import_bootstrap_tokens(
         &self,
         principals: &[AgentPrincipal],
         policy: &TenantPolicy,
     ) -> Result<usize, McpError> {
         let mut imported = 0usize;
-        let all_builtin: Vec<String> = BUILTIN_CAPABILITY_IDS
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect();
+        let all_tools: Vec<String> = vec![crate::registry::TOOL_WILDCARD_ALL.to_string()];
         for principal in principals {
             let hash = sha256_hex(&principal.token);
             {
@@ -816,7 +816,7 @@ impl CapabilityStore {
                             display_prefix(&principal.token),
                             principal.role,
                             encode_list(&groups)?,
-                            encode_list(&all_builtin)?,
+                            encode_list(&all_tools)?,
                             principal.id,
                             now_iso()
                         ],

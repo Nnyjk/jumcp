@@ -16,6 +16,7 @@ const TokensPage = lazy(() => import('./pages/tokens'))
 const HealthPage = lazy(() => import('./pages/HealthPage'))
 const ToolsPage = lazy(() => import('./pages/tools'))
 const UpstreamsPage = lazy(() => import('./pages/upstreams'))
+const McpInstallPage = lazy(() => import('./pages/mcp-install'))
 const CapabilityDossierPage = lazy(() => import('./pages/capability-dossier'))
 const CapabilityDossier = lazy(() =>
   import('./pages/capability-dossier').then((module) => ({ default: module.CapabilityDossier })),
@@ -38,6 +39,7 @@ const NAV_ITEMS: PageMeta[] = [
   { to: '/review', label: '审核队列', icon: 'review', title: '审核队列' },
   { to: '/tools', label: '工具', icon: 'tools', title: '工具台账' },
   { to: '/upstreams', label: 'MCP 接入', icon: 'link', title: 'MCP 接入' },
+  { to: '/mcp-install', label: 'MCP 安装', icon: 'install', title: 'MCP 安装' },
   { to: '/groups', label: '组维护', icon: 'groups', title: '组维护' },
   { to: '/tokens', label: '访问令牌', icon: 'key', title: '访问令牌' },
   { to: '/audit', label: '审计查询', icon: 'audit', title: '审计查询' },
@@ -124,6 +126,7 @@ export default function App() {
                   <Route path="/review" element={<ReviewQueuePage />} />
                   <Route path="/tools" element={<ToolsPage />} />
                   <Route path="/upstreams" element={<UpstreamsPage />} />
+                  <Route path="/mcp-install" element={<McpInstallPage />} />
                   <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
                   <Route path="/groups" element={<GroupsPage />} />
                   <Route path="/tokens" element={<TokensPage />} />

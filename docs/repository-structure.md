@@ -31,7 +31,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 | 模块 | 职责 |
 |---|---|
 | `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 管理面与 agent 主体令牌（常量时间比较）、`datasource` 数据源引用（DSN 只取环境变量） |
-| `registry/` | 能力注册表：`record` 记录/版本/管理变更结构与定义 diff、`lifecycle` 注册→审核→发布→下架与可见性、`groups` 管理组 CRUD 与引用计数、`upstreams` 上游配置与逐工具组覆盖 |
+| `registry/` | 能力注册表：`record` 记录/版本/管理变更结构与定义 diff、`lifecycle` 注册→审核→发布→下架与可见性、`groups` 管理组 CRUD 与引用计数、`upstreams` 上游配置与逐工具组覆盖、`packages` 可安装 MCP 包的静态目录（字段定义与工具清单） |
 | `template/` | `definition` 模板定义与结构变体白名单、`render` 注册期门禁与运行期渲染（占位符改写、sqlguard 复核、参数绑定）、`registry` 模板注册表 |
 | `access/` | `token.rs` 平台生成的 MCP access token 与哈希鉴权、`mod.rs` 持久化 / 撤销 / 组引用计数（明文只在创建或重签发时返回一次） |
 | `entry.rs` | 平面 A 纯函数：三通道解析 → 越界判定 → `EffectiveScope`（组 → 角色 → 工具名收窄） |
@@ -54,6 +54,10 @@ host 与 connector agent 之间的按行 JSON-RPC 协议定义（`src/lib.rs`：
 
 ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参数绑定、执行、取数。`src/lib.rs` 是被 host 拉起的实现，`src/main.rs` 是二进制入口（`jumcp-connector-clickhouse`）；`tests/protocol.rs` 覆盖协议编解码。
 
+### `backend/crates/jumcp-mcp-clickhouse/`
+
+可安装包 `clickhouse-basic` 的可执行体：独立的 ClickHouse MCP stdio server（MCP 2025-03-26，工具 `query` / `list_databases` / `list_tables`）。`src/tools.rs` 是工具定义与参数校验、`src/executor.rs` 包装 connector 的只读执行、`src/main.rs` 是二进制入口（`jumcp-mcp-clickhouse`，与目录条目 `command` 同名）；DSN 只经环境变量 `JUMCP_CLICKHOUSE_DSN` 传入。`tests/` 覆盖配置、协议与启动。
+
 ### `backend/crates/jumcp-server/`
 
 服务与传输层。
@@ -63,8 +67,8 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 | `main.rs` / `lib.rs` | 进程入口（参数、启动装配）与可测试的库骨架 |
 | `service.rs` | `Service` 聚合：配置、catalog、执行委托、审计与按会话预算 |
 | `mcp/` | 手写 JSON-RPC MCP 服务：`mod` 的 tools/list（按 `EffectiveScope` 过滤 + 常驻预算）与元工具、维护通道；`http` 把 HTTP 请求翻成平台身份；`dispatch/{tools,upstream,admin}` 分别是工具、上游转发、管理类方法的处理臂 |
-| `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现 |
-| `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现 |
+| `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现，`packages` 可安装包目录与安装/卸载 |
+| `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现；`stdio::bundled_binary` 是 stdio 可执行文件的唯一解析点（`JUMCP_MCP_BUNDLED_BIN_DIR` → 服务同目录 → `PATH`） |
 | `connector/` | 连接器桥：把已校验的只读执行委托给子进程 `jumcp-connector-clickhouse`（L4、database 白名单、行数夹紧、单格整形留在 host） |
 | `executor.rs` | 只读执行委托契约（`QueryExecutor`）；未配置数据源时显式报错，绝不假执行 |
 | `catalog.rs` | 能力抽象与内存目录（可见性 `published ∧ discoverable ∧ group ∈ scope`，不可见与不存在同构） |
@@ -79,7 +83,7 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 | 路径 | 职责 |
 |---|---|
 | `contracts.rs`、`discovery.rs`、`discovery_projection.rs`、`identity_admin.rs`、`templates.rs`、`web_hosting.rs` | 顶层的工具表面、发现投影、身份与管理面、模板、静态托管契约 |
-| `admin/`、`tokens/`、`upstream/` | 每个子目录是一个测试 target（`main.rs`），按面组织：鉴权、CRUD、审核与冲突、统计、上游传输与 scope |
+| `admin/`、`tokens/`、`upstream/` | 每个子目录是一个测试 target（`main.rs`），按面组织：鉴权、CRUD、审核与冲突、统计、上游传输与 scope（`upstream/packages.rs` 覆盖可安装包的目录、安装、卸载与脱敏） |
 | `support/mod.rs` | 共享设施：真实 axum 链路、admin 鉴权请求、能力发布与审计样例 |
 | `support/fake_upstream.rs` | 上游 MCP server 的假实现（stdio / HTTP 测试用） |
 
@@ -93,7 +97,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 |---|---|
 | `src/main.tsx` / `src/App.tsx` | 挂载、路由与全局外壳（侧栏 + content 视图栈） |
 | `src/api/` | `client.ts`（fetch 封装与错误归一）、`queries.ts`（数据拉取）、`admin.ts`（管理面接口）、`types.ts`（契约类型） |
-| `src/pages/` | 路由级页面，一个功能一个目录：`dashboard/`（工作台与图表）、`tools/`（台账与新建草案）、`groups/`、`capability-dossier/`（六分栏与审批）、`upstreams/`（含基础工具弹层）、`tokens/`、`audit-query/`、`review-queue/`；`ExceptionPage.tsx`、`HealthPage.tsx` 是单文件页面 |
+| `src/pages/` | 路由级页面，一个功能一个目录：`dashboard/`（工作台与图表）、`tools/`（台账与新建草案）、`groups/`、`capability-dossier/`（六分栏与审批）、`upstreams/`（含基础工具弹层）、`mcp-install/`（可安装包目录与安装/卸载）、`tokens/`、`audit-query/`、`review-queue/`；`ExceptionPage.tsx`、`HealthPage.tsx` 是单文件页面 |
 | `src/components/` | 复用的展示与交互件（表格、卡片、弹层、侧栏、主题切换、提交确认等） |
 | `src/motion/` | 过渡与动画原语（`useGsap.ts`） |
 | `src/styles/` | `index.css` 为汇总入口，`components.css` 按顺序 `@import` `styles/components/*.css`（顺序即级联优先级，勿重排）；另有 `layout.css`、`modal.css`、`dashboard.css`、`tokens.css` 与主题变量 |

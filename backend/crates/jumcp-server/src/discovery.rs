@@ -15,7 +15,9 @@ use crate::mcp::{admin_tool_definitions, builtin_category, tool_definitions};
 use crate::service::{ADMIN_TOOL_NAMES, RESIDENT_TOOL_NAMES};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::errors::McpError;
-use jumcp_core::registry::{CapabilityRecord, CapabilityStore, McpUpstream, UpstreamTool};
+use jumcp_core::registry::{
+    CapabilityRecord, CapabilityStore, McpUpstream, UpstreamTool, tool_allowlist_matches,
+};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
@@ -36,16 +38,19 @@ pub fn admin_enabled(scope: &EffectiveScope) -> bool {
     scope.groups.iter().any(|g| g == ADMIN_GROUP)
 }
 
-/// 工具 allowlist 的唯一判定：`None` = 不限制（stdio / 管理面），`Some` = 精确白名单。
+/// 工具 allowlist 的唯一判定：`None` = 不限制（stdio / 管理面），`Some` = 白名单。
 ///
-/// 名字同时覆盖内置 id 与上游暴露名（`<server_id>__<tool>`）：`tools/list`、发现面投影与
-/// `tools/call` 三处共用这一处实现，避免"列表里没有、调用却放行"。
+/// 条目可以是内置 id、上游暴露名（`<server_id>__<tool>`），或两种通配：`*`（全部工具）与
+/// `<server_id>__*`（某个上游暴露的全部工具）。匹配语义在
+/// `jumcp_core::registry::tool_allowlist_matches` 里实现一次（与创建令牌时的校验共用同一套
+/// 通配解析）：`tools/list`、发现面投影与 `tools/call` 三处共用这一处实现，避免
+/// "列表里没有、调用却放行"。
 /// 与 `admin_enabled` 是**双重判定**：admin_* 既要 allowlist 命中，也要 admin 组在 scope 内；
 /// 两者都不能由请求头/`_meta` 扩大（allowlist 来自 token 配置，header 只能收窄组）。
 pub fn tool_allowed(scope: &EffectiveScope, id: &str) -> bool {
     match &scope.allowed_builtin_tools {
         None => true,
-        Some(allow) => allow.iter().any(|allowed| allowed == id),
+        Some(allow) => allow.iter().any(|entry| tool_allowlist_matches(entry, id)),
     }
 }
 

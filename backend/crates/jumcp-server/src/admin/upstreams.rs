@@ -156,48 +156,15 @@ pub(super) fn build_upstream(
         read_only,
         enabled,
         timeout_ms,
+        // 包坐标由安装/卸载路径维护，普通编辑（PUT）原样带过，绝不在这里清空。
+        catalog_id: existing.and_then(|e| e.catalog_id.clone()),
+        catalog_version: existing.and_then(|e| e.catalog_version.clone()),
         created_at: existing.map(|e| e.created_at.clone()).unwrap_or_default(),
         updated_at: String::new(),
     };
     // `basic` 是代码内置的逐工具通道：整台上游注册到 basic 会让它的全部工具（含写工具）
     // 对所有人可见，因此只允许逐工具加入。
-    if upstream.group == crate::discovery::BASIC_GROUP {
-        return Err(reject(
-            state,
-            actor,
-            McpError::new(
-                "MCP_UPSTREAM_INVALID",
-                json!({
-                    "field": "group",
-                    "group": upstream.group,
-                    "hint": "basic 是内置组，只能通过逐工具配置把个别工具加入",
-                }),
-            ),
-            json!({"surface": surface, "id": upstream.id}),
-        ));
-    }
-    // 组必须存在于有效策略：上游工具的可见性完全由该组决定，悬空组等于永远不可见。
-    let policy = state.service.effective_policy().map_err(|e| {
-        reject(
-            state,
-            actor,
-            e,
-            json!({"surface": surface, "id": upstream.id}),
-        )
-    })?;
-    if !policy.groups.iter().any(|g| g.code == upstream.group) {
-        let mut known: Vec<&str> = policy.groups.iter().map(|g| g.code.as_str()).collect();
-        known.sort();
-        return Err(reject(
-            state,
-            actor,
-            McpError::new(
-                "MCP_UPSTREAM_INVALID",
-                json!({"field": "group", "group": upstream.group, "known_groups": known}),
-            ),
-            json!({"surface": surface, "id": upstream.id}),
-        ));
-    }
+    ensure_upstream_group(state, actor, surface, &upstream.group, &upstream.id)?;
     // http 上游的地址在写边界就完整解析：只允许 http(s)、禁止 userinfo（与建连时同一约束）。
     if upstream.transport == "http" {
         let parsed = reqwest::Url::parse(&upstream.url).map_err(|_| {
@@ -260,6 +227,51 @@ pub(super) fn build_upstream(
         )
     })?;
     Ok(upstream)
+}
+
+/// 授权组门禁（上游写入与包安装共用）：`basic` 不可整台注册，组必须存在于有效策略。
+///
+/// 上游工具的可见性完全由该组决定，悬空组等于永远不可见；因此两处写入口必须同一判定。
+pub(super) fn ensure_upstream_group(
+    state: &AdminState,
+    actor: &Actor,
+    surface: &str,
+    group: &str,
+    id: &str,
+) -> Result<(), ApiError> {
+    if group == crate::discovery::BASIC_GROUP {
+        return Err(reject(
+            state,
+            actor,
+            McpError::new(
+                "MCP_UPSTREAM_INVALID",
+                json!({
+                    "field": "group",
+                    "group": group,
+                    "hint": "basic 是内置组，只能通过逐工具配置把个别工具加入",
+                }),
+            ),
+            json!({"surface": surface, "id": id}),
+        ));
+    }
+    let policy = state
+        .service
+        .effective_policy()
+        .map_err(|e| reject(state, actor, e, json!({"surface": surface, "id": id})))?;
+    if !policy.groups.iter().any(|g| g.code == group) {
+        let mut known: Vec<&str> = policy.groups.iter().map(|g| g.code.as_str()).collect();
+        known.sort();
+        return Err(reject(
+            state,
+            actor,
+            McpError::new(
+                "MCP_UPSTREAM_INVALID",
+                json!({"field": "group", "group": group, "known_groups": known}),
+            ),
+            json!({"surface": surface, "id": id}),
+        ));
+    }
+    Ok(())
 }
 
 /// 管理面条目：脱敏配置 + 运行态（status 取缓存，不触发探测）。
@@ -497,17 +509,19 @@ pub(super) fn upstream_tools_view(
         let overridden = overrides.iter().any(|row| {
             row.tool_name == tool.name && row.group_code == crate::discovery::BASIC_GROUP
         });
-        let eligible = crate::upstream::basic_eligible(def, tool);
-        let basic = overridden && eligible;
+        // 与 `/admin/tokens/options`、`tools/list` 共用同一份生效组判定；`None` 表示覆盖行
+        // 已因上游改成可写/改类别/名字非法而失效，此时按上游组展示，`eligible=false` 提示清理。
+        let group = crate::upstream::effective_tool_group(def, tool, overridden);
+        let basic = group == Some(crate::discovery::BASIC_GROUP);
         tools.push(json!({
             "name": tool.name,
             "exposed_name": crate::upstream::exposed_tool_name(&def.id, &tool.name),
-            "group": if basic { crate::discovery::BASIC_GROUP } else { def.group.as_str() },
+            "group": group.unwrap_or(def.group.as_str()),
             "group_source": if basic { "basic" } else { "upstream" },
             "basic": basic,
             "overridden": overridden,
             "read_only": def.read_only,
-            "eligible": eligible,
+            "eligible": crate::upstream::basic_eligible(def, tool),
             "orphaned": false,
             "description": tool.description,
         }));

@@ -369,6 +369,8 @@ async fn write_upstream_rows_are_hidden_when_deployment_forbids_writes() {
         read_only: false,
         enabled: true,
         timeout_ms: 5000,
+        catalog_id: None,
+        catalog_version: None,
         created_at: String::new(),
         updated_at: String::new(),
     };

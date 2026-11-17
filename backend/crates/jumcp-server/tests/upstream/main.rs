@@ -12,6 +12,8 @@ mod support;
 mod basic;
 mod crud;
 mod fixtures;
+mod packages;
 mod scope;
+mod token_options;
 mod tools;
 mod transports;

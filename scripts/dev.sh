@@ -208,8 +208,8 @@ if port_listening "$BACKEND_PORT" "$BACKEND_HOST"; then
 fi
 
 # 2) 每次启动都增量构建：二进制存在不代表是最新代码
-echo "==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse（增量构建，避免运行过期二进制）"
-( cd "$BACKEND_DIR" && cargo build --bin jumcp-server --bin jumcp-connector-clickhouse ) || { echo "后端构建失败（cargo build 退出码非 0）" >&2; exit 1; }
+echo "==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse（增量构建，避免运行过期二进制）"
+( cd "$BACKEND_DIR" && cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse ) || { echo "后端构建失败（cargo build 退出码非 0）" >&2; exit 1; }
 
 SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server"
 [ -x "$SERVER_BIN" ] || SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server.exe"

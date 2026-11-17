@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验健康、同源管理台静态资源、管理面鉴权与 /mcp。
+# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验健康、同源管理台静态资源、管理面鉴权、/mcp 与可安装 MCP 包安装链路。
 # 用途：CI 的镜像 job 与 release 发布后的 digest 回拉校验；本地 `docker build` 后也可直接跑。
 #
 # 用法：scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
@@ -98,6 +98,7 @@ docker run -d --name "$NAME" \
   --tmpfs "/data:rw,mode=1777,size=64m" \
   -e "JUMCP_ADMIN_TOKENS=${ADMIN_ID}:${ADMIN_TOKEN}" \
   -e "JUMCP_AGENT_TOKENS=${AGENT_ID}:${AGENT_ROLE}:${AGENT_TOKEN}" \
+  -e "JUMCP_MCP_UPSTREAM_STDIO=1" \
   "$IMAGE" >/dev/null || fail "docker run 失败"
 STARTED=1
 
@@ -259,7 +260,57 @@ json_is "$TMP_ROOT/mcp_tools.json" \
   '/mcp tools/list 缺少 search_capabilities'
 echo "    ok: POST /mcp tools/list → 200 且含 search_capabilities"
 
-# 8. 非 root：容器内实际 UID 必须是 10001
+# 8. 可安装 MCP 包：目录自带可执行体且 stdio 开关生效 → 安装（DSN 脱敏）→ 刷新（子进程握手）
+#    → agent 面可见 → 卸载后目录无残留安装。DSN 指向 127.0.0.1:1（不可达）是对的：
+#    安装只写配置，刷新只拉起连接器子进程，两步都不连库。
+PKG_ID="clickhouse-basic"
+PKG_UPSTREAM="clickhouse"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/catalog.json" \
+  '(.items[] | select(.id == "clickhouse-basic"))
+   | (.binary_present == true) and (.stdio_enabled == true) and ((.installations | length) == 0)' \
+  'GET /admin/mcp/catalog 里 clickhouse-basic 不可安装（binary_present/stdio_enabled 不是 true，或空库已有残留安装）'
+echo "    ok: GET /admin/mcp/catalog → 200 且 ${PKG_ID} 可安装（binary_present、stdio_enabled，无残留安装）"
+
+INSTALL_BODY='{"group":"db.read.core","config":{"dsn":"http://default:@127.0.0.1:1/default"}}'
+post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_install.json" "$INSTALL_BODY" "$ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /admin/mcp/catalog/${PKG_ID}/install 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_install.json" ".upstream.id == \"${PKG_UPSTREAM}\"" \
+  "安装接口返回的上游 id 不是 ${PKG_UPSTREAM}"
+json_is "$TMP_ROOT/pkg_install.json" \
+  '(.upstream.env.JUMCP_CLICKHOUSE_DSN == "***") and ((tostring | contains("http://default:@127.0.0.1:1/default")) | not)' \
+  '安装响应未脱敏（JUMCP_CLICKHOUSE_DSN 应为 "***" 且不出现明文 dsn）'
+echo "    ok: POST /admin/mcp/catalog/${PKG_ID}/install → 200（上游 ${PKG_UPSTREAM}，DSN 已脱敏）"
+
+post_json "$BASE/admin/upstreams/${PKG_UPSTREAM}/refresh" "$TMP_ROOT/pkg_refresh.json" '{}' "$ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_refresh.json" '.status == "ok"' \
+  "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 status 不是 \"ok\"（stdio 子进程未拉起或握手失败）"
+json_is "$TMP_ROOT/pkg_refresh.json" '.tool_count == 3' \
+  "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 tool_count 期望 3"
+echo "    ok: POST /admin/upstreams/${PKG_UPSTREAM}/refresh → 200（status=ok，tool_count=3）"
+
+PKG_LIST_BODY='{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+post_json "$BASE/mcp" "$TMP_ROOT/pkg_tools.json" "$PKG_LIST_BODY" "$AGENT_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /mcp tools/list（安装 ${PKG_ID} 后）期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_tools.json" \
+  '((.result.tools // []) | map(.name) | index("clickhouse__query")) != null' \
+  "安装后 /mcp tools/list 缺少 clickhouse__query"
+echo "    ok: 安装后 POST /mcp tools/list → 200 且含 clickhouse__query"
+
+get "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}" "$TMP_ROOT/pkg_uninstall.json" \
+  -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "DELETE /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM} 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_uninstall.json" '.deleted == true' "卸载响应缺少 deleted=true"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog_after.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog（卸载后）期望 200，实际 $CODE"
+json_is "$TMP_ROOT/catalog_after.json" \
+  '(.items[] | select(.id == "clickhouse-basic") | .installations | length) == 0' \
+  "卸载后 ${PKG_ID} 仍有残留安装"
+echo "    ok: DELETE /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM} → 200 且目录无残留安装"
+
+# 9. 非 root：容器内实际 UID 必须是 10001
 # 用 `--entrypoint id`（不带绝对路径）而不是 `/usr/bin/id`：Git Bash/MSYS 会把绝对路径
 # 当成宿主路径改写成 `C:\...`，传给 docker 后容器里找不到可执行文件。
 UID_IN_CONTAINER="$(docker run --rm --entrypoint id "$IMAGE" -u 2>/dev/null || true)"

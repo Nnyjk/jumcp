@@ -4,6 +4,7 @@ import { DASH, dashText, formatDateTime } from '../../format'
 import { groupLabel, roleLabel } from '../../api/queries'
 import { STATUS_TONE, TOKEN_STATUS_LABEL } from '../../labels'
 import { useAdminView } from '../../viewStack'
+import { wildcardToolLabel } from './tokenConfig'
 
 export function TokenCard({
   item,
@@ -97,7 +98,7 @@ export function TokenCard({
                       tone={option?.group === 'admin' ? 'warning' : 'neutral'}
                       title={name}
                     >
-                      {option?.label ?? name}
+                      {option?.label ?? wildcardToolLabel(name) ?? name}
                     </Badge>
                   )
                 })}

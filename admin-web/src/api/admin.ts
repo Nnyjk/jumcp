@@ -19,6 +19,7 @@ import type {
   CapabilityVersionsPage,
   CreatedCapability,
   DeletedAccessToken,
+  DeletedMcpInstallation,
   GroupCreateInput,
   GroupItem,
   GroupPage,
@@ -26,6 +27,9 @@ import type {
   GroupUpdateInput,
   HealthPayload,
   ItemPage,
+  McpCatalogPage,
+  McpInstallInput,
+  McpInstallResult,
   Page,
   RejectedCapability,
   ReviewQueueItem,
@@ -375,5 +379,40 @@ export async function updateUpstreamBasicTools(
   return request<UpdatedBasicTools>(
     `/admin/upstreams/${encodeURIComponent(id)}/tools/basic`,
     { method: 'PUT', body: input },
+  )
+}
+
+/* ----------------------------- MCP 安装目录 ------------------------------ */
+
+/**
+ * 安装目录：包定义、安装字段、stdio/二进制可用性与已安装实例一次返回。
+ * 目录项 id 只用于安装接口路径，已安装实例仍以上游 id 为准。
+ */
+export async function fetchMcpCatalog(signal?: AbortSignal): Promise<McpCatalogPage> {
+  return request<McpCatalogPage>('/admin/mcp/catalog', { signal })
+}
+
+/**
+ * 安装目录项：成功返回新上游（与 GET /admin/upstreams/{id} 同形）。
+ * 409=MCP_UPSTREAM_CONFLICT，400 可能为校验失败 / stdio 未开启 / 二进制缺失。
+ */
+export async function installMcpCatalogEntry(
+  id: string,
+  input: McpInstallInput,
+): Promise<McpInstallResult> {
+  return request<McpInstallResult>(`/admin/mcp/catalog/${encodeURIComponent(id)}/install`, {
+    method: 'POST',
+    body: input,
+  })
+}
+
+/** 卸载目录项安装的实例：删除上游配置，router 同步移除其工具。 */
+export async function uninstallMcpCatalogEntry(
+  id: string,
+  upstreamId: string,
+): Promise<DeletedMcpInstallation> {
+  return request<DeletedMcpInstallation>(
+    `/admin/mcp/catalog/${encodeURIComponent(id)}/install/${encodeURIComponent(upstreamId)}`,
+    { method: 'DELETE' },
   )
 }

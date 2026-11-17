@@ -1,0 +1,158 @@
+/* MCP 安装目录：包卡片网格 + 工具清单 + 包内已安装实例表。颜色只用 tokens.css 语义变量。 */
+
+.mcp-catalog-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.mcp-package {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-subtle);
+}
+
+.mcp-package-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.mcp-package-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mcp-package-title h3 {
+  font-size: var(--fs-16);
+  line-height: 22px;
+}
+
+.mcp-package-id {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.mcp-package-summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  line-height: 20px;
+}
+
+.mcp-package-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mcp-package-version {
+  color: var(--text-primary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.mcp-package-transport {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+}
+
+.mcp-package-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.mcp-package-tools,
+.mcp-package-installs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mcp-tool-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-tool-list li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.mcp-tool-list code {
+  flex: none;
+  color: var(--accent);
+  font-size: var(--fs-12);
+}
+
+.mcp-tool-summary {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+  line-height: 18px;
+}
+
+.mcp-package-install-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.mcp-package-installs .table-tools {
+  padding-top: 0;
+}
+
+.mcp-package-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.mcp-package-reason {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--warning);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.mcp-package-foot .hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+
+/* 窄屏单据卡片：单列 + 内嵌实例表横向滚动由 DataTable 自行提示。 */
+@media (max-width: 720px) {
+  .mcp-catalog-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 已安装实例状态为 unknown/error 时的行内提示：引导点「刷新」加载工具。 */
+.cell-sub.mcp-refresh-hint {
+  color: var(--warning);
+}

@@ -192,6 +192,73 @@
   accent-color: var(--accent);
 }
 
+/* 令牌表单的上游授权：通配 `*` 与逐台上游分组，禁用态整体压暗。 */
+.upstream-grants {
+  display: grid;
+  gap: 8px;
+}
+
+.upstream-grant {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.upstream-grant[data-disabled='true'] {
+  opacity: 0.55;
+}
+
+.upstream-grant-head {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  font-weight: 600;
+  white-space: normal;
+}
+
+.upstream-grant-head:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.upstream-grant-value {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.upstream-grant .check-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.upstream-grant-hint {
+  margin: 0;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.check-item-stacked {
+  align-items: flex-start;
+}
+
+.check-item-stacked .cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.check-item-stacked .cell-sub {
+  font-size: 11px;
+  line-height: 14px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* 审计主体单元格：主体 ID 下一行展示 MCP 来源与 token_id，没有来源的事件显示破折号。 */
 .actor-cell {
   display: flex;

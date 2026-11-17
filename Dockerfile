@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# jumcp 生产镜像：Rust 后端（jumcp-server + jumcp-connector-clickhouse）+ Node 22 构建的管理台静态产物
+# jumcp 生产镜像：Rust 后端（jumcp-server + jumcp-connector-clickhouse + jumcp-mcp-clickhouse）+ Node 22 构建的管理台静态产物
 # + 最小 Debian 运行时。仅支持 linux/amd64（发布流水线与 smoke 校验都按该平台固定）。
 #
 # 管理台是薄前端：镜像只把 admin-web/dist 以同源静态资源（JUMCP_MCP_WEB_DIR=/app/web）与 API 一起提供。
@@ -21,9 +21,9 @@ COPY backend/crates ./crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
-    cargo build --release --locked -p jumcp-server -p jumcp-connector-clickhouse \
+    cargo build --release --locked -p jumcp-server -p jumcp-connector-clickhouse -p jumcp-mcp-clickhouse \
  && mkdir -p /out \
- && cp target/release/jumcp-server target/release/jumcp-connector-clickhouse /out/
+ && cp target/release/jumcp-server target/release/jumcp-connector-clickhouse target/release/jumcp-mcp-clickhouse /out/
 
 # ---------------------------------------------------------------------------- 管理台
 FROM ${NODE_IMAGE} AS web-builder
@@ -65,8 +65,9 @@ RUN apt-get update \
  && install -d -o 10001 -g 10001 -m 0755 /app /app/config /app/web \
  && install -d -o 10001 -g 10001 -m 0750 /data
 
-# 两个二进制放在同一目录：ConnectorExecutor 默认在可执行文件同目录查找 connector agent。
-COPY --from=backend-builder /out/jumcp-server /out/jumcp-connector-clickhouse /usr/local/bin/
+# 二进制放在同一目录：ConnectorExecutor 默认在可执行文件同目录查找 connector agent；
+# jumcp-mcp-clickhouse 是 clickhouse-basic 可安装包的可执行体（独立 MCP stdio server），也放这里便于挂载取用。
+COPY --from=backend-builder /out/jumcp-server /out/jumcp-connector-clickhouse /out/jumcp-mcp-clickhouse /usr/local/bin/
 COPY --from=web-builder /out/web /app/web
 COPY config/policy.toml /app/config/policy.toml
 

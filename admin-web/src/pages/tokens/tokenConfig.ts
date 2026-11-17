@@ -57,26 +57,13 @@ export function toggle(list: string[], value: string, checked: boolean): string[
 }
 
 /**
- * 上游工具名：每行一个 `<server_id>__<tool>`；trim、去空行、去重。
- * 非法行就地报错，调用方不得继续发请求。
+ * allowlist 通配名的显示文案：`*` → 全部工具，`<id>__*` → `<id> 全部工具`。
+ * 精确名返回 undefined，由调用方按原样或内置工具的 label 展示。
  */
-export function parseUpstreamToolNames(
-  raw: string,
-): { names: string[] } | { error: string } {
-  const names: string[] = []
-  const lines = raw.split('\n')
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? ''
-    if (line === '') continue
-    if (!/^[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$/.test(line)) {
-      return { error: `第 ${index + 1} 行不是 <server_id>__<tool> 形式：${line}` }
-    }
-    if (line.length > 64) {
-      return { error: `第 ${index + 1} 行超过 64 字符：${line}` }
-    }
-    if (!names.includes(line)) names.push(line)
-  }
-  return { names }
+export function wildcardToolLabel(name: string): string | undefined {
+  if (name === '*') return '全部工具'
+  if (name.endsWith('__*')) return `${name.slice(0, -3)} 全部工具`
+  return undefined
 }
 
 /** 409 表示令牌仍在生效：后端只允许删除已撤销 / 已过期记录，提示先撤销。 */
