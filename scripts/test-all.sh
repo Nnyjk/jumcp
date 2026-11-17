@@ -374,7 +374,11 @@ echo "==> e2e: admin token create + mcp tools/list filter"
 TOKEN_START="$(now_ms)"
 TOKEN_FILE="$TMP_DIR/token_create.json"
 TOKEN_BODY='{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data "$TOKEN_BODY" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
+# body 走临时文件而不是 argv：Windows 原生 curl.exe 会把含中文的 argv 按 ANSI 代码页（如 CP936）转码，
+# 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TMP_DIR 内随脚本清理。
+TOKEN_BODY_FILE="$TMP_DIR/token_create_body.json"
+printf '%s' "$TOKEN_BODY" >"$TOKEN_BODY_FILE"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data-binary "@$TOKEN_BODY_FILE" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
 if [ "$code" != "201" ]; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
   echo "POST /admin/tokens 期望 201，实际 $code"
