@@ -208,13 +208,19 @@ record "env: toolchain probe" "PASS" "0" "$ENV_LOG"
 cat "$ENV_LOG"
 
 # 2. 后端
-run_step "backend: cargo fmt --check" "$BACKEND_DIR" cargo fmt --check
-run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --all-targets -- -D warnings
-run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace
+run_step "backend: cargo fmt --all --check" "$BACKEND_DIR" cargo fmt --all --check
+run_step "backend: cargo clippy -D warnings" "$BACKEND_DIR" cargo clippy --workspace --all-targets --locked -- -D warnings
+run_step "backend: cargo test --workspace" "$BACKEND_DIR" cargo test --workspace --locked
 if [ -n "$CLICKHOUSE_DSN" ]; then
   cargo build --manifest-path "$BACKEND_DIR/Cargo.toml" -p jumcp-connector-clickhouse >/dev/null 2>&1 || true
-  run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace -- --ignored
+  run_step "backend: cargo test --ignored (真库)" "$BACKEND_DIR" cargo test --workspace --locked -- --ignored
 fi
+
+# 2.5 脚本（CI 的 scripts job 同款：语法 + 发布 tag 解析用例）
+for f in "$REPO_ROOT"/scripts/*.sh; do
+  run_step "scripts: bash -n $(basename "$f")" "$REPO_ROOT" bash -n "$f"
+done
+run_step "scripts: release tag resolution" "$REPO_ROOT" bash scripts/test-release-tags.sh
 
 # 3. 前端
 run_step "frontend: npm ci" "$WEB_DIR" npm ci
