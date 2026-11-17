@@ -385,7 +385,11 @@ try {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $tokenFile = Join-Path $script:TempDir 'token_create.json'
   $tokenBody = '{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"builtin_tools":["search_capabilities","describe_capability"],"source":"e2e","caller":"e2e-agent","expires_at":null}'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data $tokenBody "$base/admin/tokens" 2>$null | Out-String).Trim()
+  # body 走临时文件而不是 argv：Windows 原生 curl.exe 会把含中文的 argv 按 ANSI 代码页（如 CP936）转码，
+  # 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TempDir 内随脚本清理。
+  $tokenBodyFile = Join-Path $script:TempDir 'token_create_body.json'
+  [System.IO.File]::WriteAllText($tokenBodyFile, $tokenBody, [System.Text.UTF8Encoding]::new($false))
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data-binary "@$tokenBodyFile" "$base/admin/tokens" 2>$null | Out-String).Trim()
   if ($code -ne '201') {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens 期望 201，实际 {0}" -f $code)
