@@ -2,15 +2,19 @@ import { useState } from 'react'
 import type { ReviewQueueItem } from '../../api/types'
 import { Field } from '../../components/Field'
 import { Modal } from '../../components/Modal'
+import { noticeMessage } from '../../notice'
 
 export function RejectDialog({
   row,
   pending,
+  error,
   onClose,
   onSubmit,
 }: {
   row: ReviewQueueItem
   pending: boolean
+  /** 退回失败原因；弹层会盖住页面顶部 InfoBar，所以必须在这里展示。 */
+  error?: unknown
   onClose: () => void
   onSubmit: (reason: string) => void
 }) {
@@ -44,6 +48,7 @@ export function RejectDialog({
         className="create-form"
         onSubmit={(event) => {
           event.preventDefault()
+          if (pending) return
           if (reason.trim() === '') {
             setFormError('退回原因不能为空。')
             return
@@ -64,6 +69,11 @@ export function RejectDialog({
         {formError !== undefined && (
           <p className="inline-error" role="alert">
             {formError}
+          </p>
+        )}
+        {error !== undefined && (
+          <p className="inline-error" role="alert">
+            {noticeMessage(error, '退回失败')}
           </p>
         )}
       </form>

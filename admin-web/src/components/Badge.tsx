@@ -134,7 +134,7 @@ export function CategoryBadge({ category }: { category: string }) {
 export function UpstreamStatusBadge({ status }: { status: UpstreamStatus }) {
   return (
     <Badge tone={STATUS_TONE[status] ?? 'neutral'} dot title={status}>
-      {UPSTREAM_STATUS_LABEL[status]}
+      {UPSTREAM_STATUS_LABEL[status] ?? status}
     </Badge>
   )
 }

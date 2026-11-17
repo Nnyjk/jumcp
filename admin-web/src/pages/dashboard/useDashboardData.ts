@@ -114,6 +114,10 @@ export function useDashboardData(windowDays: number, autoRefresh: boolean) {
     ...(trendTemplateQuery.data?.events ?? []),
   ].filter((event) => isStructuredEvent(event))
   const trendPoints = aggregateDaily(trendEvents)
+  // latest-events 接口按 limit 截断：total 大于返回条数时，趋势图是下界而非全量。
+  const trendTruncated =
+    (trendToolQuery.data?.total ?? 0) + (trendTemplateQuery.data?.total ?? 0) >
+    (trendToolQuery.data?.events.length ?? 0) + (trendTemplateQuery.data?.events.length ?? 0)
   const trendPending = trendToolQuery.isPending || trendTemplateQuery.isPending
   const trendBothError = trendToolQuery.isError && trendTemplateQuery.isError
   const trendPartialError = trendToolQuery.isError || trendTemplateQuery.isError
@@ -145,6 +149,7 @@ export function useDashboardData(windowDays: number, autoRefresh: boolean) {
     failureTools,
     datasources,
     trendPoints,
+    trendTruncated,
     trendPending,
     trendBothError,
     trendPartialError,

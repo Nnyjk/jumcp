@@ -103,7 +103,8 @@ export function Pagination({
   limit: number
   onChange: (nextOffset: number) => void
 }) {
-  const from = total === 0 ? 0 : offset + 1
+  // offset 可能因数据变动落到总数之外（例如最后一页的记录被删除）：范围文案按总数钳制，避免出现「第 251–200 条」。
+  const from = total === 0 ? 0 : Math.min(offset + 1, total)
   const to = Math.min(offset + limit, total)
   const canPrev = offset > 0
   const canNext = offset + limit < total

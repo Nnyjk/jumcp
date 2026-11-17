@@ -26,3 +26,9 @@ export function noticeFromError(error: unknown, title: string): Notice {
     meta: undefined,
   }
 }
+
+/** 行内失败文案：description + 可选 meta；用于必须留在表单/弹层内的错误（页面顶部 InfoBar 会被弹层挡住）。 */
+export function noticeMessage(error: unknown, title: string): string {
+  const notice = noticeFromError(error, title)
+  return notice.meta === undefined ? notice.description : `${notice.description}（${notice.meta}）`
+}

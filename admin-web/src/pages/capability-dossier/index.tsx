@@ -245,7 +245,7 @@ export function CapabilityDossier({
               type="button"
               role="tab"
               id={`dossier-tab-${item.key}`}
-              aria-controls={`dossier-panel-${item.key}`}
+              aria-controls={effectiveTab === item.key ? `dossier-panel-${item.key}` : undefined}
               aria-selected={effectiveTab === item.key}
               tabIndex={effectiveTab === item.key ? 0 : -1}
               className="tab"
@@ -329,7 +329,7 @@ export function CapabilityDossier({
             </div>
           }
         >
-          <CallTable id={id} windowDays={windowDays} />
+          <CallTable key={windowDays} id={id} windowDays={windowDays} />
         </Card>
       )}
 
