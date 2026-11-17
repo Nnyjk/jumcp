@@ -11,6 +11,8 @@ async fn review_queue_lists_only_draft_and_review() {
         .submit_for_review("cap.review", "alice")
         .expect("submit");
     publish_capability(&h.store, "cap.published");
+    // successor 必须是真实存在的能力；用 published 以免污染只在 draft/review 的队列断言。
+    publish_capability(&h.store, "cap.next");
     h.store.deprecate("cap.published", "cap.next").expect("dep");
 
     let (status, body) = call(&h.app, Req::get("/admin/review-queue")).await;

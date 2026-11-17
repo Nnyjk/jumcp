@@ -691,8 +691,10 @@ fn clickhouse_external_functions_are_rejected() {
         "executable",
         "format",
         "input",
+        "cluster",
         "clusterAllReplicas",
         "distributed",
+        "merge",
         "zookeeper",
         "arrowFlight",
     ];
@@ -724,6 +726,30 @@ fn clickhouse_internal_table_functions_still_allowed() {
         validate(sql, Dialect::ClickHouse, &[])
             .unwrap_or_else(|error| panic!("期望通过，但被拒绝：{sql} -> {error:?}"));
     }
+}
+
+#[test]
+fn clickhouse_other_schema_table_functions_are_rejected() {
+    // cluster/merge 的目标库写在参数里，不是 AST 里的表引用，schema 白名单看不到它们。
+    for sql in [
+        "SELECT * FROM cluster('c', other_db.events)",
+        "SELECT * FROM cluster('c', 'other_db', 'events')",
+        "SELECT merge('other_db', '.*') FROM numbers(1)",
+    ] {
+        let error = reject(sql, Dialect::ClickHouse, &schemas(&["default"]));
+        assert_eq!(error.code, "MCP_SQL_REJECTED", "{sql}");
+        assert_eq!(reason(&error), "blacklisted_function", "{sql}");
+    }
+}
+
+#[test]
+fn clickhouse_table_named_like_dangerous_function_is_allowed() {
+    validate(
+        "SELECT * FROM default.merge",
+        Dialect::ClickHouse,
+        &schemas(&["default"]),
+    )
+    .unwrap_or_else(|error| panic!("无参数调用不是表函数，应通过：{error:?}"));
 }
 
 #[test]
