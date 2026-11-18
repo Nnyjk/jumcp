@@ -9,14 +9,14 @@
 //!
 //! 本文件放状态、路由表与鉴权/分页共享件；handler 按资源分到 `surface`（自身与审计读）、
 //! `capabilities`（能力读）、`writes`（状态流转与人工维护写）、`stats`、`tokens`、`groups`、
-//! `upstreams`、`packages`（可安装包的目录/安装/卸载）。
+//! `upstreams`、`packages`（内置包目录、安装与配置编辑）。
 
 use crate::service::Service;
 use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use jumcp_core::access::{AccessTokenRecord, NewAccessToken};
@@ -32,6 +32,7 @@ use jumcp_core::registry::{
     McpUpstream, RESIDENT_CAPABILITY_IDS, STATUSES, UPSTREAM_TOOL_GROUP_MAX, UpstreamToolGroup,
     is_builtin_id,
 };
+use jumcp_core::secret::SecretKey;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -43,18 +44,20 @@ mod packages;
 mod stats;
 mod surface;
 mod tokens;
+mod transport;
 mod upstreams;
 mod writes;
 
 use self::capabilities::{capabilities, capability_detail, capability_versions};
 use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
-use self::packages::{install_package, list_catalog, uninstall_package};
+use self::packages::{install_package, list_catalog, uninstall_package, update_package_config};
 use self::stats::{tool_calls, tool_stats};
 pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
 use self::tokens::{
     create_token, delete_token, list_tokens, reissue_token, revoke_token, token_options,
 };
+use self::transport::get_transport_key;
 use self::upstreams::{
     create_upstream, delete_upstream, get_upstream, list_upstreams, refresh_upstream,
     set_upstream_basic_tools, update_upstream, upstream_tools,
@@ -86,6 +89,9 @@ pub struct AdminState {
     pub service: Arc<Service>,
     pub store: Arc<CapabilityStore>,
     pub tokens: AdminTokens,
+    /// 传输密钥（`JUMCP_TRANSPORT_KEY`）：安装/PATCH 解密 secret 字段用，
+    /// 也经 `GET /admin/transport-key` 下发给管理台。
+    pub transport_key: Option<SecretKey>,
 }
 
 /// 鉴权中间件派生出的管理主体：后续 handler 只用它，不读 `X-Admin-Actor` 做身份。
@@ -125,10 +131,15 @@ pub fn router(state: AdminState) -> Router {
         .route("/upstreams/{id}/tools", get(upstream_tools))
         .route("/upstreams/{id}/tools/basic", put(set_upstream_basic_tools))
         .route("/mcp/catalog", get(list_catalog))
+        .route("/transport-key", get(get_transport_key))
         .route("/mcp/catalog/{id}/install", post(install_package))
         .route(
             "/mcp/catalog/{id}/install/{upstream_id}",
             delete(uninstall_package),
+        )
+        .route(
+            "/mcp/catalog/{id}/install/{upstream_id}/config",
+            patch(update_package_config),
         )
         .route("/capabilities/{id}/submit", post(submit))
         .route("/capabilities/{id}/publish", post(publish))
@@ -167,13 +178,17 @@ fn status_for(code: &str) -> StatusCode {
         | "MCP_SCHEMA_OUT_OF_SCOPE"
         | "MCP_UPSTREAM_INVALID"
         | "MCP_UPSTREAM_WRITE_FORBIDDEN"
-        | "MCP_UPSTREAM_BINARY_MISSING"
-        | "MCP_UPSTREAM_STDIO_DISABLED" => StatusCode::BAD_REQUEST,
+        | "MCP_UPSTREAM_STDIO_DISABLED"
+        | "MCP_TRANSPORT_CIPHERTEXT_REQUIRED"
+        | "MCP_TRANSPORT_DECRYPT_FAILED" => StatusCode::BAD_REQUEST,
+        // 传输密钥/内置端点缺失是部署状态问题（HTTP 模式启动期已 fail-closed）。
+        "MCP_TRANSPORT_KEY_MISSING" | "MCP_BUILTIN_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
         "MCP_STATE_TRANSITION_INVALID" | "MCP_VERSION_CONFLICT" | "MCP_BUILTIN_IMMUTABLE" => {
             StatusCode::CONFLICT
         }
         "MCP_GROUP_CONFLICT" | "MCP_GROUP_RESERVED" | "MCP_GROUP_IN_USE" => StatusCode::CONFLICT,
         "MCP_UPSTREAM_CONFLICT"
+        | "MCP_UPSTREAM_PACKAGE_MANAGED"
         | "MCP_UPSTREAM_TOOL_UNKNOWN"
         | "MCP_UPSTREAM_TOOL_NOT_READ_ONLY"
         | "MCP_UPSTREAM_TOOL_NOT_ELIGIBLE" => StatusCode::CONFLICT,
@@ -359,7 +374,12 @@ pub fn routes() -> Vec<(&'static str, &'static str)> {
         ("GET", "/admin/upstreams/{id}/tools"),
         ("PUT", "/admin/upstreams/{id}/tools/basic"),
         ("GET", "/admin/mcp/catalog"),
+        ("GET", "/admin/transport-key"),
         ("POST", "/admin/mcp/catalog/{id}/install"),
         ("DELETE", "/admin/mcp/catalog/{id}/install/{upstream_id}"),
+        (
+            "PATCH",
+            "/admin/mcp/catalog/{id}/install/{upstream_id}/config",
+        ),
     ]
 }

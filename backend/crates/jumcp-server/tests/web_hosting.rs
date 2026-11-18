@@ -15,7 +15,17 @@ fn bin() -> Command {
         .env_remove("JUMCP_AGENT_TOKENS")
         .env_remove("JUMCP_MCP_UPSTREAM_STDIO")
         .env_remove("JUMCP_MCP_ALLOW_WRITE_UPSTREAM")
+        .env_remove("JUMCP_TRANSPORT_KEY")
         .env("JUMCP_MCP_TRANSPORT", "streamable-http")
+        // HTTP 模式 fail-closed：没有密钥连静态目录校验都不会走到。
+        .env(
+            "JUMCP_SECRET_KEY",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .env(
+            "JUMCP_TRANSPORT_KEY",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        )
         .env("JUMCP_MCP_CONFIG_FILE", "nonexistent/policy.toml");
     cmd
 }

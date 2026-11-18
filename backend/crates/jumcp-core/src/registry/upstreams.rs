@@ -57,7 +57,7 @@ pub struct McpUpstream {
     pub read_only: bool,
     pub enabled: bool,
     pub timeout_ms: i64,
-    /// 安装来源：可安装包的 id（`None` = 手工创建）。安装语义只读这两列，运行时一律按普通上游。
+    /// 安装来源：内置包的 id（`None` = 手工创建）。安装语义只读这两列，运行时一律按普通上游。
     pub catalog_id: Option<String>,
     /// 安装来源的包版本：管理台据此提示"包已升级、可重装"。
     pub catalog_version: Option<String>,
@@ -285,8 +285,8 @@ impl McpUpstream {
             "url": if self.url.is_empty() { Value::Null } else { json!(self.url) },
             "command": if self.command.is_empty() { Value::Null } else { json!(self.command) },
             "args": self.args,
-            "env": masked_map(&self.env),
-            "headers": masked_map(&self.headers),
+            "env": masked_map(&self.env, &[]),
+            "headers": masked_map(&self.headers, &[]),
             "group": self.group,
             "category": self.category,
             "read_only": self.read_only,
@@ -324,6 +324,10 @@ impl McpUpstream {
 }
 
 /// 密钥键判定：命中即把字面值脱敏；`env:NAME` 是引用而非密钥，原样保留。
+/// 键名兜底：手工上游没有字段声明，headers 也没有 `secret` 位，只能按名字识别。
+///
+/// 内置包的 env 由 [`masked_map`] 的显式集合（`BuiltinField.secret`）决定，不依赖这里——
+/// `JUMCP_FOO_KEY` 这类不含敏感字样的名字也能正确脱敏。
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     [
@@ -341,18 +345,19 @@ fn is_secret_key(key: &str) -> bool {
     .any(|needle| key.contains(needle))
 }
 
-fn mask_value(key: &str, value: &str) -> Value {
-    if value.starts_with("env:") || !is_secret_key(key) {
+fn mask_value(key: &str, value: &str, secret_envs: &[&str]) -> Value {
+    let declared_secret = secret_envs.contains(&key);
+    if value.starts_with("env:") || (!declared_secret && !is_secret_key(key)) {
         json!(value)
     } else {
         json!("***")
     }
 }
 
-fn masked_map(map: &std::collections::BTreeMap<String, String>) -> Value {
+fn masked_map(map: &std::collections::BTreeMap<String, String>, secret_envs: &[&str]) -> Value {
     let mut out = serde_json::Map::new();
     for (key, value) in map {
-        out.insert(key.clone(), mask_value(key, value));
+        out.insert(key.clone(), mask_value(key, value, secret_envs));
     }
     Value::Object(out)
 }
@@ -362,6 +367,7 @@ fn secret_map_changes(
     field: &str,
     before: &std::collections::BTreeMap<String, String>,
     after: &std::collections::BTreeMap<String, String>,
+    secret_envs: &[&str],
 ) -> Option<Value> {
     let changed: Vec<&String> = before
         .keys()
@@ -375,14 +381,14 @@ fn secret_map_changes(
     }
     Some(json!({
         "field": field,
-        "before": masked_map(before),
-        "after": masked_map(after),
+        "before": masked_map(before, secret_envs),
+        "after": masked_map(after, secret_envs),
         "changed_keys": changed
     }))
 }
 
 /// 上游配置的真实变更（新建/删除时一侧为空对象）；密钥值永远不进审计。
-fn upstream_changes(before: &McpUpstream, after: &McpUpstream) -> Vec<Value> {
+fn upstream_changes(before: &McpUpstream, after: &McpUpstream, secret_envs: &[&str]) -> Vec<Value> {
     let mut out = field_changes(
         &before.to_public_value(),
         &after.to_public_value(),
@@ -392,7 +398,7 @@ fn upstream_changes(before: &McpUpstream, after: &McpUpstream) -> Vec<Value> {
         ("env", &before.env, &after.env),
         ("headers", &before.headers, &after.headers),
     ] {
-        if let Some(change) = secret_map_changes(field, old, new) {
+        if let Some(change) = secret_map_changes(field, old, new, secret_envs) {
             out.push(change);
         }
     }
@@ -463,6 +469,7 @@ impl CapabilityStore {
     pub fn insert_upstream(
         &self,
         upstream: &McpUpstream,
+        secret_envs: &[&str],
         actor: impl IntoAuditOrigin,
     ) -> Result<McpUpstream, McpError> {
         let origin = actor.into_audit_origin();
@@ -510,7 +517,7 @@ impl CapabilityStore {
         self.write_admin_audit(
             AdminChange::new("upstream", &created.id, "create")
                 .with_origin(origin)
-                .with_changes(upstream_changes(&empty_upstream(), &created))
+                .with_changes(upstream_changes(&empty_upstream(), &created, secret_envs))
                 .with_data(created.audit_data()),
         )?;
         Ok(created)
@@ -523,12 +530,13 @@ impl CapabilityStore {
     pub fn update_upstream(
         &self,
         upstream: &McpUpstream,
+        secret_envs: &[&str],
         actor: impl IntoAuditOrigin,
     ) -> Result<McpUpstream, McpError> {
         let origin = actor.into_audit_origin();
         upstream.validate()?;
         let before = self.require_upstream(&upstream.id)?;
-        let changes = upstream_changes(&before, upstream);
+        let changes = upstream_changes(&before, upstream, secret_envs);
         if changes.is_empty() {
             return Ok(before);
         }
@@ -593,7 +601,7 @@ impl CapabilityStore {
         self.write_admin_audit(
             AdminChange::new("upstream", id, "delete")
                 .with_origin(origin)
-                .with_changes(upstream_changes(&before, &empty_upstream()))
+                .with_changes(upstream_changes(&before, &empty_upstream(), &[]))
                 .with_data(before.audit_data()),
         )
     }

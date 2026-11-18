@@ -271,6 +271,10 @@ try {
     JUMCP_MCP_AUDIT_PATH    = (Join-Path $script:TempDir 'audit.sqlite3')
     JUMCP_ADMIN_TOKENS      = $AdminTokens
     JUMCP_AGENT_TOKENS      = $AgentTokens
+    # 测试固定密钥：HTTP 模式缺它会拒绝启动。
+    JUMCP_SECRET_KEY        = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    # 传输密钥（与落库密钥用途分离）：仅本地测试用，生产必须 `openssl rand -hex 32`。
+    JUMCP_TRANSPORT_KEY     = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
   }
   foreach ($k in $vars.Keys) {
     $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')

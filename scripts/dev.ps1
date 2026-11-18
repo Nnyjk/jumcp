@@ -213,10 +213,10 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   $exeName = 'jumcp-server'
   if ($env:OS -eq 'Windows_NT') { $exeName = 'jumcp-server.exe' }
   $serverBin = Join-Path $BackendDir ("target/debug/$exeName")
-  Write-Host '==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse（增量构建，避免运行过期二进制）'
+  Write-Host '==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse（增量构建，避免运行过期二进制）'
   Push-Location $BackendDir
   $buildCode = 1
-  try { & cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse; $buildCode = $LASTEXITCODE } finally { Pop-Location }
+  try { & cargo build --bin jumcp-server --bin jumcp-connector-clickhouse; $buildCode = $LASTEXITCODE } finally { Pop-Location }
   if ($buildCode -ne 0) {
     Write-Host ("后端构建失败（cargo build 退出码 {0}）" -f $buildCode) -ForegroundColor Red
     exit 1
@@ -236,6 +236,11 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   $backendEnv['JUMCP_MCP_AUDIT_PATH'] = (Join-Path $DataDir 'audit.sqlite3')
   $backendEnv['JUMCP_ADMIN_TOKENS'] = $AdminTokens
   $backendEnv['JUMCP_AGENT_TOKENS'] = $AgentTokens
+  # 本地开发用固定密钥：HTTP 模式缺它会拒绝启动（密码字段加密用）。
+  $backendEnv['JUMCP_SECRET_KEY'] = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  # 传输密钥（与落库密钥用途分离）：管理台在浏览器里用它加密 secret 字段。
+  # 固定值仅供本地开发，生产必须用 `openssl rand -hex 32` 生成并通过 secret 注入。
+  $backendEnv['JUMCP_TRANSPORT_KEY'] = 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
 
   $saved = @{}
   foreach ($k in $backendEnv.Keys) {

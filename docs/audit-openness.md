@@ -71,7 +71,7 @@
 | `deprecate` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `reject` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `group_create` / `group_update` / `group_delete` | `group{name,priority,min_budget,roles}` |
-| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`enabled`；由可安装包创建时另含 `catalog_id`、`catalog_version` |
+| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`enabled`；由内置包安装时另含 `catalog_id`、`catalog_version` |
 | `refresh`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`tool_count`、`status`；失败时事件顶层另有 `error_code`/`error_message` |
 | `update_tool_groups`（`object_type="upstream"`） | `basic_total` |
 | `token_create` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`；**绝不含明文 token 或 hash** |

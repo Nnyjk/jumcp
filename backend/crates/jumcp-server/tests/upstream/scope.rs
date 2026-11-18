@@ -374,7 +374,7 @@ async fn write_upstream_rows_are_hidden_when_deployment_forbids_writes() {
         created_at: String::new(),
         updated_at: String::new(),
     };
-    h.store.insert_upstream(&def, "alice").expect("insert");
+    h.store.insert_upstream(&def, &[], "alice").expect("insert");
     let token = issue_token(
         &h,
         "agent-write-gate",

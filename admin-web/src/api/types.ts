@@ -667,7 +667,7 @@ export interface UpdatedBasicTools {
 /* ----------------------------- MCP 安装目录 ------------------------------ */
 
 /** 目录表单字段的控件类型；password 只用于输入，任何响应都不回显。 */
-export type McpCatalogFieldKind = 'text' | 'password' | 'number'
+export type McpCatalogFieldKind = 'text' | 'password'
 
 /**
  * GET /admin/mcp/catalog 包定义里的一个安装字段。
@@ -690,33 +690,33 @@ export interface McpCatalogTool {
   summary: string
 }
 
-/** 已安装实例：upstream_id 即 /admin/upstreams/{id} 的 id。 */
+/**
+ * 已安装实例：`upstream_id` 即 /admin/upstreams/{id} 的 id。
+ * `config` 只含非密字段的当前值；密字段只暴露是否已写入（`secrets_set`），值本身任何响应都不回显。
+ */
 export interface McpCatalogInstallation {
   upstream_id: string
   name: string
-  enabled: boolean
   group: string
-  status: UpstreamStatus
-  /** 探测结论；正常时可能为 null。 */
-  status_message: string | null
-  tool_count: number
+  enabled: boolean
+  transport: 'http'
+  url: string
+  config: Record<string, string>
+  secrets_set: Record<string, boolean>
   /** 安装时的包版本；与包当前 version 不一致即需要重装/核对。 */
   catalog_version: string
+  created_at: string
   updated_at: string
 }
 
-/** GET /admin/mcp/catalog 的单个安装包。 */
+/** GET /admin/mcp/catalog 的单个安装包；内置包一律以 http 传输接入。 */
 export interface McpCatalogEntry {
   id: string
   name: string
   summary: string
   version: string
   tags: string[]
-  transport: UpstreamTransport
-  /** true 表示需要后端开启 stdio 且可执行文件就位才能安装。 */
-  requires_stdio: boolean
-  stdio_enabled: boolean
-  binary_present: boolean
+  transport: 'http'
   default_upstream_id: string
   fields: McpCatalogField[]
   tools: McpCatalogTool[]
@@ -745,7 +745,26 @@ export interface McpInstallResult {
   upstream: UpstreamItem
 }
 
+/**
+ * PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config 的 body。
+ * 非密字段全量提交（空串表示清空）；密字段只提交本次输入，缺键表示保持原值。
+ */
+export interface McpInstallConfigInput {
+  config: Record<string, string>
+}
+
 /** DELETE /admin/mcp/catalog/{id}/install/{upstream_id} 的 200 响应。 */
 export interface DeletedMcpInstallation {
   deleted: boolean
+}
+
+/* ---------------------------- 传输加密密钥 ------------------------------ */
+
+/**
+ * GET /admin/transport-key：浏览器做密码字段传输加密用的密钥。
+ * `key` 是 32 字节的 64 位小写 hex；只在内存中使用，不落任何 Web Storage。
+ */
+export interface TransportKey {
+  algorithm: 'AES-256-GCM'
+  key: string
 }

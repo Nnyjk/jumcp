@@ -344,17 +344,12 @@ pub(crate) fn group_token_count_locked(conn: &Connection, name: &str) -> Result<
     Ok(count)
 }
 
-fn random_hex(len: usize) -> String {
-    let mut out = String::new();
-    while out.len() < len {
-        out.push_str(&uuid::Uuid::new_v4().simple().to_string());
-    }
-    out.truncate(len);
-    out
-}
-
+/// 令牌 id：`tok_` + 16 位 hex（8 字节随机）；与明文 token 共用同一个随机源。
 fn new_token_id() -> String {
-    format!("tok_{}", random_hex(16))
+    format!(
+        "tok_{}",
+        crate::secret::random_hex(8).expect("系统随机源不可用")
+    )
 }
 
 fn display_prefix(token: &str) -> String {
@@ -381,7 +376,10 @@ impl CapabilityStore {
     ) -> Result<IssuedAccessToken, McpError> {
         self.audit_required("审计未启用，令牌写入拒绝")?;
         new.validate()?;
-        let token = format!("{TOKEN_PLAINTEXT_PREFIX}{}", random_hex(64));
+        let token = format!(
+            "{TOKEN_PLAINTEXT_PREFIX}{}",
+            crate::secret::random_hex(32).expect("系统随机源不可用")
+        );
         let hash = sha256_hex(&token);
         let prefix = display_prefix(&token);
         let created_at = now_iso();
@@ -489,7 +487,10 @@ impl CapabilityStore {
                 }),
             ));
         }
-        let token = format!("{TOKEN_PLAINTEXT_PREFIX}{}", random_hex(64));
+        let token = format!(
+            "{TOKEN_PLAINTEXT_PREFIX}{}",
+            crate::secret::random_hex(32).expect("系统随机源不可用")
+        );
         let hash = sha256_hex(&token);
         let prefix = display_prefix(&token);
         {

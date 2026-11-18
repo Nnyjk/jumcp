@@ -121,6 +121,7 @@ pub(crate) fn harness() -> Harness {
         service: service.clone(),
         store: store.clone(),
         tokens: settings().admin_tokens,
+        transport_key: Some(crate::support::transport_key()),
     };
     let app = jumcp_server::admin::router(admin)
         .merge(http_router(Arc::new(McpServer::from_arc(service))));

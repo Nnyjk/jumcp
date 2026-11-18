@@ -24,10 +24,15 @@ services:
       JUMCP_ADMIN_TOKENS: ${JUMCP_ADMIN_TOKENS:?必须设置 JUMCP_ADMIN_TOKENS（格式 id:token,id:token，token 至少 16 位）}
       # 可选：`agent_id:role:token`，只在 access_tokens 表为空时一次性导入（引导用），表非空后不再生效。
       JUMCP_AGENT_TOKENS: ${JUMCP_AGENT_TOKENS:-}
-      # 可安装 MCP 包（clickhouse-basic）安装出来的是 stdio 上游，必须打开 stdio 才能安装：
-      # 设为 0 时 /admin/mcp/catalog 的安装请求会 400（MCP_UPSTREAM_STDIO_DISABLED）。
-      # 默认 1 让部署开箱即可安装；不想让容器能拉起子进程的部署显式设为 0。
-      JUMCP_MCP_UPSTREAM_STDIO: ${JUMCP_MCP_UPSTREAM_STDIO:-1}
+      # 必填：64 位 hex（32 字节），用于加密内置包配置里的密码类字段。
+      # 缺省/非法时 HTTP 模式拒绝启动；生成方式：openssl rand -hex 32。
+      # 轮换后旧密文不可解，需在管理台重填密码。
+      JUMCP_SECRET_KEY: ${JUMCP_SECRET_KEY:?JUMCP_SECRET_KEY 必须提供 64 位 hex}
+      # 必填：64 位 hex（32 字节）的传输密钥，与 JUMCP_SECRET_KEY 用途分离——
+      # 管理台用它加密 secret 字段的请求体，服务端用它解密后再用 JUMCP_SECRET_KEY 落库。
+      # 缺省/非法时 HTTP 模式拒绝启动；生成方式：openssl rand -hex 32。
+      # 轮换后未重新提交的旧密文只影响传输层（落库密文仍可解），页面刷新重新加密即可。
+      JUMCP_TRANSPORT_KEY: ${JUMCP_TRANSPORT_KEY:?JUMCP_TRANSPORT_KEY 必须提供 64 位 hex（生成方式：openssl rand -hex 32）}
       RUST_LOG: ${RUST_LOG:-info}
 
     ports:
@@ -39,15 +44,9 @@ services:
 
     volumes:
       # 安装产物（上游行，含 catalog_id/catalog_version）、令牌、审计全部落在这两个 SQLite
-      # （/data/registry.sqlite3 与 /data/audit.sqlite3）里，因此不需要额外卷；
-      # 镜像已内置 jumcp-mcp-clickhouse（/usr/local/bin，与 jumcp-server 同目录），也不需要挂二进制。
+      # （/data/registry.sqlite3 与 /data/audit.sqlite3）里，因此不需要额外卷。
+      # 内置 MCP 包编译进 jumcp-server，不存在需要挂载的可执行文件。
       - jumcp-data:/data
-
-      # 可选（默认注释掉，不影响 `docker stack config` 解析）：不重建镜像就替换/追加 MCP 可执行文件。
-      # 启用时取消下面这一行的注释，并在 environment 里加 `JUMCP_MCP_BUNDLED_BIN_DIR: /opt/jumcp/bin`：
-      # - /opt/jumcp/bin:/opt/jumcp/bin:ro
-      # 该目录里找不到同名文件时会回落到 /usr/local/bin（服务可执行文件同目录），
-      # 所以挂一个空目录不会破坏镜像内置的 clickhouse-basic 可执行体。
 
     stop_grace_period: 30s
 

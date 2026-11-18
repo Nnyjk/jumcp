@@ -894,3 +894,50 @@ fn tool_allowlist_matches_wildcards_and_exact_names() {
     // 历史数据里的非法条目按精确匹配处理，不得变成"命中一切"。
     assert!(!tool_allowlist_matches("a__b__*", "a__b__query"));
 }
+
+/// 显式 secret 集合必须能脱敏"名字不像密钥"的 env（内置包字段声明才是权威）。
+#[test]
+fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
+    let audit = std::sync::Arc::new(crate::audit::AuditLog::open(":memory:").expect("audit"));
+    let store = CapabilityStore::open(":memory:", Some(audit.clone())).expect("store");
+    let sealed = "enc:v1:00112233445566778899aabbccddeeff";
+    let upstream = McpUpstream {
+        id: "foo".into(),
+        name: "foo".into(),
+        transport: "http".into(),
+        url: "http://127.0.0.1:8123/mcp".into(),
+        command: String::new(),
+        args: Vec::new(),
+        env: std::collections::BTreeMap::from([("JUMCP_FOO_KEY".to_string(), sealed.to_string())]),
+        headers: std::collections::BTreeMap::new(),
+        group: "db.read.core".into(),
+        category: "custom".into(),
+        read_only: true,
+        enabled: true,
+        timeout_ms: 30_000,
+        catalog_id: None,
+        catalog_version: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    store
+        .insert_upstream(&upstream, &["JUMCP_FOO_KEY"], "alice")
+        .expect("insert");
+
+    let events = audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .expect("query");
+    let create = events
+        .iter()
+        .find(|event| event.payload["action"] == json!("create"))
+        .expect("create event");
+    let serialized = serde_json::to_string(&create.payload).expect("json");
+    assert!(!serialized.contains(sealed), "审计泄漏密文: {serialized}");
+    let env_change = create.payload["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .find(|change| change["field"] == json!("env"))
+        .expect("env change");
+    assert_eq!(env_change["after"]["JUMCP_FOO_KEY"], json!("***"));
+}

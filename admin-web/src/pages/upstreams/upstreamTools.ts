@@ -1,5 +1,11 @@
 import { ApiError } from '../../api/client'
-import type { UpstreamCategory, UpstreamInput, UpstreamItem, UpstreamToolItem } from '../../api/types'
+import type {
+  McpCatalogField,
+  UpstreamCategory,
+  UpstreamInput,
+  UpstreamItem,
+  UpstreamToolItem,
+} from '../../api/types'
 import { DASH } from '../../format'
 import { noticeFromError, type Notice } from '../../notice'
 
@@ -106,4 +112,9 @@ export function basicSaveError(error: unknown): Notice {
     return base
   }
   return { ...base, description: `${base.description}（未知工具：${unknown.join('、')}）` }
+}
+
+/** 密文字段只认后端下发的 `secret === true`：字段 kind 不参与判定。 */
+export function isSecretField(field: McpCatalogField): boolean {
+  return field.secret === true
 }

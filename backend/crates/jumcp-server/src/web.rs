@@ -19,7 +19,7 @@ use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 /// 后端既有路由前缀：这些路径空间永不回退到 SPA。
-const API_PREFIXES: &[&str] = &["/admin", "/mcp", "/health"];
+const API_PREFIXES: &[&str] = &["/admin", "/mcp", "/health", "/internal"];
 
 /// 带内容哈希的构建产物（Vite 写进 `assets/`）：内容变了文件名就变，可以长期缓存。
 const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";

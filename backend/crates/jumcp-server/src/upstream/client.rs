@@ -3,6 +3,7 @@
 use super::http::HttpTransport;
 use super::stdio::StdioTransport;
 use super::{MCP_PROTOCOL_VERSION, UpstreamFailure};
+use crate::builtin::BuiltinEndpoint;
 use jumcp_core::registry::{McpUpstream, UpstreamTool};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -24,12 +25,13 @@ impl UpstreamClient {
     pub(super) async fn connect(
         http: reqwest::Client,
         def: &McpUpstream,
+        builtin: Option<&BuiltinEndpoint>,
     ) -> Result<Self, UpstreamFailure> {
         // env 的 `env:NAME` 引用对两种传输都在建连时解析：http 不使用 env，但写错的引用
         // 仍然要显式失败（静默忽略会让配置错误在切换传输后才暴露）。
         let env = resolve_refs(&def.id, "env", &def.env)?;
         let mut transport = match def.transport.as_str() {
-            "http" => Transport::Http(Box::new(HttpTransport::new(http, def)?)),
+            "http" => Transport::Http(Box::new(HttpTransport::new(http, def, builtin)?)),
             _ => Transport::Stdio(Box::new(StdioTransport::spawn(def, env).await?)),
         };
         transport.initialize(def).await?;

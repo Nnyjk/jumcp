@@ -12,7 +12,6 @@ export type IconName =
   | 'groups'
   | 'key'
   | 'link'
-  | 'install'
   | 'sun'
   | 'moon'
   | 'monitor'
@@ -135,13 +134,6 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M10.2 13.8a4 4 0 0 0 5.6 0l2.7-2.7a4 4 0 0 0-5.6-5.6l-1.3 1.3" />
       <path d="M13.8 10.2a4 4 0 0 0-5.6 0l-2.7 2.7a4 4 0 0 0 5.6 5.6l1.3-1.3" />
-    </>
-  ),
-  install: (
-    <>
-      <path d="M12 3.8v9.6" />
-      <path d="m8.4 10 3.6 3.6 3.6-3.6" />
-      <path d="M4.6 17v1.6a1.8 1.8 0 0 0 1.8 1.8h11.2a1.8 1.8 0 0 0 1.8-1.8V17" />
     </>
   ),
 }

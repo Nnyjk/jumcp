@@ -11,14 +11,10 @@ use std::sync::Mutex;
 
 mod groups;
 mod lifecycle;
-mod packages;
 mod record;
 mod upstreams;
 
 pub use groups::ManagedGroup;
-pub use packages::{
-    FieldKind, InstallableField, InstallablePackage, InstallableTool, catalog, package,
-};
 pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,
 };
@@ -147,7 +143,7 @@ CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
             ("capability_versions", "status"),
             // 管理组：`groups.name` 存组 code，展示名单独一列。
             ("groups", "display_name"),
-            // 可安装包安装出来的上游带包坐标；空串 = 手工创建的上游。
+            // 内置包安装出来的上游带包坐标；空串 = 手工创建的上游。
             ("mcp_upstreams", "catalog_id"),
             ("mcp_upstreams", "catalog_version"),
         ] {

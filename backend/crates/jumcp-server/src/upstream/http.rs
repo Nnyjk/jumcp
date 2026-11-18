@@ -2,6 +2,7 @@
 
 use super::UpstreamFailure;
 use super::client::{next_request_id, resolve_refs, rpc_result};
+use crate::builtin::BuiltinEndpoint;
 use jumcp_core::registry::McpUpstream;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -33,7 +34,11 @@ pub(super) struct HttpTransport {
 }
 
 impl HttpTransport {
-    pub(super) fn new(client: reqwest::Client, def: &McpUpstream) -> Result<Self, UpstreamFailure> {
+    pub(super) fn new(
+        client: reqwest::Client,
+        def: &McpUpstream,
+        builtin: Option<&BuiltinEndpoint>,
+    ) -> Result<Self, UpstreamFailure> {
         let url = reqwest::Url::parse(&def.url).map_err(|_| {
             UpstreamFailure::error(&def.id, "MCP_UPSTREAM_INVALID", "url 不是合法的绝对地址")
         })?;
@@ -51,11 +56,20 @@ impl HttpTransport {
                 "url 不允许携带 userinfo",
             ));
         }
+        let mut headers = resolve_refs(&def.id, "headers", &def.headers)?;
+        // 内置端点只认进程内 token：用户配置的 Authorization 在这里被覆盖（否则安装产物
+        // 的管理者就能自行填一个"看起来像鉴权"的 header 而实际挡住真实凭据）。
+        if let Some(builtin) = builtin.filter(|builtin| builtin.matches(&def.url)) {
+            headers.insert(
+                "authorization".to_string(),
+                format!("Bearer {}", builtin.token),
+            );
+        }
         Ok(Self {
             client,
             upstream_id: def.id.clone(),
             url,
-            headers: resolve_refs(&def.id, "headers", &def.headers)?,
+            headers,
             session: AsyncMutex::new(None),
             timeout: Duration::from_millis(def.timeout_ms as u64),
         })
