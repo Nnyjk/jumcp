@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # 一键启动本地开发环境：后端（streamable-http）+ 前端（Vite dev）。
 #
-# 用法：scripts/dev.sh [--backend-port 8000] [--web-port 5173] [--clickhouse-dsn <dsn>] [--reset-data] [--no-web]
-#   --backend-port  后端 HTTP 端口（默认 8000）
+# 用法：scripts/dev.sh [--backend-port 8000] [--admin-port 8080] [--web-port 5173] [--clickhouse-dsn <dsn>] [--reset-data] [--no-web]
+#   --backend-port  后端 MCP 面端口（默认 8000）
+#   --admin-port    后端管理面端口（默认 8080，必须与 MCP 面不同）
 #   --web-port      前端 Vite 端口（默认 5173，被占用时自动 +1 顺延）
 #   --clickhouse-dsn 可选。给了就生成 .dev-data/policy.toml（追加 dev-clickhouse 数据源）并注入 JUMCP_DEV_CLICKHOUSE_DSN；
 #                   形如 http://<user>:<password>@<host>:<port>，凭证只经环境变量传递
 #   --reset-data    启动前清空 .dev-data/（默认保留，便于连续试用）
 #   --no-web        只起后端
 #
+# 两个监听面（不能相同）：MCP 面挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面挂 `/admin/*` 与管理台静态站。
+# 管理台自带登录页：浏览器打开前端地址，在登录页里输入管理面 token（本脚本的 alice/bob）即可，前端不读任何 token 环境变量。
+# 前端代理目标：管理面走 JUMCP_DEV_ADMIN_TARGET（默认 http://127.0.0.1:8080），MCP 面走 JUMCP_DEV_API_TARGET（默认 http://127.0.0.1:8000），
+# 两者都只存在于 Node 进程环境。
+#
 # Ctrl+C 会同时停掉前后端（POSIX 用进程组，Windows 用 taskkill /T）；日志在 .dev-data/logs/。
-# 前端代理目标用 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 JUMCP_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
 
 set -uo pipefail
 # 作业控制：后台子进程各自成组，Ctrl+C 时能按进程组整体收掉
@@ -31,6 +36,7 @@ ALICE_TOKEN="tok_alice_000000000"
 BOB_TOKEN="tok_bob_00000000000"
 
 BACKEND_PORT=8000
+ADMIN_PORT=8080
 WEB_PORT=5173
 # 监听地址：后端跟随 JUMCP_MCP_HOST（默认 0.0.0.0），前端固定 0.0.0.0（本机访问仍用 127.0.0.1）
 BACKEND_HOST="${JUMCP_MCP_HOST:-0.0.0.0}"
@@ -40,13 +46,15 @@ RESET_DATA=0
 NO_WEB=0
 
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend-port) shift; BACKEND_PORT="${1:-}" ;;
     --backend-port=*) BACKEND_PORT="${1#*=}" ;;
+    --admin-port) shift; ADMIN_PORT="${1:-}" ;;
+    --admin-port=*) ADMIN_PORT="${1#*=}" ;;
     --web-port) shift; WEB_PORT="${1:-}" ;;
     --web-port=*) WEB_PORT="${1#*=}" ;;
     --clickhouse-dsn) shift; CLICKHOUSE_DSN="${1:-}" ;;
@@ -196,16 +204,21 @@ fi
 # 后端
 # 1) 端口守卫：端口已有监听者说明多半是上一次遗留的旧后端；它会让新进程 bind 失败，
 #    而 /health 又会命中旧进程，从而被误判为“就绪”。这里直接失败，不自动杀进程。
-if port_listening "$BACKEND_PORT" "$BACKEND_HOST"; then
-  echo "错误：后端端口 $BACKEND_PORT 已被占用，疑似上一次遗留的旧后端仍在运行（继续启动会被误判为就绪）。" >&2
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$BACKEND_PORT" -sTCP:LISTEN 2>/dev/null | sed -n '2,4p' >&2
-  fi
-  echo "排查：lsof -i :$BACKEND_PORT   或   ss -lptn 'sport = :$BACKEND_PORT'（再 kill <pid>）" >&2
-  echo "      Windows/MSYS：netstat -ano | findstr :$BACKEND_PORT    然后  tasklist //FI \"PID eq <pid>\"" >&2
-  echo "请先停止旧后端，或改用 --backend-port <其他端口>（例如 --backend-port $(( BACKEND_PORT + 1 ))）。脚本不会自动杀进程。" >&2
+if [ "$ADMIN_PORT" = "$BACKEND_PORT" ]; then
+  echo "错误：--admin-port 与 --backend-port 相同（$ADMIN_PORT）：管理面与 MCP 面必须使用不同端口（后端会拒绝启动）。" >&2
   exit 1
 fi
+for guard_port in "$BACKEND_PORT" "$ADMIN_PORT"; do
+  port_listening "$guard_port" "$BACKEND_HOST" || continue
+  echo "错误：后端端口 $guard_port 已被占用，疑似上一次遗留的旧后端仍在运行（继续启动会被误判为就绪）。" >&2
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$guard_port" -sTCP:LISTEN 2>/dev/null | sed -n '2,4p' >&2
+  fi
+  echo "排查：lsof -i :$guard_port   或   ss -lptn 'sport = :$guard_port'（再 kill <pid>）" >&2
+  echo "      Windows/MSYS：netstat -ano | findstr :$guard_port    然后  tasklist //FI \"PID eq <pid>\"" >&2
+  echo "请先停止旧后端，或改用 --backend-port / --admin-port <其他端口>。脚本不会自动杀进程。" >&2
+  exit 1
+done
 
 # 2) 每次启动都增量构建：二进制存在不代表是最新代码
 echo "==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse（增量构建，避免运行过期二进制）"
@@ -224,6 +237,7 @@ BACKEND_LOG="$LOG_DIR/backend.log"
   export JUMCP_MCP_TRANSPORT=streamable-http
   export JUMCP_MCP_HOST="$BACKEND_HOST"
   export JUMCP_MCP_PORT="$BACKEND_PORT"
+  export JUMCP_ADMIN_PORT="$ADMIN_PORT"
   export JUMCP_MCP_CONFIG_FILE="$POLICY_FILE"
   export JUMCP_MCP_REGISTRY_PATH="$DATA_DIR/registry.sqlite3"
   export JUMCP_MCP_AUDIT_PATH="$DATA_DIR/audit.sqlite3"
@@ -241,22 +255,25 @@ disown "$BACKEND_PID" 2>/dev/null || true
 echo "==> 后端已启动（pid $BACKEND_PID）：http://127.0.0.1:$BACKEND_PORT"
 
 HEALTH_FILE="$DATA_DIR/health.json"
-# 30s 内等 /health；进程一退出立即判失败，避免把别人的 /health 当成就绪
+ADMIN_HEALTH_FILE="$DATA_DIR/health-admin.json"
+# 30s 内等两个面的 /health；进程一退出立即判失败，避免把别人的 /health 当成就绪。
+# 只探一个面时"另一面没监听"会被当成启动成功。
 HEALTH_OK=0
 HEALTH_DEADLINE=$(( $(date +%s) + 30 ))
 while [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ]; do
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-    echo "错误：后端进程已退出（pid $BACKEND_PID），多半是端口 $BACKEND_PORT 在启动瞬间被抢占或配置非法。" >&2
+    echo "错误：后端进程已退出（pid $BACKEND_PID），多半是端口 $BACKEND_PORT/$ADMIN_PORT 在启动瞬间被抢占或配置非法。" >&2
     break
   fi
-  if wait_http "http://127.0.0.1:$BACKEND_PORT/health" 1 "$HEALTH_FILE"; then
+  if wait_http "http://127.0.0.1:$BACKEND_PORT/health" 1 "$HEALTH_FILE" \
+    && wait_http "http://127.0.0.1:$ADMIN_PORT/health" 1 "$ADMIN_HEALTH_FILE"; then
     # 命中后再确认响应来自我们刚启动的进程，而不是别的进程
     if kill -0 "$BACKEND_PID" 2>/dev/null; then HEALTH_OK=1; fi
     break
   fi
 done
 if [ "$HEALTH_OK" != "1" ]; then
-  echo "后端未在 30s 内就绪（端口 $BACKEND_PORT 是否被占用？）" >&2
+  echo "后端未在 30s 内就绪（MCP 面 $BACKEND_PORT / 管理面 $ADMIN_PORT 是否被占用？）" >&2
   echo "---- backend.log 尾部（同时含 stdout/stderr）----"
   tail -n 30 "$BACKEND_LOG" 2>/dev/null >&2
   if [ -f "$LOG_DIR/backend.err.log" ]; then
@@ -287,17 +304,18 @@ if [ "$NO_WEB" != "1" ]; then
   fi
   WEB_PORT_USED="$candidate"
 
-  # 前端代理目标由 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
+  # 前端代理目标：管理面 / MCP 面分开（双端口），只存在于 Node 进程环境。
   # 监听 0.0.0.0（本机访问用 127.0.0.1，容器/WSL/局域网用宿主 IP）
   VITE_ARGS=(run dev -- --host "$WEB_HOST" --port "$WEB_PORT_USED")
   API_TARGET="http://127.0.0.1:$BACKEND_PORT"
-  echo "==> 前端代理目标：$API_TARGET"
+  ADMIN_TARGET="http://127.0.0.1:$ADMIN_PORT"
+  echo "==> 前端代理目标：管理面 $ADMIN_TARGET ，MCP 面 $API_TARGET"
 
   WEB_LOG="$LOG_DIR/web.log"
   (
     cd "$WEB_DIR" || exit 1
-    export JUMCP_DEV_ADMIN_TOKEN="$ALICE_TOKEN"
     export JUMCP_DEV_API_TARGET="$API_TARGET"
+    export JUMCP_DEV_ADMIN_TARGET="$ADMIN_TARGET"
     exec npm "${VITE_ARGS[@]}"
   ) >"$WEB_LOG" 2>&1 &
   WEB_PID=$!
@@ -322,8 +340,10 @@ fi
 echo ""
 echo "================ 开发环境已就绪 ================"
 echo "$WEB_LINE"
+echo "登录     打开上面的管理台地址 → 在登录页输入管理面 token（alice 或 bob）"
 echo "MCP      http://127.0.0.1:$BACKEND_PORT/mcp"
-echo "健康     http://127.0.0.1:$BACKEND_PORT/health"
+echo "管理面   http://127.0.0.1:$ADMIN_PORT/ （登录页；脚本直连 /admin/* 需 Bearer）"
+echo "健康     http://127.0.0.1:$BACKEND_PORT/health （MCP 面） / http://127.0.0.1:$ADMIN_PORT/health （管理面）"
 echo "令牌     alice=$ALICE_TOKEN （普通）  bob=$BOB_TOKEN （审批）"
 echo "数据     .dev-data/{registry,audit}.sqlite3   日志  .dev-data/logs/"
 echo "停止     Ctrl+C（会同时停掉前后端）"

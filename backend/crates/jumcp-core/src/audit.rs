@@ -102,7 +102,8 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS audit_events (
     event_id TEXT PRIMARY KEY, ts TEXT NOT NULL, tenant TEXT NOT NULL,
     actor_json TEXT NOT NULL, session_id TEXT NOT NULL, event_type TEXT NOT NULL,
-    payload TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL
+    payload TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL,
+    surface TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_audit_tenant_ts ON audit_events(tenant, ts);
 CREATE INDEX IF NOT EXISTS idx_audit_type_ts ON audit_events(event_type, ts);
@@ -235,6 +236,9 @@ pub struct Envelope {
     pub payload: Value,
     pub prev_hash: String,
     pub hash: String,
+    /// 事件来自哪个面：`admin` / `mcp`（旧行为空串）。**不参与哈希**，见 [`surface_of`]。
+    #[serde(default)]
+    pub surface: String,
 }
 impl Envelope {
     pub fn without_hash(&self) -> Value {
@@ -259,6 +263,13 @@ impl AuditLog {
             .map_err(|e| McpError::audit(e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| McpError::audit(e.to_string()))?;
+        // 旧库补列表：`CREATE TABLE IF NOT EXISTS` 不会给已存在的表加列。
+        // 历史行的 surface 保持空串（迁移不重写审计行，也不动哈希链），统计侧把空串视为非平台面。
+        ensure_surface_column(&conn)?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_audit_surface_ts ON audit_events(surface, ts);",
+        )
+        .map_err(|e| McpError::audit(e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -304,6 +315,7 @@ impl AuditLog {
         } else {
             event.ts.clone()
         };
+        let surface = surface_of(&event.actor);
         let mut actor =
             json!({"type": event.actor.actor_type, "id": event.actor.id, "role": event.actor.role});
         if let Some(obj) = actor.as_object_mut() {
@@ -324,21 +336,26 @@ impl AuditLog {
             payload: event.payload.clone(),
             prev_hash: prev_hash.clone(),
             hash: String::new(),
+            surface: surface.to_string(),
         };
         let hash = hash_concat(&draft.without_hash(), &prev_hash);
         let env = Envelope {
             hash: hash.clone(),
             ..draft
         };
-        conn.execute("INSERT INTO audit_events (event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            rusqlite::params![env.event_id, env.ts, env.tenant, canonical_json(&env.actor), env.session_id, env.event_type, canonical_json(&env.payload), env.prev_hash, env.hash])
+        conn.execute("INSERT INTO audit_events (event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash, surface) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![env.event_id, env.ts, env.tenant, canonical_json(&env.actor), env.session_id, env.event_type, canonical_json(&env.payload), env.prev_hash, env.hash, env.surface])
             .map_err(|e| McpError::audit(e.to_string()))?;
         Ok(env)
     }
 
     pub fn verify_chain(&self) -> Result<ChainVerdict, McpError> {
         let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-        let mut stmt = conn.prepare("SELECT event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash FROM audit_events ORDER BY rowid ASC").map_err(|e| McpError::audit(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM audit_events ORDER BY rowid ASC"
+            ))
+            .map_err(|e| McpError::audit(e.to_string()))?;
         let rows_result = stmt.query_map([], row_to_envelope);
         let mapped = rows_result.map_err(|e| McpError::audit(e.to_string()))?;
         let mut rows: Vec<Envelope> = Vec::new();
@@ -455,7 +472,7 @@ impl AuditLog {
 }
 
 const COLUMNS: &str =
-    "event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash";
+    "event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash, surface";
 
 /// 过滤键白名单 → (SQL 片段, 绑定值)。未知键报 MCP_FILTER_UNSUPPORTED（管理面据 400，而不是静默忽略）。
 fn build_filter(filter: Option<&Value>) -> Result<(Vec<String>, Vec<String>), McpError> {
@@ -487,6 +504,9 @@ fn build_filter(filter: Option<&Value>) -> Result<(Vec<String>, Vec<String>), Mc
             "actor_id" => format!("json_extract(actor_json, '$.id') IN ({placeholders})"),
             "actor_role" => format!("json_extract(actor_json, '$.role') IN ({placeholders})"),
             "token_id" => format!("json_extract(actor_json, '$.token_id') IN ({placeholders})"),
+            // 面标记：管理面要能按面筛（surface=admin 只看平台操作），统计侧用 surface_not 排除。
+            "surface" => format!("surface IN ({placeholders})"),
+            "surface_not" => format!("surface NOT IN ({placeholders})"),
             // 时间键是区间而不是集合：每个取值单独成一条 AND 条件，占位符数量与绑定值一一对应。
             "ts_after" => {
                 clauses.extend(std::iter::repeat_n("ts >= ?".to_string(), vector.len()));
@@ -501,7 +521,7 @@ fn build_filter(filter: Option<&Value>) -> Result<(Vec<String>, Vec<String>), Mc
             _ => {
                 return Err(McpError::new(
                     "MCP_FILTER_UNSUPPORTED",
-                    serde_json::json!({"filter": k, "supported": ["tenant","event_type","event_id","object_type","object_id","actor_id","actor_role","token_id","ts_after","ts_before"]}),
+                    serde_json::json!({"filter": k, "supported": ["tenant","event_type","event_id","object_type","object_id","actor_id","actor_role","token_id","surface","ts_after","ts_before"]}),
                 ));
             }
         };
@@ -509,6 +529,43 @@ fn build_filter(filter: Option<&Value>) -> Result<(Vec<String>, Vec<String>), Mc
         params.extend(vector);
     }
     Ok((clauses, params))
+}
+
+/// 事件来自哪个面：`admin`（管理面 `/admin/*` 与平台启动期）或 `mcp`（`/mcp`、内置端点、stdio）。
+///
+/// 由 actor 类型派生，而不是给每个调用点加参数：管理面主体只有 `ActorRef::admin` 与
+/// `jumcp-server` 的 `admin_actor` 两条构造路径，派生点唯一；20 多处 store 写审计的位置
+/// 无需逐一改签名（漏改一个就会让平台操作混进统计）。
+///
+/// surface **不参与哈希**（[`Envelope::without_hash`] 的键集合保持不变）：把它并入哈希材料
+/// 会让所有历史链校验失败。列本身仍受 append-only 触发器保护，不能 UPDATE/DELETE。
+pub fn surface_of(actor: &ActorRef) -> &'static str {
+    if actor.actor_type == "admin" {
+        "admin"
+    } else {
+        "mcp"
+    }
+}
+
+/// 旧库补列：`surface` 列在 2026-11 新增，历史行保持空串（不重写、不重算哈希）。
+fn ensure_surface_column(conn: &Connection) -> Result<(), McpError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(audit_events)")
+        .map_err(|e| McpError::audit(e.to_string()))?;
+    let columns: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| McpError::audit(e.to_string()))?
+        .filter_map(Result::ok)
+        .collect();
+    if columns.iter().any(|c| c == "surface") {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE audit_events ADD COLUMN surface TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .map_err(|e| McpError::audit(e.to_string()))?;
+    Ok(())
 }
 
 fn row_to_envelope(row: &Row) -> rusqlite::Result<Envelope> {
@@ -544,6 +601,7 @@ fn row_to_envelope(row: &Row) -> rusqlite::Result<Envelope> {
         payload,
         prev_hash: row.get(7)?,
         hash: row.get(8)?,
+        surface: row.get(9)?,
     })
 }
 
@@ -714,5 +772,67 @@ mod tests {
             conn.execute("DROP TABLE audit_events", []).unwrap();
         }
         assert!(log.append(ev()).is_err());
+    }
+
+    /// surface 由主体类型派生：agent 事件落 mcp，管理面事件落 admin。
+    #[test]
+    fn surface_is_derived_from_actor_type() {
+        let log = AuditLog::open(":memory:").unwrap();
+        let mut agent = ev();
+        agent.event_id = "e1".into();
+        assert_eq!(log.append(agent).unwrap().surface, "mcp");
+        let mut admin = ev();
+        admin.event_id = "e2".into();
+        admin.actor = ActorRef::admin("alice");
+        admin.event_type = "admin_change".into();
+        admin.payload = Value::Object(payload("capability", "c1", "create", "ok"));
+        assert_eq!(log.append(admin).unwrap().surface, "admin");
+        let (rows, total) = log
+            .query_page(Some(&json!({"surface": "admin"})), 10, 0, Order::Asc)
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].event_id, "e2");
+        let (rows, _) = log
+            .query_page(Some(&json!({"surface_not": "admin"})), 10, 0, Order::Asc)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_id, "e1");
+        // surface 不参与哈希：老链（无 surface 概念）仍校验通过。
+        assert_eq!(log.verify_chain().unwrap(), ChainVerdict::Valid);
+    }
+
+    /// 旧库（无 surface 列、已有哈希链）打开时必须补列且不破坏历史链。
+    #[test]
+    fn old_database_gets_surface_column_without_breaking_chain() {
+        let dir = std::env::temp_dir().join(format!("jumcp-audit-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.sqlite3");
+        let path_str = path.to_str().unwrap().to_string();
+        {
+            // 旧 schema：没有 surface 列的等价建表语句 + 一行历史事件（哈希按当前算法生成）。
+            let log = AuditLog::open(&path_str).unwrap();
+            log.append(ev()).unwrap();
+            let conn = log.conn.lock().unwrap();
+            conn.execute("DROP INDEX IF EXISTS idx_audit_surface_ts", [])
+                .unwrap();
+            // SQLite 3.35+ 支持 DROP COLUMN；这里直接重建不含 surface 的表。
+            conn.execute_batch(
+                r#"CREATE TABLE legacy_audit_events AS SELECT event_id, ts, tenant, actor_json, session_id, event_type, payload, prev_hash, hash FROM audit_events;
+DROP TABLE audit_events;
+ALTER TABLE legacy_audit_events RENAME TO audit_events;"#,
+            )
+            .unwrap();
+        }
+        let log = AuditLog::open(&path_str).unwrap();
+        let (rows, total) = log.query_page(None, 10, 0, Order::Asc).unwrap();
+        assert_eq!(total, 1, "历史行不能被迁移丢掉");
+        assert_eq!(rows[0].surface, "", "历史行 surface 为空串（未重写）");
+        assert_eq!(log.verify_chain().unwrap(), ChainVerdict::Valid);
+        let mut next = ev();
+        next.event_id = "e2".into();
+        next.ts = "2026-11-05T00:00:01+00:00".into();
+        assert_eq!(log.append(next).unwrap().surface, "mcp");
+        assert_eq!(log.verify_chain().unwrap(), ChainVerdict::Valid);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -6,7 +6,7 @@
 
 ```
 { event_id, ts, tenant, actor{type,id,role}, session_id,
-  event_type, payload, prev_hash, hash }
+  event_type, payload, prev_hash, hash, surface }
 ```
 
 | 字段 | 说明 |
@@ -16,6 +16,7 @@
 | `actor` | `type`∈{`admin`,`agent`}，`id` 为凭证派生主体（admin 由 `JUMCP_ADMIN_TOKENS` 派生，agent 由数据库 access token 的 `caller` 派生），`role` 为角色名。可选键 `token_id`（数据库 token id）与 `source`（MCP token 配置的 `source` / 管理面固定 `admin-api`）只在有值时出现；stdio 与管理面静态 token 不写 `token_id`。未认证失败会留下 `id` 为空串的记录 |
 | `event_type` | 闭集：`tools_list_served`、`capability_search`、`capability_describe`、`tool_call`、`template_run`、`policy_decision`、`admin_change` |
 | `prev_hash` / `hash` | 哈希链；`hash = sha256(canonical(envelope 去 hash) + prev_hash)`，SHA-256 64 位小写 hex。首条 `prev_hash` 为空串 |
+| `surface` | 事件来自哪个面：`admin` / `mcp`（旧行为空串）。**由 `actor.type` 派生**（`admin` → `admin`，其余 → `mcp`），不是调用点传参；**不参与哈希**，因此加列/改口径都不会让历史链失效 |
 
 `session_id` 只存在于信封与数据库列，不进入业务载荷；当前实现固定为 `default`（旧格式事件该值为空串）。
 
@@ -136,19 +137,37 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 ```
 响应: { events[], total, limit, offset, order }
 参数: tenant, event_type, event_id, object_type, object_id,
-      actor_id, actor_role, token_id, ts_after, ts_before, limit, offset, order
+      actor_id, actor_role, token_id, ts_after, ts_before, surface,
+      limit, offset, order
 ```
 
 - `order`∈{`asc`,`desc`}，**默认 `desc`（最新优先）**；响应回显生效值。
 - `limit` 默认 50、上限 200（越界夹紧）；`offset` 最小 0。
 - `object_type` / `object_id` 由 `json_extract(payload, …)` 匹配，因此**只命中新格式事件**（旧行没有这些键）。
 - `token_id` 由 `json_extract(actor_json, '$.token_id')` 匹配，同样只命中带 token 来源的新事件；旧事件与管理面静态 token 事件不被命中。
+- `surface` 按列匹配（`admin` / `mcp`，也接受多值）。旧行为的空串只有显式传 `surface=` 空值时才命中——它是历史遗留，不是第三个面。
 - `event_type` 不做闭集校验，未知类型返回空集。
 - 非法过滤键或非法 `order` 返回 `MCP_FILTER_UNSUPPORTED` / `MCP_BAD_REQUEST`，并写一条 `policy_decision`。
 
+### 6.1 统计口径：平台操作不计入业务统计
+
+管理台每次打开看板都会产生 `tool_call` / `admin_change`，若算进排行，"活跃度"就变成自证。
+因此统计类接口**一律排除 `surface="admin"`**：
+
+| 接口 | 口径 |
+|---|---|
+| `GET /admin/tools/stats`（工作台/工具排行/失败榜） | 只统计 `surface="mcp"` 的 `tool_call` 与 `template_run`；内置工具的台账行仍在（`calls=0`） |
+| `GET /admin/tools/{id}/calls`（调用明细） | 同上，排除平台面 |
+| `GET /admin/audit-events`（审计查询） | **不排除**：管理面事件照常返回，用 `surface` 参数区分 |
+
+被排除的事件在审计里仍可查——"不计入统计"不等于"不可见"，这是可复核的前提。
+`surface_not` 是内部过滤键（统计用它排除平台面），未列入对外支持的过滤键。
+
 ## 7. 管理面接口
 
-`/health` 免鉴权；其余 `/admin/*` 需要 `Authorization: Bearer <JUMCP_ADMIN_TOKENS 中的 token>`，缺失或未知返回 401 `MCP_UNAUTHORIZED`。
+`/health` 与 `/admin/login` 免鉴权；其余 `/admin/*` 接受管理台会话 cookie（`POST /admin/login` 下发，
+cookie 优先）或 `Authorization: Bearer <JUMCP_ADMIN_TOKENS 中的 token>`，两者都没有/无效返回 401 `MCP_UNAUTHORIZED`；
+cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `MCP_FORBIDDEN`（契约见 `docs/mcp-router.md` §9.0–9.1）。
 
 ### 7.1 `GET /admin/me`
 

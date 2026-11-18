@@ -20,6 +20,7 @@ export type IconName =
   | 'success'
   | 'inbox'
   | 'sidebar'
+  | 'logout'
   | 'chevron-left'
   | 'chevron-right'
 
@@ -126,6 +127,12 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <rect x="3.2" y="4.4" width="17.6" height="15.2" rx="2" />
       <path d="M9.2 4.4v15.2" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M13.4 4.2h4.4a2 2 0 0 1 2 2v11.6a2 2 0 0 1-2 2h-4.4" />
+      <path d="M14.6 12H4.2m3.3-3.3L4.2 12l3.3 3.3" />
     </>
   ),
   'chevron-left': <path d="M14.2 5.6 7.8 12l6.4 6.4" />,

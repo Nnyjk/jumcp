@@ -350,7 +350,48 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 
 ## 9. 管理面 API
 
-所有路由挂 `/admin`，Bearer + `require_token`，写操作要求审计已启用（fail-closed）。
+### 9.0 两个监听面（端口分面）
+
+进程在 HTTP 模式下起**两个**监听，各自只挂自己的路由表（不是同一路由表两倍监听）：
+一个面上不存在另一个面的端点，跨面访问一律 `404 MCP_NOT_FOUND`（**不是** 403/405，
+避免客户端误以为"换个方法/补个凭证就能用"）。
+
+| 面 | 端口变量（默认） | 挂载 | 给谁 |
+|---|---|---|---|
+| MCP 面 | `JUMCP_MCP_PORT`（8000） | `/mcp`、`/internal/mcp/{package}/{upstream}`、`/health` | agent / 内置包回环 |
+| 管理面 | `JUMCP_ADMIN_PORT`（8080） | `/admin/*`、`/admin/login`、`/admin/logout`、`/admin/session`、`/health`、管理台静态站 + SPA 回退 | 浏览器 |
+
+- 两面端口**相同即拒绝启动**（`JUMCP_ADMIN_PORT 与 JUMCP_MCP_PORT 相同（…）：管理面与 MCP 面必须使用不同端口`）；
+  监听失败/端口占用会点名具体变量与地址。
+- `/health` 两面都留：healthcheck 不该因为选错端口而失败。
+- 内置 MCP 包的回环地址 `BuiltinEndpoint::local(host, JUMCP_MCP_PORT)` 永远绑 **MCP 面**端口
+  （绑错端口时症状是 404 而不是鉴权失败，很难查）。
+- 管理面不托管 `/mcp`，MCP 面不托管任何页面：根路径在 MCP 面是 JSON 404。
+
+### 9.1 登录与会话（管理台不再需要 Bearer）
+
+浏览器不发 `Authorization`，因此管理面提供登录面，身份落 HttpOnly cookie：
+
+| 方法与路径 | 鉴权 | 结果 |
+|---|---|---|
+| `POST /admin/login` | 不需要 | body `{"token":"<admin token>"}` → `204` + `Set-Cookie: jumcp_session=<opaque>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<ttl>`（`Secure` 仅在 `JUMCP_ADMIN_COOKIE_SECURE=1` 时加）；错误 token `401 MCP_UNAUTHORIZED` |
+| `POST /admin/logout` | 可选 cookie | `204`（幂等）+ 立即吊销会话、下发 `Max-Age=0` 的同名 cookie |
+| `GET /admin/session` | cookie 或 Bearer | `200 {"actor":{"id":"<token id>","role":"admin","type":"admin"}}`；未登录 `401` |
+
+- 会话存在 `registry.sqlite3` 的 `admin_sessions(id, token_id, created_at, expires_at, last_seen_at)`：
+  `id` 是 32 字节 CSPRNG 的 hex（不可预测、与服务端记录常量时间比较）；
+  TTL 由 `JUMCP_ADMIN_SESSION_TTL_SECS`（默认 43200 = 12 小时）控制，登录时顺手清理过期行。
+- `/admin/*` 鉴权：**cookie 优先，其次 Bearer**。cookie 无效/过期一律 `401 MCP_UNAUTHORIZED`，
+  **不回落**到 Bearer（避免"带着废 cookie 的脚本被另一套身份悄悄放行"）。脚本仍可只用 Bearer。
+- CSRF：身份来自 cookie 且方法非 `GET`/`HEAD` 时，要求 `Origin`（或 `Referer`）与 `Host` 同源，
+  否则 `403 MCP_FORBIDDEN`（缺头同样拒绝，fail-closed）。Bearer 身份不受此限。
+  `SameSite=Strict` 保留作为第二道防线。
+- 登录限流：同一来源 IP 60 秒内连续失败 5 次后 `429 MCP_RATE_LIMITED`。
+  计数在**进程内存**里，因此前提是单副本部署（与 SQLite 单写者约束一致），滚动重启会清零。
+- cookie 未启用 `Secure` 时启动日志会 warn 一次（"请仅在内网使用或启用 TLS"）：TLS 终止后
+  仍需显式置 `JUMCP_ADMIN_COOKIE_SECURE=1`，否则 cookie 会以明文经 HTTP 传输。
+
+所有路由挂 `/admin`，写操作要求审计已启用（fail-closed）。
 
 | 方法与路径 | 结果 |
 |---|---|

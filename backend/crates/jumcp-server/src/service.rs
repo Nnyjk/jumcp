@@ -5,7 +5,7 @@ use crate::catalog::{Capability, Catalog};
 use crate::discovery;
 use crate::executor::{DefaultQueryExecutor, QueryExecutor};
 use crate::upstream::UpstreamManager;
-use jumcp_core::audit::{ActorRef, AuditEvent, AuditLog};
+use jumcp_core::audit::{ActorRef, AuditEvent, AuditLog, ChainVerdict};
 use jumcp_core::budget::{
     BudgetCaps, BudgetCheckResult, BudgetLedger, OverflowPolicy, estimate_tokens,
 };
@@ -385,6 +385,39 @@ pub fn health(settings: &Settings) -> Value {
         "groups": settings.policy.group_codes().len(),
         "datasource": datasource
     })
+}
+
+/// `/health` 的报告体：两个监听面共用同一份口径（各自挂一次，但内容一致）。
+///
+/// 为什么两面都要有：healthcheck 可能打管理口也可能打 MCP 口，只在一个面应答会让
+/// 另一半的探针永远失败。报告里只有版本、数据源名与审计链判定，不含任何凭据。
+pub fn health_report(service: &Service) -> Value {
+    let settings = &service.settings;
+    let datasources: Vec<Value> = settings
+        .datasources
+        .iter()
+        .map(|d| json!({"name": d.name, "engine": d.engine, "readonly": d.readonly}))
+        .collect();
+    // 链被篡改时 status 仍是 200（服务确实在跑），但 audit_chain 显式报警，供看板直接着色。
+    let (chain, detail) = match &service.audit {
+        Some(log) => match log.verify_chain() {
+            Ok(ChainVerdict::Valid) => ("valid", Value::Null),
+            Ok(ChainVerdict::Tampered { event_id }) => ("tampered", json!(event_id)),
+            Ok(ChainVerdict::Broken { reason }) => ("error", json!(reason)),
+            Err(e) => ("error", json!(e.message)),
+        },
+        None => ("error", json!("audit log not configured")),
+    };
+    let mut body = json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "datasources": datasources,
+        "audit_chain": chain
+    });
+    if !detail.is_null() {
+        body["audit_chain_detail"] = detail;
+    }
+    body
 }
 
 /// 进程默认角色（**仅 stdio** 使用）：只在 `default_groups` 不含 `"admin"` 的角色里选。

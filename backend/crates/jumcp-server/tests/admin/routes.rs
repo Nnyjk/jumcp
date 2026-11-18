@@ -66,5 +66,21 @@ async fn routes_are_documented() {
     );
     assert!(table.iter().any(|(method, path)| *method == "PATCH"
         && *path == "/admin/mcp/catalog/{id}/install/{upstream_id}/config"));
-    assert_eq!(table.len(), 40);
+    // 登录契约：三条路由必须在文档清单里，否则运维照着清单核对会漏掉登录面。
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "POST" && *path == "/admin/login")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "POST" && *path == "/admin/logout")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "GET" && *path == "/admin/session")
+    );
+    assert_eq!(table.len(), 43);
 }

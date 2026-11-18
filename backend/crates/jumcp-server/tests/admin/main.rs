@@ -13,5 +13,6 @@ mod fixtures;
 mod groups;
 mod review;
 mod routes;
+mod session;
 mod stats;
 mod writes;

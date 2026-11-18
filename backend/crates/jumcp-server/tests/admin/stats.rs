@@ -541,3 +541,77 @@ async fn tool_calls_window_defaults_to_thirty_days_and_clamps() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], json!("MCP_FILTER_UNSUPPORTED"));
 }
+
+/// 统计口径：`surface="admin"` 的事件一律不计入工作台/排行，但审计查询照常返回。
+///
+/// 为什么这条必须钉住：管理台每次打开看板都会写 `tool_call`/`admin_change`，
+/// 一旦统计把平台面算进去，看板就会被自己的刷新刷量——数字越大越"活跃"，
+/// 而真正的问题是没人用 MCP。审计可查保证了排除不等于隐藏。
+#[tokio::test]
+async fn admin_surface_events_are_excluded_from_stats_but_queryable() {
+    let h = harness();
+    seed_template_capability(&h.store, "order.daily_summary");
+    template_run(
+        &h.audit,
+        "order.daily_summary",
+        30,
+        "s-1",
+        "ok",
+        "miss",
+        Some(100),
+    );
+    // 同名工具在平台面被"调用"：业务面 1 次 + 平台面 1 次，统计只应看到 1 次。
+    append_admin_event(
+        &h.audit,
+        "tool_call",
+        10,
+        "s-admin",
+        json!({
+            "object_type": "tool",
+            "object_id": "search_capabilities",
+            "action": "invoke",
+            "outcome": "ok",
+            "data": {"elapsed_ms": 1}
+        }),
+    );
+    append_admin_event(
+        &h.audit,
+        "tool_call",
+        10,
+        "s-admin",
+        json!({
+            "object_type": "template",
+            "object_id": "order.daily_summary",
+            "action": "invoke",
+            "outcome": "error",
+            "data": {"elapsed_ms": 1}
+        }),
+    );
+
+    let (status, body) = call(&h.app, Req::get("/admin/tools/stats")).await;
+    assert_eq!(status, StatusCode::OK);
+    let tpl = find_tool(&body, "order.daily_summary");
+    assert_eq!(tpl["calls"], json!(1), "平台面的 template_run 不计入");
+    assert_eq!(tpl["failure"], json!(0), "平台面的失败也不计入失败榜");
+    // builtin 工具始终在台账里（元信息来自代码），但调用次数必须为 0。
+    let search = find_tool(&body, "search_capabilities");
+    assert_eq!(search["calls"], json!(0), "平台面的 tool_call 不计入");
+
+    // 明细同样排除：否则点进工具详情又能看见被统计口径排除的调用。
+    let (status, body) = call(&h.app, Req::get("/admin/tools/search_capabilities/calls")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], json!(0));
+
+    // 审计查询仍然返回它们，并且 surface 过滤生效。
+    let (status, body) = call(&h.app, Req::get("/admin/audit-events?surface=admin")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], json!(2));
+    let events = body["events"].as_array().expect("events");
+    assert!(events.iter().all(|e| e["surface"] == json!("admin")));
+
+    let (status, body) = call(&h.app, Req::get("/admin/audit-events?surface=mcp")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], json!(1), "业务面只有那条 template_run");
+    let events = body["events"].as_array().expect("events");
+    assert!(events.iter().all(|e| e["surface"] == json!("mcp")));
+}

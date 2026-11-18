@@ -18,12 +18,15 @@ export function Sidebar({
   collapsed,
   onToggleCollapsed,
   onNavigate,
+  onSignOut,
 }: {
   items: NavEntry[]
   collapsed: boolean
   onToggleCollapsed: () => void
   /** 点击导航即离开操作视图，回到该路由的页面。 */
   onNavigate: () => void
+  /** 吊销会话后回登录页；由 App 注入，侧栏不直接依赖 auth 模块。 */
+  onSignOut: () => void
 }) {
   const collapseLabel = collapsed ? '展开导航' : '折叠导航'
   const sidebarRef = useGsapScope<HTMLElement>((scope) => {
@@ -81,6 +84,16 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-foot">
+        <button
+          type="button"
+          className="nav-collapse"
+          onClick={onSignOut}
+          aria-label="退出登录"
+          title="退出登录"
+        >
+          <Icon name="logout" size={20} />
+          {!collapsed && <span>退出登录</span>}
+        </button>
         <button
           type="button"
           className="nav-collapse"

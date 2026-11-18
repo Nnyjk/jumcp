@@ -72,8 +72,9 @@
 
 ## 鉴权边界
 
-- 静态资源免鉴权，不含任何业务数据。
-- `/admin/*` 仍然要求 `Authorization: Bearer <token>`，token 由 `JUMCP_ADMIN_TOKENS` 派生身份。
+- 静态资源免鉴权，不含任何业务数据；静态站挂在**管理面**端口（`JUMCP_ADMIN_PORT`，默认 8080）。
+- `/admin/*` 认两种身份：`Authorization: Bearer <token>`（脚本）或 `POST /admin/login` 下发的
+  HttpOnly 会话 cookie（浏览器，cookie 优先）。token 由 `JUMCP_ADMIN_TOKENS` 派生身份。
 - 后端**不**向静态响应注入 `Authorization`，也不下发任何凭证：管理台前端不持有凭证，
-  同源部署时由网关 / BFF 在 `/admin/*` 上注入 Bearer（或改用会话 Cookie）。
-  这与开发期 Vite 代理注入 `JUMCP_DEV_ADMIN_TOKEN` 的边界一致——凭证只在服务端进程里。
+  用户只在登录页里把 token 交一次，此后由同源请求自动带 cookie。**没有网关/BFF 参与**，
+  开发期同理（Vite 只做纯转发，`JUMCP_DEV_ADMIN_TARGET` 指管理面端口）。
