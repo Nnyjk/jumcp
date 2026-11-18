@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchMcpCatalog, uninstallMcpCatalogEntry } from '../../api/admin'
 import { groupLabel, indexGroups, useGroupsQuery } from '../../api/queries'
-import type { McpCatalogEntry, McpCatalogInstallation, UpstreamItem } from '../../api/types'
+import type {
+  McpCatalogEntry,
+  McpCatalogField,
+  McpCatalogInstallation,
+  McpCatalogTool,
+  UpstreamItem,
+} from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { Card } from '../../components/Card'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
@@ -22,13 +28,29 @@ interface InstallationTarget {
   installation: McpCatalogInstallation
 }
 
+const FIELD_COLUMNS: Array<DataTableColumn<McpCatalogField>> = [
+  { key: 'key', header: 'key', width: '150px', mono: true, cell: (field) => field.key },
+  { key: 'label', header: 'label', width: '170px', cell: (field) => field.label, title: (field) => field.label },
+  { key: 'kind', header: 'kind', width: '90px', mono: true, cell: (field) => field.kind },
+  { key: 'required', header: '必填', width: '64px', cell: (field) => (field.required ? '是' : '否') },
+  { key: 'secret', header: '密文', width: '64px', cell: (field) => (field.secret ? '是' : '否') },
+]
+
+const TOOL_COLUMNS: Array<DataTableColumn<McpCatalogTool>> = [
+  { key: 'name', header: 'name', width: '220px', mono: true, cell: (tool) => tool.name },
+  { key: 'summary', header: 'summary', wrap: true, cell: (tool) => tool.summary, title: (tool) => tool.summary },
+]
+
 /**
- * 「MCP 接入」的安装目录页签：每个内置包一张卡（定义、字段、工具、已安装实例）。
+ * 「MCP 接入」的安装目录页签：小卡片只展示名称/id/版本/摘要/标签/已装数量，
+ * 完整定义进「详情」弹窗；安装表单不含上游 id（由目录按已安装实例自动推导）。
  * 安装/卸载/改配置都走目录接口；名称、授权组与启停仍由「接入清单」页签的上游编辑负责。
  */
 export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void }) {
   const queryClient = useQueryClient()
+  const [filter, setFilter] = useState('')
   const [installTarget, setInstallTarget] = useState<McpCatalogEntry | null>(null)
+  const [detailTarget, setDetailTarget] = useState<McpCatalogEntry | null>(null)
   const [editTarget, setEditTarget] = useState<InstallationTarget | null>(null)
   const [uninstallTarget, setUninstallTarget] = useState<InstallationTarget | null>(null)
   const [uninstallError, setUninstallError] = useState<unknown>(undefined)
@@ -40,8 +62,28 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
   const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
   const groups = groupsQuery.data?.items ?? []
   const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
-  const entries = catalogQuery.data?.items ?? []
+  const entries = useMemo(() => catalogQuery.data?.items ?? [], [catalogQuery.data])
   const totalInstallations = entries.reduce((sum, entry) => sum + entry.installations.length, 0)
+
+  const normalizedFilter = filter.trim().toLowerCase()
+  const visibleEntries = useMemo(() => {
+    if (normalizedFilter === '') return entries
+    return entries.filter(
+      (entry) =>
+        entry.name.toLowerCase().includes(normalizedFilter) ||
+        entry.id.toLowerCase().includes(normalizedFilter),
+    )
+  }, [entries, normalizedFilter])
+
+  // 弹窗持有的是打开时的快照；目录刷新后用最新条目替换，安装表单因此能重新推导 id/名称。
+  const detailEntry =
+    detailTarget === null
+      ? null
+      : (entries.find((entry) => entry.id === detailTarget.id) ?? detailTarget)
+  const installEntry =
+    installTarget === null
+      ? null
+      : (entries.find((entry) => entry.id === installTarget.id) ?? installTarget)
 
   /** 目录写操作会改变上游清单与工具集合，相关缓存一并失效。 */
   const refreshAfterWrite = () => {
@@ -199,123 +241,109 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
           <EmptyState hint="后端没有注册任何 MCP 安装包（或目录配置为空）。" />
         )}
         {entries.length > 0 && (
-          <div className="mcp-catalog-grid">
-            {entries.map((entry) => (
-              <article className="mcp-package" key={entry.id}>
-                <header className="mcp-package-head">
-                  <div className="mcp-package-title">
-                    <h3>{entry.name}</h3>
-                    <span className="mono mcp-package-id">{entry.id}</span>
-                  </div>
-                </header>
+          <>
+            <div className="mcp-catalog-toolbar">
+              <label className="field mcp-catalog-filter">
+                <span>过滤</span>
+                <input
+                  className="input"
+                  type="search"
+                  value={filter}
+                  onChange={(event) => setFilter(event.target.value)}
+                  placeholder="按名称或 id 过滤"
+                  aria-label="按名称或 id 过滤"
+                />
+              </label>
+              {filter !== '' && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setFilter('')}
+                  aria-label="清空过滤条件"
+                >
+                  清空
+                </button>
+              )}
+              <span className="hint mcp-catalog-count" role="status" aria-live="polite">
+                显示 {visibleEntries.length} / 共 {entries.length}
+              </span>
+            </div>
 
-                <p className="mcp-package-summary">{entry.summary}</p>
+            {visibleEntries.length === 0 ? (
+              <EmptyState hint="没有匹配的安装包" />
+            ) : (
+              <div className="mcp-catalog-grid">
+                {visibleEntries.map((entry) => {
+                  const installed = entry.installations.length
+                  const hiddenTags = entry.tags.slice(3)
+                  return (
+                    <article className="mcp-package" key={entry.id}>
+                      <header className="mcp-package-head">
+                        <div className="mcp-package-title">
+                          <h3>{entry.name}</h3>
+                          <span className="mono mcp-package-id">{entry.id}</span>
+                        </div>
+                        <Badge
+                          tone={installed > 0 ? 'accent' : 'neutral'}
+                          title={installed > 0 ? `已安装 ${installed} 个实例` : '尚未安装'}
+                        >
+                          已安装 {installed}
+                        </Badge>
+                      </header>
 
-                <div className="mcp-package-meta">
-                  <span className="mono mcp-package-version">v{entry.version}</span>
-                  <span className="mcp-package-transport">
-                    {UPSTREAM_TRANSPORT_LABEL[entry.transport] ?? entry.transport}
-                  </span>
-                  {entry.tags.map((tag) => (
-                    <Badge key={tag} tone="neutral" title={tag}>
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
+                      <div className="mcp-package-meta">
+                        <span className="mono mcp-package-version">v{entry.version}</span>
+                        {entry.tags.slice(0, 3).map((tag) => (
+                          <Badge key={tag} tone="neutral" title={tag}>
+                            {tag}
+                          </Badge>
+                        ))}
+                        {hiddenTags.length > 0 && (
+                          <Badge tone="neutral" title={hiddenTags.join('、')}>
+                            +{hiddenTags.length}
+                          </Badge>
+                        )}
+                      </div>
 
-                <div className="mcp-package-default">
-                  <span className="mcp-package-label">默认上游 id</span>
-                  <code className="mono">{entry.default_upstream_id}</code>
-                </div>
+                      <p className="mcp-package-summary" title={entry.summary}>
+                        {entry.summary}
+                      </p>
 
-                <div className="mcp-package-fields">
-                  <span className="mcp-package-label">安装字段（{entry.fields.length}）</span>
-                  {entry.fields.length === 0 ? (
-                    <span className="hint">该包没有安装字段。</span>
-                  ) : (
-                    <ul className="mcp-def-list">
-                      {entry.fields.map((field) => (
-                        <li key={field.key} title={field.help ?? undefined}>
-                          <code className="mono">{field.key}</code>
-                          <span className="mcp-def-summary">{field.label}</span>
-                          {field.required && (
-                            <Badge tone="warning" title="安装与编辑配置时必填">
-                              必填
-                            </Badge>
-                          )}
-                          {field.secret && (
-                            <Badge tone="neutral" title="只写：保存后不可查看">
-                              密文
-                            </Badge>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                <div className="mcp-package-tools">
-                  <span className="mcp-package-label">工具（{entry.tools.length}）</span>
-                  {entry.tools.length === 0 ? (
-                    <span className="hint">该包未声明工具。</span>
-                  ) : (
-                    <ul className="mcp-def-list">
-                      {entry.tools.map((tool) => (
-                        <li key={tool.name} title={tool.summary}>
-                          <code className="mono">{tool.name}</code>
-                          <span className="mcp-def-summary">{tool.summary}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                <div className="mcp-package-installs">
-                  <div className="mcp-package-install-head">
-                    <span className="mcp-package-label">已安装实例</span>
-                    <span className="hint">{entry.installations.length} 个</span>
-                  </div>
-                  {entry.installations.length === 0 ? (
-                    <p className="hint">尚未安装。</p>
-                  ) : (
-                    <DataTable
-                      label={`${entry.name} 已安装实例`}
-                      meta={`共 ${entry.installations.length} 个`}
-                      columns={installedColumns(entry)}
-                      rows={entry.installations}
-                      rowKey={(row) => row.upstream_id}
-                      minWidth="900px"
-                    />
-                  )}
-                </div>
-
-                <footer className="mcp-package-foot">
-                  <span className="hint">安装后可在「接入清单」页签启停、编辑或测试连接；安装字段用实例行的「编辑配置」修改。</span>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    title={`安装 ${entry.name}`}
-                    onClick={() => setInstallTarget(entry)}
-                  >
-                    安装
-                  </button>
-                </footer>
-              </article>
-            ))}
-          </div>
+                      <footer className="mcp-package-foot">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setDetailTarget(entry)}
+                        >
+                          详情
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          onClick={() => setInstallTarget(entry)}
+                        >
+                          安装
+                        </button>
+                      </footer>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+          </>
         )}
       </Card>
 
-      {installTarget !== null && (
+      {installEntry !== null && (
         <Modal
           size="lg"
-          title={`安装 · ${installTarget.name}`}
-          subtitle={`目录项 ${installTarget.id} · 版本 v${installTarget.version} · ${UPSTREAM_TRANSPORT_LABEL[installTarget.transport] ?? installTarget.transport}`}
+          title={`安装 · ${installEntry.name}`}
+          subtitle={`目录项 ${installEntry.id} · 版本 v${installEntry.version} · ${UPSTREAM_TRANSPORT_LABEL[installEntry.transport] ?? installEntry.transport}`}
           onClose={() => setInstallTarget(null)}
         >
           <InstallForm
-            key={installTarget.id}
-            entry={installTarget}
+            key={installEntry.id}
+            entry={installEntry}
             groups={groups}
             groupsLoading={groupsQuery.isPending}
             groupsError={groupsQuery.isError}
@@ -325,12 +353,114 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
                 severity: 'success',
                 title: '安装完成',
                 description: `已安装 ${upstream.name}（${upstream.id}），可在「接入清单」页签继续启停或测试连接。`,
-                meta: `目录版本 ${installTarget.version}`,
+                meta: `目录版本 ${installEntry.version}`,
               })
               refreshAfterWrite()
             }}
             onError={onNotice}
           />
+        </Modal>
+      )}
+
+      {detailEntry !== null && (
+        <Modal
+          size="xl"
+          title={`${detailEntry.name} · 详情`}
+          subtitle={`目录项 ${detailEntry.id} · 版本 v${detailEntry.version}`}
+          onClose={() => setDetailTarget(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setDetailTarget(null)}>
+                关闭
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const target = detailEntry
+                  setDetailTarget(null)
+                  setInstallTarget(target)
+                }}
+              >
+                安装
+              </button>
+            </>
+          }
+        >
+          <p className="mcp-detail-summary">{detailEntry.summary}</p>
+
+          <div className="mcp-detail-facts">
+            <span>
+              版本 <code className="mono">v{detailEntry.version}</code>
+            </span>
+            <span>
+              传输{' '}
+              <code className="mono">
+                {UPSTREAM_TRANSPORT_LABEL[detailEntry.transport] ?? detailEntry.transport}
+              </code>
+            </span>
+            <span>
+              默认上游 id <code className="mono">{detailEntry.default_upstream_id}</code>
+            </span>
+            <span className="mcp-detail-tags">
+              标签
+              {detailEntry.tags.length === 0 ? (
+                <span className="hint">无</span>
+              ) : (
+                detailEntry.tags.map((tag) => (
+                  <Badge key={tag} tone="neutral" title={tag}>
+                    {tag}
+                  </Badge>
+                ))
+              )}
+            </span>
+          </div>
+
+          <section className="mcp-detail-section">
+            <h3 className="mcp-detail-title">安装字段（{detailEntry.fields.length}）</h3>
+            {detailEntry.fields.length === 0 ? (
+              <p className="hint">该包没有安装字段。</p>
+            ) : (
+              <DataTable
+                label={`${detailEntry.name} 安装字段`}
+                columns={FIELD_COLUMNS}
+                rows={detailEntry.fields}
+                rowKey={(field) => field.key}
+                minWidth="640px"
+              />
+            )}
+          </section>
+
+          <section className="mcp-detail-section">
+            <h3 className="mcp-detail-title">工具（{detailEntry.tools.length}）</h3>
+            {detailEntry.tools.length === 0 ? (
+              <p className="hint">该包未声明工具。</p>
+            ) : (
+              <DataTable
+                label={`${detailEntry.name} 工具`}
+                columns={TOOL_COLUMNS}
+                rows={detailEntry.tools}
+                rowKey={(tool) => tool.name}
+                minWidth="560px"
+              />
+            )}
+          </section>
+
+          <section className="mcp-detail-section">
+            <h3 className="mcp-detail-title">已安装实例（{detailEntry.installations.length}）</h3>
+            {detailEntry.installations.length === 0 ? (
+              <p className="hint">尚未安装。</p>
+            ) : (
+              <DataTable
+                label={`${detailEntry.name} 已安装实例`}
+                meta={`共 ${detailEntry.installations.length} 个`}
+                columns={installedColumns(detailEntry)}
+                rows={detailEntry.installations}
+                rowKey={(row) => row.upstream_id}
+                minWidth="900px"
+              />
+            )}
+          </section>
         </Modal>
       )}
 
