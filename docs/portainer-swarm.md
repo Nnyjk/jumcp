@@ -40,6 +40,23 @@
 - 管理面 API 仍要由网关/BFF 在**同源** `/admin/*` 路径注入 Bearer：管理台是薄前端，浏览器不发 `Authorization`。**直接把 8000 端口暴露出去时，管理台 UI 能加载，但所有管理请求都是 401**——这是设计上的 fail-closed，不是部署故障。
 - 因此建议只在内网或反向代理（Nginx/Traefik/Caddy 等）后面暴露，并在反代上补同源 Bearer 注入与访问控制。Swarm 的 `ingress` 会在**每个**节点上开放发布端口，只在单节点可达需要额外用防火墙/安全组收口，或改成 `mode: host` 并配合 placement 固定节点。
 
+### 管理台访问：网关注入 Authorization
+
+现成实现在 `deploy/admin-gateway/`（`stack-snippet.yml` 是服务定义，`README.md` 是变量/风险/轮换说明）。
+把片段并入单服务栈时就是多一个 `admin-gateway`（`nginx:1.27-alpine`，宿主端口写栈的 published 端口，
+如 52913）：
+
+- 浏览器访问 `http://<节点>:<网关端口>/` → basic auth（`ADMIN_GATEWAY_USER` / `ADMIN_GATEWAY_PASSWORD`）
+  → 静态资源与 SPA 路由原样转发给 jumcp；
+- `/admin/*` 由网关注入 `Authorization: Bearer <JUMCP_UPSTREAM_TOKEN>`（取 `JUMCP_ADMIN_TOKENS` 中某个
+  `id:token` 的 token 部分，不要另建令牌），响应 `Cache-Control: no-store`；
+- `/mcp` 与 `/internal/*` 在网关上直接 404，MCP 客户端仍直连 jumcp；
+- `/health` 只允许容器回环（Swarm healthcheck），外部访问 403；
+- 来源网段白名单 `10/8`、`172.16/12`、`192.168/16`，公网 403。
+
+开发期的等价物是 Vite 代理：`admin-web/vite.config.ts` 的 `devAdminAuth` 在 `pnpm dev` 时用
+`JUMCP_DEV_ADMIN_TOKEN` 代填同一个头。生产没有这层代理，才需要上面的网关。
+
 ## 数据与升级
 
 - `/data` 是命名卷 `jumcp-data`（Compose 项目下实际名 `jumcp_jumcp-data`），存 `registry.sqlite3` 与 `audit.sqlite3`。

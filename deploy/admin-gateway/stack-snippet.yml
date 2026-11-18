@@ -1,0 +1,157 @@
+# 管理台网关：让浏览器能用管理台，同时不把管理面凭证交给前端。
+#
+# 背景（实测）：jumcp 的管理面 `/admin/*` 只认 `Authorization: Bearer <admin token>`；而管理台是薄前端，
+# `admin-web/src/api/client.ts:32-37` 明确前端**不发** Authorization（构建期还会拦 VITE_ADMIN_*，
+# 见 `admin-web/vite.config.ts` 的 adminCredentialGuard）。所以直接暴露 8000/52912 时页面能加载，
+# 但所有面板都是 `HTTP 401 / MCP_UNAUTHORIZED`——这是 fail-closed 设计，不是部署故障。
+#
+# 本网关补上开发期 Vite 代理在生产里的等价物：
+#   - 同源反代管理台静态资源与 SPA 路由（`/`、`/assets/*`、`/favicon.svg`…）→ jumcp:8000；
+#   - 只对 `/admin/*` 注入 `Authorization: Bearer ${JUMCP_UPSTREAM_TOKEN}`；
+#   - 第一层访问控制是 nginx basic auth（账号来自 stack 环境变量），第二层是来源网段白名单；
+#   - 明确不代理 `/mcp` 与 `/internal/*`：MCP 客户端仍带自己的 agent token 直连 jumcp。
+#
+# 为什么配置写在这份 stack 片段里而不是挂文件：Swarm 栈在节点上没有仓库检出，
+# 无法 bind mount 仓库里的 nginx.conf；swarm config 对象又会让编排漂移出 stack（回滚不可覆盖）。
+# 因此 nginx 配置以 heredoc 形式内联在 `command` 里，本片段就是它的**唯一**来源。
+#
+# 转义规则（已用 `docker stack config` 实测）：栈文件先做 compose 变量插值，`$$` 会还原成 `$`。
+# 因此 nginx 自己的变量写成 `$$host` / `$$jumcp_upstream` / `$$request_uri`，
+# shell 的 `$$(cmd)` / `$${VAR}` 同理；占位符用不含 `$` 的 `__JUMCP_UPSTREAM_TOKEN__` 交给 sed。
+
+  admin-gateway:
+    image: nginx:1.27-alpine
+    ports:
+      # 本节点 ingress 网络没有路由器容器（vip+ingress 无 DNAT），必须 mode: host。
+      - target: 8080
+        published: 52913
+        protocol: tcp
+        mode: host
+    environment:
+      # 管理面 token 直接复用 jumcp 的 JUMCP_ADMIN_TOKENS 里那一个（token 部分），不要新建令牌：
+      # 管理面审计按 token 派生操作者身份，多一个令牌就多一个身份。
+      JUMCP_UPSTREAM_TOKEN: ${JUMCP_UPSTREAM_TOKEN}
+      ADMIN_GATEWAY_USER: ${ADMIN_GATEWAY_USER}
+      ADMIN_GATEWAY_PASSWORD: ${ADMIN_GATEWAY_PASSWORD}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        : "$${JUMCP_UPSTREAM_TOKEN:?JUMCP_UPSTREAM_TOKEN 未注入}"
+        : "$${ADMIN_GATEWAY_USER:?ADMIN_GATEWAY_USER 未注入}"
+        : "$${ADMIN_GATEWAY_PASSWORD:?ADMIN_GATEWAY_PASSWORD 未注入}"
+
+        # 第一层访问控制：操作者身份。镜像里没有 openssl/htpasswd，只有 BusyBox mkpasswd：
+        # `-m apr1` 产出 nginx auth_basic_user_file 接受的 apr1(md5-crypt) 行，`-P 0` 从 stdin 读密码，
+        # 避免密码出现在进程命令行里。
+        mkdir -p /etc/nginx/auth
+        printf '%s:%s\n' \
+          "$$ADMIN_GATEWAY_USER" \
+          "$$(printf '%s' "$$ADMIN_GATEWAY_PASSWORD" | mkpasswd -m apr1 -P 0)" \
+          > /etc/nginx/auth/htpasswd
+        chown root:nginx /etc/nginx/auth/htpasswd
+        chmod 0640 /etc/nginx/auth/htpasswd
+
+        cat > /etc/nginx/conf.d/gateway.conf <<'GATEWAY_CONF'
+        server {
+            listen 8080;
+            server_name _;
+
+            client_max_body_size 2m;
+
+            # 变量形式的 upstream：解析发生在请求期（容器/overlay DNS），
+            # 网关先于 jumcp 就绪也不会因为 "host not found in upstream" 起不来。
+            resolver 127.0.0.11 ipv6=off valid=10s;
+            set $$jumcp_upstream "http://jumcp:8000";
+
+            # 网关注入的是管理面凭证：只放行内网段，公网一律 403。
+            allow 10.0.0.0/8;
+            allow 172.16.0.0/12;
+            allow 192.168.0.0/16;
+            deny all;
+
+            auth_basic "jumcp 管理台";
+            auth_basic_user_file /etc/nginx/auth/htpasswd;
+
+            # Swarm healthcheck 打容器回环；外部访问 /health 一律 403（不暴露未鉴权的后端状态）。
+            location = /health {
+                auth_basic off;
+                allow 127.0.0.1;
+                allow ::1;
+                deny all;
+                proxy_set_header Host $$host;
+                proxy_http_version 1.1;
+                proxy_read_timeout 60s;
+                proxy_pass $$jumcp_upstream/health;
+                access_log off;
+            }
+
+            # 管理面：唯一注入 Bearer 的地方，缓存一律禁用（审计/令牌/工单都是实时数据）。
+            location /admin/ {
+                add_header Cache-Control "no-store" always;
+                proxy_set_header Host $$host;
+                proxy_set_header X-Real-IP $$remote_addr;
+                proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $$scheme;
+                proxy_set_header Authorization "Bearer __JUMCP_UPSTREAM_TOKEN__";
+                proxy_http_version 1.1;
+                proxy_read_timeout 60s;
+                proxy_pass $$jumcp_upstream$$request_uri;
+            }
+
+            # MCP 与内部接口不经网关：不给浏览器留同源的 MCP 入口。
+            location = /mcp {
+                return 404;
+            }
+
+            location /internal/ {
+                return 404;
+            }
+
+            # 管理台静态资源与 SPA 路由：原样转发，不改写任何请求头。
+            location / {
+                proxy_set_header Host $$host;
+                proxy_set_header X-Real-IP $$remote_addr;
+                proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $$scheme;
+                proxy_http_version 1.1;
+                proxy_read_timeout 60s;
+                proxy_pass $$jumcp_upstream$$request_uri;
+            }
+        }
+        GATEWAY_CONF
+
+        sed -i "s|__JUMCP_UPSTREAM_TOKEN__|$$JUMCP_UPSTREAM_TOKEN|g" /etc/nginx/conf.d/gateway.conf
+        rm -f /etc/nginx/conf.d/default.conf
+
+        # 交回官方 entrypoint（跑 /docker-entrypoint.d/* 后 exec nginx）；nginx.conf 里已含 user nginx，
+        # 因此 master 需要 SETUID/SETGID，写 htpasswd 需要 CHOWN（cap_drop ALL 下实测缺任一个都起不来）。
+        exec /docker-entrypoint.sh nginx -g "daemon off;"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.platform.os == linux
+          - node.platform.arch == x86_64
