@@ -11,6 +11,11 @@ version: "3.8"
 #     "Additional property platform is not allowed"），因此平台用 placement constraints 固定。
 #   - registry/audit 是两个 SQLite 文件，单写者：只能 1 副本，更新用 stop-first，绝不能水平扩容。
 #   - `/data` 用命名卷，是节点本地卷：服务重调度到别的节点会拿到空库。
+#
+# 管理台（浏览器）访问：本文件只发布 jumcp 本体。/admin/* 只认 Bearer，而管理台前端不发凭证，
+# 所以直接打开 8000 时页面能加载、面板全 401——这是 fail-closed 设计。
+# 要真正能用管理台，把 `deploy/admin-gateway/stack-snippet.yml` 的 `admin-gateway` 服务并入本编排
+# （同源反代 + 只对 /admin/* 注入 Bearer + basic auth + 内网网段白名单），说明见该目录 README。
 
 services:
   jumcp:
