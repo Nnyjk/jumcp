@@ -565,6 +565,68 @@ fn legacy_managed_group_display_name_falls_back_to_code() {
     assert!(s.managed_group("legacy.group").unwrap().is_some());
 }
 
+/// 旧 registry.sqlite3（`mcp_upstreams` 还没有 catalog 两列）：打开时补列，旧行取空串，
+/// 再打开一次幂等。手写 15 列是因为 CREATE TABLE IF NOT EXISTS 对已存在的表不动，
+/// 只有 `ensure_column` 这条路径能让老库升上来。
+#[test]
+fn legacy_upstream_table_gains_catalog_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.sqlite3");
+    let path = path.to_str().expect("path");
+    {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            r#"CREATE TABLE mcp_upstreams (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, transport TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '', command TEXT NOT NULL DEFAULT '',
+    args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
+    headers_json TEXT NOT NULL DEFAULT '{}', group_code TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'custom', read_only INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1, timeout_ms INTEGER NOT NULL DEFAULT 10000,
+    created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO mcp_upstreams (id, name, transport, url, group_code, created_at, updated_at)
+VALUES ('legacy', '旧上游', 'http', 'http://127.0.0.1:9/mcp', 'db.read.legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"#,
+        )
+        .unwrap();
+    }
+
+    let s = CapabilityStore::open(path, None).unwrap();
+    {
+        let conn = s.db().lock().unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(mcp_upstreams)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(columns.iter().any(|c| c == "catalog_id"), "{columns:?}");
+        assert!(
+            columns.iter().any(|c| c == "catalog_version"),
+            "{columns:?}"
+        );
+        let (catalog_id, catalog_version): (String, String) = conn
+            .query_row(
+                "SELECT catalog_id, catalog_version FROM mcp_upstreams WHERE id='legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(catalog_id, "", "旧行补列取默认空串");
+        assert_eq!(catalog_version, "");
+    }
+    let row = s.upstream("legacy").unwrap().expect("旧行仍可读");
+    assert!(row.catalog_id.is_none(), "空串读出即无包坐标");
+    assert!(row.catalog_version.is_none());
+    drop(s);
+
+    // 第二次打开：列已存在，ensure_column 幂等；旧行值与读出形状都不变。
+    let s = CapabilityStore::open(path, None).unwrap();
+    let row = s.upstream("legacy").unwrap().expect("旧行仍可读");
+    assert!(row.catalog_id.is_none());
+    assert!(row.catalog_version.is_none());
+}
+
 #[test]
 fn admin_audit_rejects_anonymous_actor() {
     let audit = AuditLog::open(":memory:").unwrap();
@@ -781,4 +843,101 @@ fn concurrent_submit_lets_exactly_one_win() {
         .count();
     assert_eq!(ok, 1, "并发提交只允许一个请求把 draft 推进到 review");
     assert_eq!(s.get("cap1").unwrap().unwrap().status, "review");
+}
+
+/// allowlist 通配的形状：`*` 与 `<server_id>__*` 合法，能反解不到上游的形状一律拒绝。
+#[test]
+fn tool_allowlist_entries_only_wildcard_in_known_shapes() {
+    for ok in [
+        TOOL_WILDCARD_ALL,
+        "search_capabilities",
+        "clickhouse__query",
+        "clickhouse__*",
+    ] {
+        assert!(is_tool_allowlist_entry(ok), "{ok} 应被接受");
+    }
+    for bad in [
+        "",
+        "**",
+        "a__b__*",
+        "*__x",
+        "__*",
+        "clickhouse__",
+        "ClickHouse__*",
+    ] {
+        assert!(!is_tool_allowlist_entry(bad), "{bad} 应被拒绝");
+    }
+}
+
+/// 匹配语义：`*` 命中一切，`<server_id>__*` 只命中该上游的暴露名，其余是精确匹配。
+#[test]
+fn tool_allowlist_matches_wildcards_and_exact_names() {
+    assert!(tool_allowlist_matches("*", "clickhouse__query"));
+    assert!(tool_allowlist_matches("*", "search_capabilities"));
+    assert!(tool_allowlist_matches("clickhouse__*", "clickhouse__query"));
+    assert!(
+        !tool_allowlist_matches("clickhouse__*", "clickhouse2__query"),
+        "前缀必须落在分隔符上"
+    );
+    assert!(!tool_allowlist_matches(
+        "clickhouse__*",
+        "clickhouse_east__query"
+    ));
+    assert!(tool_allowlist_matches(
+        "clickhouse__query",
+        "clickhouse__query"
+    ));
+    assert!(!tool_allowlist_matches(
+        "clickhouse__query",
+        "clickhouse__list_tables"
+    ));
+    // 历史数据里的非法条目按精确匹配处理，不得变成"命中一切"。
+    assert!(!tool_allowlist_matches("a__b__*", "a__b__query"));
+}
+
+/// 显式 secret 集合必须能脱敏"名字不像密钥"的 env（内置包字段声明才是权威）。
+#[test]
+fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
+    let audit = std::sync::Arc::new(crate::audit::AuditLog::open(":memory:").expect("audit"));
+    let store = CapabilityStore::open(":memory:", Some(audit.clone())).expect("store");
+    let sealed = "enc:v1:00112233445566778899aabbccddeeff";
+    let upstream = McpUpstream {
+        id: "foo".into(),
+        name: "foo".into(),
+        transport: "http".into(),
+        url: "http://127.0.0.1:8123/mcp".into(),
+        command: String::new(),
+        args: Vec::new(),
+        env: std::collections::BTreeMap::from([("JUMCP_FOO_KEY".to_string(), sealed.to_string())]),
+        headers: std::collections::BTreeMap::new(),
+        group: "db.read.core".into(),
+        category: "custom".into(),
+        read_only: true,
+        enabled: true,
+        timeout_ms: 30_000,
+        catalog_id: None,
+        catalog_version: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    store
+        .insert_upstream(&upstream, &["JUMCP_FOO_KEY"], "alice")
+        .expect("insert");
+
+    let events = audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .expect("query");
+    let create = events
+        .iter()
+        .find(|event| event.payload["action"] == json!("create"))
+        .expect("create event");
+    let serialized = serde_json::to_string(&create.payload).expect("json");
+    assert!(!serialized.contains(sealed), "审计泄漏密文: {serialized}");
+    let env_change = create.payload["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .find(|change| change["field"] == json!("env"))
+        .expect("env change");
+    assert_eq!(env_change["after"]["JUMCP_FOO_KEY"], json!("***"));
 }

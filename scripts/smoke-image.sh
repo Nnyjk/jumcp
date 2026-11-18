@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验健康、同源管理台静态资源、管理面鉴权与 /mcp。
+# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验健康、同源管理台静态资源、管理面鉴权、/mcp 与内置 MCP 包安装链路。
 # 用途：CI 的镜像 job 与 release 发布后的 digest 回拉校验；本地 `docker build` 后也可直接跑。
 #
 # 用法：scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
@@ -98,6 +98,8 @@ docker run -d --name "$NAME" \
   --tmpfs "/data:rw,mode=1777,size=64m" \
   -e "JUMCP_ADMIN_TOKENS=${ADMIN_ID}:${ADMIN_TOKEN}" \
   -e "JUMCP_AGENT_TOKENS=${AGENT_ID}:${AGENT_ROLE}:${AGENT_TOKEN}" \
+  -e "JUMCP_SECRET_KEY=${JUMCP_SECRET_KEY:-3333333333333333333333333333333333333333333333333333333333333333}" \
+  -e "JUMCP_TRANSPORT_KEY=${JUMCP_TRANSPORT_KEY:-4444444444444444444444444444444444444444444444444444444444444444}" \
   "$IMAGE" >/dev/null || fail "docker run 失败"
 STARTED=1
 
@@ -140,6 +142,18 @@ get() {
   case "$meta" in
     *' '*) CTYPE="${meta#* }" ;;
   esac
+  case "$CODE" in
+    ''|*[!0-9]*) CODE=000 ;;
+  esac
+}
+
+patch_json() {
+  # patch_json <url> <outfile> <body> <bearer token>；结果写入 CODE
+  local url="$1" out="$2" body="$3" token="$4"
+  CODE="$(curl -sS --max-time 15 -o "$out" -w '%{http_code}' \
+    -X PATCH -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+    --data "$body" "$url" 2>/dev/null || true)"
+  CODE="${CODE%%$'\n'*}"
   case "$CODE" in
     ''|*[!0-9]*) CODE=000 ;;
   esac
@@ -259,7 +273,97 @@ json_is "$TMP_ROOT/mcp_tools.json" \
   '/mcp tools/list 缺少 search_capabilities'
 echo "    ok: POST /mcp tools/list → 200 且含 search_capabilities"
 
-# 8. 非 root：容器内实际 UID 必须是 10001
+# 8. 内置 MCP 包：目录自带 HTTP 接入信息 → 安装（密码以传输密文提交、响应脱敏）→ PATCH 改配置
+#    → 刷新（内嵌端点 tools/list，不连库）→ agent 面可见 → 卸载后目录无残留安装。
+#    url 指向 127.0.0.1:8123（不可达）是对的：安装只写配置，刷新只握手 tools/list。
+PKG_ID="clickhouse-basic"
+PKG_UPSTREAM="clickhouse"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/catalog.json" \
+  '(.items[] | select(.id == "clickhouse-basic"))
+   | (.transport == "http")
+     and (has("binary_present") | not)
+     and (has("stdio_enabled") | not)
+     and (.fields | map(.key) | index("url") != null)
+     and (.fields | map(.key) | index("password") != null)
+     and ((.installations | length) == 0)' \
+  'GET /admin/mcp/catalog 里 clickhouse-basic 的契约不对（应为 http、无 binary/stdio 字段、含 url/password 字段、无残留安装）'
+echo "    ok: GET /admin/mcp/catalog → 200 且 ${PKG_ID} 为 HTTP 包（无 binary/stdio 字段，无残留安装）"
+
+# secret 字段必须密文传输：浏览器用 `GET /admin/transport-key` 下发的同一个
+# JUMCP_TRANSPORT_KEY 在本机加密。这里内联一个预先算好的常量（宿主机不一定有 python）：
+#   key       = 64 个 4（上面的 JUMCP_TRANSPORT_KEY）
+#   nonce     = 000102030405060708090a0b（12 字节）
+#   plaintext = smoke-pass
+#   ciphertext= enc:v1:‖hex(nonce‖AES-256-GCM(key, nonce, plaintext, aad=""))
+# 复算（任意装了 cryptography 的环境）：
+#   python -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM as A;
+#     k=bytes([0x44])*32; n=bytes.fromhex("000102030405060708090a0b");
+#     print("enc:v1:"+(n+A(k).encrypt(n,b"smoke-pass",None)).hex())'
+SMOKE_PASS_CIPHERTEXT='enc:v1:000102030405060708090a0bb87517b3dd71670b04fe6aaf42a005e3a0486ebca90f17516cae'
+
+# 明文密码必须被拒：不允许"解不开就当明文用"。
+PLAINTEXT_BODY='{"group":"db.read.core","config":{"url":"http://127.0.0.1:8123","username":"default","password":"smoke-plaintext"}}'
+post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_plaintext.json" "$PLAINTEXT_BODY" "$ADMIN_TOKEN"
+[ "$CODE" = "400" ] || fail "安装时提交明文 password 期望 400，实际 $CODE"
+json_is "$TMP_ROOT/pkg_plaintext.json" '.error.code == "MCP_TRANSPORT_CIPHERTEXT_REQUIRED"' \
+  '明文 password 的错误码不是 MCP_TRANSPORT_CIPHERTEXT_REQUIRED'
+json_is "$TMP_ROOT/pkg_plaintext.json" '((tostring | contains("smoke-plaintext")) | not)' \
+  '明文 password 被回显到了错误响应里'
+echo "    ok: 安装时提交明文 password → 400（MCP_TRANSPORT_CIPHERTEXT_REQUIRED，未回显明文）"
+
+INSTALL_BODY="{\"group\":\"db.read.core\",\"config\":{\"url\":\"http://127.0.0.1:8123\",\"username\":\"default\",\"password\":\"${SMOKE_PASS_CIPHERTEXT}\"}}"
+post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_install.json" "$INSTALL_BODY" "$ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /admin/mcp/catalog/${PKG_ID}/install 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_install.json" ".upstream.id == \"${PKG_UPSTREAM}\"" \
+  "安装接口返回的上游 id 不是 ${PKG_UPSTREAM}"
+json_is "$TMP_ROOT/pkg_install.json" \
+  '(.upstream.transport == "http") and (.upstream.env.JUMCP_CLICKHOUSE_PASSWORD == "***")
+     and ((tostring | contains("smoke-pass")) | not)
+     and ((tostring | contains("enc:v1:")) | not)' \
+  '安装响应不合契约（transport 应为 http、密码应为 "***"，且不得出现明文或密文）'
+echo "    ok: POST /admin/mcp/catalog/${PKG_ID}/install → 200（上游 ${PKG_UPSTREAM}，transport=http，密码已脱敏）"
+
+post_json "$BASE/admin/upstreams/${PKG_UPSTREAM}/refresh" "$TMP_ROOT/pkg_refresh.json" '{}' "$ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_refresh.json" '.status == "ok"' \
+  "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 status 不是 \"ok\"（内嵌端点未响应或 Bearer 注入失败）"
+json_is "$TMP_ROOT/pkg_refresh.json" '.tool_count == 3' \
+  "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 tool_count 期望 3（tools/list 不需要真连库）"
+echo "    ok: POST /admin/upstreams/${PKG_UPSTREAM}/refresh → 200（status=ok，tool_count=3）"
+
+PATCH_BODY='{"config":{"url":"http://127.0.0.1:8124","password":""}}'
+patch_json "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config" "$TMP_ROOT/pkg_patch.json" "$PATCH_BODY" "$ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "PATCH /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_patch.json" \
+  '(.installation.config.url == "http://127.0.0.1:8124")
+     and (.installation.secrets_set.password == true)
+     and ((tostring | contains("smoke-pass")) | not)
+     and ((tostring | contains("enc:v1:")) | not)' \
+  'PATCH 配置响应不合契约（url 应更新、secrets_set.password=true、且不得出现明文或密文）'
+echo "    ok: PATCH .../config → 200（url 已更新，secrets_set.password=true，密码未回显）"
+
+PKG_LIST_BODY='{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+post_json "$BASE/mcp" "$TMP_ROOT/pkg_tools.json" "$PKG_LIST_BODY" "$AGENT_TOKEN"
+[ "$CODE" = "200" ] || fail "POST /mcp tools/list（安装 ${PKG_ID} 后）期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_tools.json" \
+  '((.result.tools // []) | map(.name) | index("clickhouse__query")) != null' \
+  "安装后 /mcp tools/list 缺少 clickhouse__query"
+echo "    ok: 安装后 POST /mcp tools/list → 200 且含 clickhouse__query"
+
+get "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}" "$TMP_ROOT/pkg_uninstall.json" \
+  -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "DELETE /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM} 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_uninstall.json" '.deleted == true' "卸载响应缺少 deleted=true"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog_after.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+[ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog（卸载后）期望 200，实际 $CODE"
+json_is "$TMP_ROOT/catalog_after.json" \
+  '(.items[] | select(.id == "clickhouse-basic") | .installations | length) == 0' \
+  "卸载后 ${PKG_ID} 仍有残留安装"
+echo "    ok: DELETE /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM} → 200 且目录无残留安装"
+
+# 9. 非 root：容器内实际 UID 必须是 10001
 # 用 `--entrypoint id`（不带绝对路径）而不是 `/usr/bin/id`：Git Bash/MSYS 会把绝对路径
 # 当成宿主路径改写成 `C:\...`，传给 docker 后容器里找不到可执行文件。
 UID_IN_CONTAINER="$(docker run --rm --entrypoint id "$IMAGE" -u 2>/dev/null || true)"

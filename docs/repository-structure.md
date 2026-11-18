@@ -13,7 +13,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 | `scripts/` | 本地与 CI 共用的启动/测试/冒烟脚本（PowerShell + Bash 双份） |
 | `docs/` | 当前有效的方案、契约与运维文档 |
 | `notes/` | 工作笔记：踩坑、约束、被否决的决定（`notes/mcp_plan/` 的架构预览与落地计划是历史记录，不作为契约） |
-| `.github/workflows/` | CI 与 release 流水线 |
+| `.github/workflows/` | CI（`ci.yml`）、镜像 CD（`image-cd.yml`）与无头 Web CD（`web-cd.yml`） |
 | `Dockerfile` / `.dockerignore` | 多阶段构建：Rust release 编译 → Node 构建管理台 → `debian:bookworm-slim` 运行时 |
 | `README.md` / `CONTRIBUTING.md` / `AGENTS.md` | 项目说明 / 协作与分支模型 / 文档与注释规范 |
 | `LICENSE` | MIT |
@@ -32,6 +32,8 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 |---|---|
 | `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 管理面与 agent 主体令牌（常量时间比较）、`datasource` 数据源引用（DSN 只取环境变量） |
 | `registry/` | 能力注册表：`record` 记录/版本/管理变更结构与定义 diff、`lifecycle` 注册→审核→发布→下架与可见性、`groups` 管理组 CRUD 与引用计数、`upstreams` 上游配置与逐工具组覆盖 |
+| `builtin/` | 内置 MCP 插件类型：`BuiltinPackage` / `BuiltinField` / `BuiltinToolDef` / `BuiltinConfig` / `BuiltinError` 与 `BuiltinMcp` trait（只依赖 `serde_json` 与 `std`，不依赖任何具体数据库） |
+| `secret.rs` | 配置字段加密：`SecretKey` 解析 64 位 hex 密钥，`enc:v1:` 前缀的 AES-256-GCM 加解密、`is_encrypted`（明文值原样兼容）与 `to_hex`（仅供 `GET /admin/transport-key` 下发传输密钥）；落库密钥 `JUMCP_SECRET_KEY` 与传输密钥 `JUMCP_TRANSPORT_KEY` 共用实现、用途分离 |
 | `template/` | `definition` 模板定义与结构变体白名单、`render` 注册期门禁与运行期渲染（占位符改写、sqlguard 复核、参数绑定）、`registry` 模板注册表 |
 | `access/` | `token.rs` 平台生成的 MCP access token 与哈希鉴权、`mod.rs` 持久化 / 撤销 / 组引用计数（明文只在创建或重签发时返回一次） |
 | `entry.rs` | 平面 A 纯函数：三通道解析 → 越界判定 → `EffectiveScope`（组 → 角色 → 工具名收窄） |
@@ -54,6 +56,10 @@ host 与 connector agent 之间的按行 JSON-RPC 协议定义（`src/lib.rs`：
 
 ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参数绑定、执行、取数。`src/lib.rs` 是被 host 拉起的实现，`src/main.rs` 是二进制入口（`jumcp-connector-clickhouse`）；`tests/protocol.rs` 覆盖协议编解码。
 
+### `backend/crates/jumcp-mcp-clickhouse/`
+
+内置 MCP 包 `clickhouse-basic` 的**库**（无二进制、无 stdio 行循环）：`src/plugin.rs` 是 `BuiltinMcp` 实现（静态包定义与字段、按配置指纹缓存 `ClickHouseAgent`）、`src/tools.rs` 是工具定义与参数校验、`src/executor.rs` 包装 connector 的只读执行、`src/lib.rs` 是 `Server::call_tool`（工具语义）；配置按字段 key 传入 `BuiltinConfig`。`tests/protocol.rs` 覆盖工具语义（协议层由 `jumcp-server` 的内嵌端点测试覆盖）。
+
 ### `backend/crates/jumcp-server/`
 
 服务与传输层。
@@ -63,8 +69,9 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 | `main.rs` / `lib.rs` | 进程入口（参数、启动装配）与可测试的库骨架 |
 | `service.rs` | `Service` 聚合：配置、catalog、执行委托、审计与按会话预算 |
 | `mcp/` | 手写 JSON-RPC MCP 服务：`mod` 的 tools/list（按 `EffectiveScope` 过滤 + 常驻预算）与元工具、维护通道；`http` 把 HTTP 请求翻成平台身份；`dispatch/{tools,upstream,admin}` 分别是工具、上游转发、管理类方法的处理臂 |
-| `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现 |
-| `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现 |
+| `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现，`packages` 内置 MCP 包目录、安装、配置编辑与卸载 |
+| `builtin/` | 内置 MCP 运行时：`mod` 是插件注册表（`plugin(id)` / `plugins()`）、内嵌端点 `POST /internal/mcp/{package_id}/{upstream_id}`（Bearer 内存 token）与 `BuiltinEndpoint`（base + token，供上游客户端注入鉴权）；`migrate` 把旧 stdio 安装改写为 HTTP |
+| `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现；`http` 对命中内置端点 base 的请求注入 internal Bearer；`stdio::bundled_binary` 是手工 stdio 上游可执行文件的唯一解析点（`JUMCP_MCP_BUNDLED_BIN_DIR` → 服务同目录 → `PATH`） |
 | `connector/` | 连接器桥：把已校验的只读执行委托给子进程 `jumcp-connector-clickhouse`（L4、database 白名单、行数夹紧、单格整形留在 host） |
 | `executor.rs` | 只读执行委托契约（`QueryExecutor`）；未配置数据源时显式报错，绝不假执行 |
 | `catalog.rs` | 能力抽象与内存目录（可见性 `published ∧ discoverable ∧ group ∈ scope`，不可见与不存在同构） |
@@ -79,7 +86,7 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 | 路径 | 职责 |
 |---|---|
 | `contracts.rs`、`discovery.rs`、`discovery_projection.rs`、`identity_admin.rs`、`templates.rs`、`web_hosting.rs` | 顶层的工具表面、发现投影、身份与管理面、模板、静态托管契约 |
-| `admin/`、`tokens/`、`upstream/` | 每个子目录是一个测试 target（`main.rs`），按面组织：鉴权、CRUD、审核与冲突、统计、上游传输与 scope |
+| `admin/`、`tokens/`、`upstream/` | 每个子目录是一个测试 target（`main.rs`），按面组织：鉴权、CRUD、审核与冲突、统计、上游传输与 scope（`upstream/packages.rs` 用真实回环 listener 覆盖内置包的目录契约、安装、配置编辑、包管理字段保护、卸载与旧 stdio 迁移） |
 | `support/mod.rs` | 共享设施：真实 axum 链路、admin 鉴权请求、能力发布与审计样例 |
 | `support/fake_upstream.rs` | 上游 MCP server 的假实现（stdio / HTTP 测试用） |
 
@@ -93,7 +100,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 |---|---|
 | `src/main.tsx` / `src/App.tsx` | 挂载、路由与全局外壳（侧栏 + content 视图栈） |
 | `src/api/` | `client.ts`（fetch 封装与错误归一）、`queries.ts`（数据拉取）、`admin.ts`（管理面接口）、`types.ts`（契约类型） |
-| `src/pages/` | 路由级页面，一个功能一个目录：`dashboard/`（工作台与图表）、`tools/`（台账与新建草案）、`groups/`、`capability-dossier/`（六分栏与审批）、`upstreams/`（含基础工具弹层）、`tokens/`、`audit-query/`、`review-queue/`；`ExceptionPage.tsx`、`HealthPage.tsx` 是单文件页面 |
+| `src/pages/` | 路由级页面，一个功能一个目录：`dashboard/`（工作台与图表）、`tools/`（台账与新建草案）、`groups/`、`capability-dossier/`（六分栏与审批）、`upstreams/`（MCP 接入单页两页签：「接入清单」含基础工具弹层，「安装目录」含内置包的安装表单、已安装实例的配置编辑与卸载）、`tokens/`、`audit-query/`、`review-queue/`；`ExceptionPage.tsx`、`HealthPage.tsx` 是单文件页面 |
 | `src/components/` | 复用的展示与交互件（表格、卡片、弹层、侧栏、主题切换、提交确认等） |
 | `src/motion/` | 过渡与动画原语（`useGsap.ts`） |
 | `src/styles/` | `index.css` 为汇总入口，`components.css` 按顺序 `@import` `styles/components/*.css`（顺序即级联优先级，勿重排）；另有 `layout.css`、`modal.css`、`dashboard.css`、`tokens.css` 与主题变量 |
@@ -109,7 +116,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 - `scripts/`：`dev.ps1`/`dev.sh`（一键启动前后端）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
 - `docs/`：只写**当前有效**的结论（方案、契约、运维与 CI），结论变了就改原文，不保留阶段性设计与变更叙述；这类历史与被否决项放 `notes/`。文档索引在 `README.md`。
 - `notes/`：只记踩坑、约束、被否决的决定与开发期重要信息，路径 `notes/<module>/<note_name>.md`；结论一旦稳定就上升进 `docs/`。规范见 `AGENTS.md`。
-- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动，只读、不推镜像）与 `release.yml`（`main` push、`v*` tag、手动，推 GHCR）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
+- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动，只读、不推镜像）、`image-cd.yml`（`dev`/`main` push、`v*` tag、手动，推 GHCR 并在 digest 上冒烟）与 `web-cd.yml`（同触发面，产出无头 Web 包 artifact，tag 时挂 GitHub Release）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
 
 ## 目录约定
 

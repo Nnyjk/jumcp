@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 发布镜像的版本与 tag 计算：release 流水线与本地共用同一份规则。
+# 发布镜像产物（GHCR 镜像、无头 Web 包）的版本与 tag 计算：CD 流水线与本地共用同一份规则。
 #
 # 用法：
 #   scripts/release-tags.sh [--ref-type branch|tag] [--ref-name <ref>] [--sha <sha>]
@@ -10,10 +10,11 @@
 # --image 给定时每个 tag 拼成 `<image>:<tag>`，否则只打印裸 tag。
 #
 # 规则：
+#   dev 分支  → version=dev，tags=dev,sha-<7 位>（快照，不带 latest）
 #   main 分支 → version=main，tags=latest,main,sha-<7 位>（latest 只在这里产出）
 #   版本 tag  → version=<去掉 v 的 tag>，
 #               tags=<version>,<major>.<minor>.<patch>（仅四段版本）,<major>.<minor>,sha-<7 位>
-#   其它 ref  → 非 0 退出：发布只发生在 main 与版本 tag 上
+#   其它 ref  → 非 0 退出：发布只发生在 dev/main 与版本 tag 上
 #   tag 必须是 v + 3 或 4 段数字（v1.2.3 / v0.0.1.000），其它格式非 0 退出
 
 set -euo pipefail
@@ -24,7 +25,7 @@ sha="${GITHUB_SHA:-}"
 image=""
 to_github_output=0
 
-usage() { sed -n '2,17p' "$0" >&2; }
+usage() { sed -n '2,18p' "$0" >&2; }
 die() { echo "release-tags: $*" >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
@@ -47,10 +48,20 @@ short_sha="${sha:0:7}"
 
 case "$ref_type" in
   branch)
-    [ "$ref_name" = "main" ] \
-      || die "分支 '$ref_name' 不发布镜像：只有 main 触发发布，dev/feature 走 CI"
-    version="main"
-    tags=(latest main "sha-${short_sha}")
+    case "$ref_name" in
+      dev)
+        # 集成分支快照：只给可追溯的 dev / sha-<7>，不产出 latest（latest 只属于 main）。
+        version="dev"
+        tags=(dev "sha-${short_sha}")
+        ;;
+      main)
+        version="main"
+        tags=(latest main "sha-${short_sha}")
+        ;;
+      *)
+        die "分支 '$ref_name' 不发布：只有 dev（快照）、main（发布）与版本 tag 会产出镜像"
+        ;;
+    esac
     ;;
   tag)
     case "$ref_name" in
@@ -68,7 +79,7 @@ case "$ref_type" in
     tags+=("${major}.${minor}" "sha-${short_sha}")
     ;;
   *)
-    die "ref 类型 '$ref_type' 不发布镜像：只支持 main 分支与 v* 版本 tag"
+    die "ref 类型 '$ref_type' 不发布：只支持 dev/main 分支与 v* 版本 tag"
     ;;
 esac
 

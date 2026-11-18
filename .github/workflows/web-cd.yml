@@ -1,0 +1,107 @@
+name: Web CD
+
+# 无头 Web（管理台静态产物）发布：dev/main 每次推送产出可下载的构建包，
+# v* tag 额外把该包挂到对应的 GitHub Release 上。
+# 镜像发布在 image-cd.yml，两者互不依赖，可各自重跑。
+on:
+  push:
+    branches: [dev, main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# 默认最小权限：构建 job 只读仓库内容；写 Release 的权限只下放给 tag 场景的 release job。
+permissions:
+  contents: read
+
+# 产物与 Release 都是「一次推送一份」，不取消进行中的运行。
+concurrency:
+  group: web-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ARTIFACT_NAME: jumcp-admin-web-headless-${{ github.run_id }}
+
+jobs:
+  build:
+    name: build headless web bundle
+    # 与 image-cd.yml 一致：workflow_dispatch 选到其它 ref 时整 job 跳过，不产出发布包。
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-web/package-lock.json
+
+      - name: Install
+        working-directory: admin-web
+        run: npm ci
+
+      - name: Lint
+        working-directory: admin-web
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: admin-web
+        run: npm run typecheck
+
+      # 传输加密自检：前端生成的 `enc:v1:` 必须与后端/冒烟脚本的常量逐字节一致。
+      - name: Transport crypto test
+        working-directory: admin-web
+        run: npm run test:transport
+
+      - name: Build
+        working-directory: admin-web
+        run: npm run build
+
+      # 产物校验：dist 必须真的能作为静态站点提供（/ 200、/review SPA 回退、hashed JS 可取）。
+      - name: Headless web smoke
+        run: bash scripts/smoke-headless-web.sh
+
+      # 版本号与镜像同一份规则（scripts/release-tags.sh）：
+      #   dev → dev，main → main，tag v0.0.1.000 → 0.0.1.000。
+      - name: Compute version
+        id: meta
+        run: bash scripts/release-tags.sh --github-output
+
+      - name: Package dist
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: tar -C admin-web/dist -czf "jumcp-admin-web-${VERSION}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: jumcp-admin-web-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: attach web bundle to release
+    needs: build
+    # 只有 v* tag 需要写 Release；分支运行到 build 为止（GitHub 权限是 job 级的，所以拆 job）。
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: jumcp-admin-web-${{ needs.build.outputs.version }}.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true

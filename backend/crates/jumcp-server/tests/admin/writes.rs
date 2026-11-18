@@ -254,6 +254,7 @@ async fn write_endpoints_refuse_when_audit_disabled() {
         service,
         store: store.clone(),
         tokens: settings().admin_tokens,
+        transport_key: Some(crate::support::transport_key()),
     });
 
     let (status, body) = call(

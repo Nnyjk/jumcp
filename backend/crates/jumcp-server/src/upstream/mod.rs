@@ -18,6 +18,7 @@ mod stdio;
 
 use self::client::UpstreamClient;
 
+use crate::builtin::BuiltinEndpoint;
 use crate::catalog::{Capability, SOURCE_UPSTREAM};
 use crate::discovery;
 use jumcp_core::entry::EffectiveScope;
@@ -125,22 +126,37 @@ pub fn basic_eligible(def: &McpUpstream, tool: &UpstreamTool) -> bool {
         && is_upstream_tool_name(&exposed_tool_name(&def.id, &tool.name))
 }
 
-/// 工具在本次投影里的**生效组**：显式覆盖到 `basic` 且仍 eligible 时是 `basic`，
-/// 否则继承上游注册时的组。`eligible` 当场复核，因此上游改成可写/改成 admin 类别时，
-/// 覆盖行不会继续把一个不合规的工具暴露在公共通道上。
-fn effective_group<'a>(
+/// 工具在本次投影里的**生效组**；`None` = 覆盖到 `basic` 但已不合格，公共通道不可见。
+///
+/// 未覆盖 → 继承上游组；覆盖到 `basic` 且仍 eligible → `basic`；覆盖到 `basic` 但上游
+/// 改成可写/改成 admin 类别/暴露名不合法 → `None`。`eligible` 当场复核，覆盖行不能继续
+/// 把一个不合规的工具暴露在公共通道上。
+///
+/// 投影里的可见性、`/admin/upstreams/{id}/tools` 的展示、`/admin/tokens/options` 的授予面
+/// 必须共用这一份判定：三处各写一遍时，options 会把"勾选后在 `tools/list` 里看不到"的
+/// 工具照样列出来。覆盖数据在管理面是行集、在投影里是索引，因此这里只收
+/// "是否覆盖到 basic"，由调用方从自己的数据形态算出。
+pub(crate) fn effective_tool_group<'a>(
     def: &'a McpUpstream,
     tool: &UpstreamTool,
-    overrides: &'a HashMap<String, HashMap<String, String>>,
-) -> &'a str {
-    match overrides
+    overridden_to_basic: bool,
+) -> Option<&'a str> {
+    if !overridden_to_basic {
+        return Some(&def.group);
+    }
+    basic_eligible(def, tool).then_some(discovery::BASIC_GROUP)
+}
+
+/// 索引形态的覆盖查询：`overrides[上游 id][原始工具名] == basic`。
+fn overridden_to_basic(
+    def: &McpUpstream,
+    tool: &UpstreamTool,
+    overrides: &HashMap<String, HashMap<String, String>>,
+) -> bool {
+    overrides
         .get(&def.id)
         .and_then(|tools| tools.get(&tool.name))
-        .filter(|group| group.as_str() == discovery::BASIC_GROUP && basic_eligible(def, tool))
-    {
-        Some(group) => group.as_str(),
-        None => &def.group,
-    }
+        .is_some_and(|group| group.as_str() == discovery::BASIC_GROUP)
 }
 
 struct Pooled {
@@ -172,6 +188,8 @@ pub struct UpstreamManager {
     inner: Mutex<Inner>,
     /// 每个上游一把建连锁：并发请求不会为同一上游拉起两个 stdio 进程/两条初始化链。
     connect_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    /// 内置 MCP 端点：URL 命中其 base 时注入进程内 Bearer token（见 builtin 模块）。
+    builtin: Option<BuiltinEndpoint>,
 }
 
 impl UpstreamManager {
@@ -197,7 +215,19 @@ impl UpstreamManager {
             http,
             inner: Mutex::new(Inner::default()),
             connect_locks: Mutex::new(HashMap::new()),
+            builtin: None,
         }
+    }
+
+    /// 挂上内置 MCP 端点（HTTP 模式启动时由 main 注入）。
+    pub fn with_builtin(mut self, endpoint: BuiltinEndpoint) -> Self {
+        self.builtin = Some(endpoint);
+        self
+    }
+
+    /// 内置端点信息；`None` 表示本次启动没有内嵌端点（stdio 模式或测试未注入）。
+    pub fn builtin_endpoint(&self) -> Option<&BuiltinEndpoint> {
+        self.builtin.as_ref()
     }
 
     pub fn store(&self) -> &Arc<CapabilityStore> {
@@ -305,7 +335,7 @@ impl UpstreamManager {
         if let Some(client) = self.pooled(&def.id, &generation) {
             return Ok((client, generation));
         }
-        let client = UpstreamClient::connect(self.http.clone(), def)
+        let client = UpstreamClient::connect(self.http.clone(), def, self.builtin.as_ref())
             .await
             .map_err(|e| e.with_hash(&generation))?;
         let client = Arc::new(client);
@@ -512,7 +542,10 @@ impl UpstreamManager {
             }
             let tools: Vec<UpstreamTool> = tools
                 .into_iter()
-                .filter(|tool| effective_group(&def, tool, &overrides) == discovery::BASIC_GROUP)
+                .filter(|tool| {
+                    effective_tool_group(&def, tool, overridden_to_basic(&def, tool, &overrides))
+                        == Some(discovery::BASIC_GROUP)
+                })
                 .collect();
             if !tools.is_empty() {
                 out.push((def, tools));
@@ -533,7 +566,10 @@ impl UpstreamManager {
                 if !discovery::tool_allowed(scope, &exposed) {
                     continue;
                 }
-                let group = effective_group(&def, tool, &overrides).to_string();
+                let group =
+                    effective_tool_group(&def, tool, overridden_to_basic(&def, tool, &overrides))
+                        .unwrap_or(&def.group)
+                        .to_string();
                 out.push(discovery::project_upstream(&def, tool, &exposed, &group));
             }
         }

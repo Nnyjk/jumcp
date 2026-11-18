@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { BackButton } from './components/BackButton'
 import { LoadingState } from './components/PageShell'
 import { Sidebar, type NavEntry } from './components/Sidebar'
@@ -124,6 +124,8 @@ export default function App() {
                   <Route path="/review" element={<ReviewQueuePage />} />
                   <Route path="/tools" element={<ToolsPage />} />
                   <Route path="/upstreams" element={<UpstreamsPage />} />
+                  {/* 旧深链兼容：安装目录已并入「MCP 接入」页签。 */}
+                  <Route path="/mcp-install" element={<Navigate to="/upstreams" replace />} />
                   <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
                   <Route path="/groups" element={<GroupsPage />} />
                   <Route path="/tokens" element={<TokensPage />} />

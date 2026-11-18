@@ -19,10 +19,11 @@ pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,
 };
 pub use upstreams::{
-    EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, UPSTREAM_CATEGORIES,
-    UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP, UPSTREAM_TIMEOUT_MAX_MS,
-    UPSTREAM_TOOL_GROUP_MAX, UPSTREAM_TRANSPORTS, UpstreamTool, UpstreamToolGroup,
-    is_upstream_tool_name, is_valid_upstream_id,
+    EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, TOOL_WILDCARD_ALL,
+    UPSTREAM_CATEGORIES, UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP,
+    UPSTREAM_TIMEOUT_MAX_MS, UPSTREAM_TOOL_GROUP_MAX, UPSTREAM_TRANSPORTS, UpstreamTool,
+    UpstreamToolGroup, is_tool_allowlist_entry, is_upstream_tool_name, is_valid_upstream_id,
+    tool_allowlist_matches,
 };
 
 #[cfg(test)]
@@ -119,7 +120,8 @@ CREATE TABLE IF NOT EXISTS mcp_upstreams (
     headers_json TEXT NOT NULL DEFAULT '{}', group_code TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'custom', read_only INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1, timeout_ms INTEGER NOT NULL DEFAULT 10000,
-    created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+    created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+    catalog_id TEXT NOT NULL DEFAULT '', catalog_version TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_upstream_group ON mcp_upstreams(group_code);
 -- 逐工具组覆盖：只存显式覆盖（无行 = 继承 mcp_upstreams.group_code），目前只允许 basic。
@@ -141,6 +143,9 @@ CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
             ("capability_versions", "status"),
             // 管理组：`groups.name` 存组 code，展示名单独一列。
             ("groups", "display_name"),
+            // 内置包安装出来的上游带包坐标；空串 = 手工创建的上游。
+            ("mcp_upstreams", "catalog_id"),
+            ("mcp_upstreams", "catalog_version"),
         ] {
             ensure_column(&conn, table, column)?;
         }

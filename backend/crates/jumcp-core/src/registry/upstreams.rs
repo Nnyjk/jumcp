@@ -57,6 +57,10 @@ pub struct McpUpstream {
     pub read_only: bool,
     pub enabled: bool,
     pub timeout_ms: i64,
+    /// 安装来源：内置包的 id（`None` = 手工创建）。安装语义只读这两列，运行时一律按普通上游。
+    pub catalog_id: Option<String>,
+    /// 安装来源的包版本：管理台据此提示"包已升级、可重装"。
+    pub catalog_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -112,6 +116,43 @@ pub fn is_upstream_tool_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// allowlist 的"全部工具"条目。
+pub const TOOL_WILDCARD_ALL: &str = "*";
+
+/// `<server_id>__*` → server id；其余形状返回 `None`。
+///
+/// 只接受"整名以 `__*` 结尾、前缀是合法上游 id"的形状。`a__b__*`、`__*`、`*__x` 都不算通配：
+/// server id 本身禁止 `__`，所以前缀能唯一反解到某个上游，不会误伤别的前缀。
+fn upstream_wildcard_server(entry: &str) -> Option<&str> {
+    let server = entry.strip_suffix("__*")?;
+    is_valid_upstream_id(server).then_some(server)
+}
+
+/// allowlist 条目是否合法：内置 id、上游暴露名，或两种通配（`*`、`<server_id>__*`）。
+///
+/// 校验与匹配共用 [`upstream_wildcard_server`] 的解析：各写一遍必然出现
+/// "校验放过、`tools/list` 不认"的双套口径。
+pub fn is_tool_allowlist_entry(entry: &str) -> bool {
+    entry == TOOL_WILDCARD_ALL
+        || upstream_wildcard_server(entry).is_some()
+        || super::is_builtin_id(entry)
+        || is_upstream_tool_name(entry)
+}
+
+/// allowlist 条目是否命中某个工具名（内置 id 或上游暴露名）。
+///
+/// `tools/list`、发现面投影与 `tools/call` 三处共用这一处实现，避免
+/// "列表里没有、调用却放行"。非法条目只可能来自历史数据，按精确匹配处理。
+pub fn tool_allowlist_matches(entry: &str, name: &str) -> bool {
+    if entry == TOOL_WILDCARD_ALL || entry == name {
+        return true;
+    }
+    upstream_wildcard_server(entry).is_some_and(|server| {
+        name.strip_prefix(server)
+            .is_some_and(|rest| rest.starts_with(UPSTREAM_NAME_SEP))
+    })
 }
 
 impl McpUpstream {
@@ -244,30 +285,49 @@ impl McpUpstream {
             "url": if self.url.is_empty() { Value::Null } else { json!(self.url) },
             "command": if self.command.is_empty() { Value::Null } else { json!(self.command) },
             "args": self.args,
-            "env": masked_map(&self.env),
-            "headers": masked_map(&self.headers),
+            "env": masked_map(&self.env, &[]),
+            "headers": masked_map(&self.headers, &[]),
             "group": self.group,
             "category": self.category,
             "read_only": self.read_only,
             "enabled": self.enabled,
             "timeout_ms": self.timeout_ms,
+            "catalog_id": self.catalog_id.as_deref(),
+            "catalog_version": self.catalog_version.as_deref(),
             "updated_at": self.updated_at
         })
     }
 
     /// 审计 `data`：只放非密钥的配置事实，绝不带 env/headers 的值。
+    ///
+    /// 包坐标只在存在时出现：手工上游的审计记录不应凭空多出两个 null 字段。
     pub fn audit_data(&self) -> Value {
-        json!({
+        let mut data = json!({
             "transport": self.transport,
             "group": self.group,
             "category": self.category,
             "read_only": self.read_only,
             "enabled": self.enabled
-        })
+        });
+        if let Some(map) = data.as_object_mut() {
+            for (key, value) in [
+                ("catalog_id", &self.catalog_id),
+                ("catalog_version", &self.catalog_version),
+            ] {
+                if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
+                    map.insert(key.to_string(), json!(value));
+                }
+            }
+        }
+        data
     }
 }
 
 /// 密钥键判定：命中即把字面值脱敏；`env:NAME` 是引用而非密钥，原样保留。
+/// 键名兜底：手工上游没有字段声明，headers 也没有 `secret` 位，只能按名字识别。
+///
+/// 内置包的 env 由 [`masked_map`] 的显式集合（`BuiltinField.secret`）决定，不依赖这里——
+/// `JUMCP_FOO_KEY` 这类不含敏感字样的名字也能正确脱敏。
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     [
@@ -278,23 +338,26 @@ fn is_secret_key(key: &str) -> bool {
         "password",
         "api-key",
         "apikey",
+        // DSN 内嵌 `用户名:密码@主机`，整串按密钥处理。
+        "dsn",
     ]
     .iter()
     .any(|needle| key.contains(needle))
 }
 
-fn mask_value(key: &str, value: &str) -> Value {
-    if value.starts_with("env:") || !is_secret_key(key) {
+fn mask_value(key: &str, value: &str, secret_envs: &[&str]) -> Value {
+    let declared_secret = secret_envs.contains(&key);
+    if value.starts_with("env:") || (!declared_secret && !is_secret_key(key)) {
         json!(value)
     } else {
         json!("***")
     }
 }
 
-fn masked_map(map: &std::collections::BTreeMap<String, String>) -> Value {
+fn masked_map(map: &std::collections::BTreeMap<String, String>, secret_envs: &[&str]) -> Value {
     let mut out = serde_json::Map::new();
     for (key, value) in map {
-        out.insert(key.clone(), mask_value(key, value));
+        out.insert(key.clone(), mask_value(key, value, secret_envs));
     }
     Value::Object(out)
 }
@@ -304,6 +367,7 @@ fn secret_map_changes(
     field: &str,
     before: &std::collections::BTreeMap<String, String>,
     after: &std::collections::BTreeMap<String, String>,
+    secret_envs: &[&str],
 ) -> Option<Value> {
     let changed: Vec<&String> = before
         .keys()
@@ -317,14 +381,14 @@ fn secret_map_changes(
     }
     Some(json!({
         "field": field,
-        "before": masked_map(before),
-        "after": masked_map(after),
+        "before": masked_map(before, secret_envs),
+        "after": masked_map(after, secret_envs),
         "changed_keys": changed
     }))
 }
 
 /// 上游配置的真实变更（新建/删除时一侧为空对象）；密钥值永远不进审计。
-fn upstream_changes(before: &McpUpstream, after: &McpUpstream) -> Vec<Value> {
+fn upstream_changes(before: &McpUpstream, after: &McpUpstream, secret_envs: &[&str]) -> Vec<Value> {
     let mut out = field_changes(
         &before.to_public_value(),
         &after.to_public_value(),
@@ -334,7 +398,7 @@ fn upstream_changes(before: &McpUpstream, after: &McpUpstream) -> Vec<Value> {
         ("env", &before.env, &after.env),
         ("headers", &before.headers, &after.headers),
     ] {
-        if let Some(change) = secret_map_changes(field, old, new) {
+        if let Some(change) = secret_map_changes(field, old, new, secret_envs) {
             out.push(change);
         }
     }
@@ -357,6 +421,8 @@ fn empty_upstream() -> McpUpstream {
         read_only: true,
         enabled: true,
         timeout_ms: 0,
+        catalog_id: None,
+        catalog_version: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -403,6 +469,7 @@ impl CapabilityStore {
     pub fn insert_upstream(
         &self,
         upstream: &McpUpstream,
+        secret_envs: &[&str],
         actor: impl IntoAuditOrigin,
     ) -> Result<McpUpstream, McpError> {
         let origin = actor.into_audit_origin();
@@ -424,7 +491,7 @@ impl CapabilityStore {
             }
             let now = now_iso();
             conn.execute(
-                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, group_code, category, read_only, enabled, timeout_ms, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",
+                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, group_code, category, read_only, enabled, timeout_ms, created_at, updated_at, catalog_id, catalog_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?16)",
                 rusqlite::params![
                     upstream.id,
                     upstream.name,
@@ -439,7 +506,9 @@ impl CapabilityStore {
                     upstream.read_only as i64,
                     upstream.enabled as i64,
                     upstream.timeout_ms,
-                    now
+                    now,
+                    upstream.catalog_id.as_deref().unwrap_or_default(),
+                    upstream.catalog_version.as_deref().unwrap_or_default()
                 ],
             )
             .map_err(|e| McpError::store(e.to_string()))?;
@@ -448,22 +517,26 @@ impl CapabilityStore {
         self.write_admin_audit(
             AdminChange::new("upstream", &created.id, "create")
                 .with_origin(origin)
-                .with_changes(upstream_changes(&empty_upstream(), &created))
+                .with_changes(upstream_changes(&empty_upstream(), &created, secret_envs))
                 .with_data(created.audit_data()),
         )?;
         Ok(created)
     }
 
     /// 修改上游：id 是主键不可改（调用方用路径 id 读取再替换）；无实际变化不写审计。
+    ///
+    /// 包坐标（`catalog_id`/`catalog_version`）不在这条 UPDATE 的列里：安装来源只由安装/
+    /// 卸载路径维护，普通编辑既不写也不清空它们。
     pub fn update_upstream(
         &self,
         upstream: &McpUpstream,
+        secret_envs: &[&str],
         actor: impl IntoAuditOrigin,
     ) -> Result<McpUpstream, McpError> {
         let origin = actor.into_audit_origin();
         upstream.validate()?;
         let before = self.require_upstream(&upstream.id)?;
-        let changes = upstream_changes(&before, upstream);
+        let changes = upstream_changes(&before, upstream, secret_envs);
         if changes.is_empty() {
             return Ok(before);
         }
@@ -528,7 +601,7 @@ impl CapabilityStore {
         self.write_admin_audit(
             AdminChange::new("upstream", id, "delete")
                 .with_origin(origin)
-                .with_changes(upstream_changes(&before, &empty_upstream()))
+                .with_changes(upstream_changes(&before, &empty_upstream(), &[]))
                 .with_data(before.audit_data()),
         )
     }
@@ -725,6 +798,11 @@ impl CapabilityStore {
         Ok(changes)
     }
 }
+/// 空串列值 → `None`：SQLite 用 `TEXT NOT NULL DEFAULT ''` 表达"没有"，对外契约用 null。
+fn non_empty_opt(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
 fn row_to_tool_group(row: &Row) -> rusqlite::Result<UpstreamToolGroup> {
     Ok(UpstreamToolGroup {
         upstream_id: row.get("upstream_id")?,
@@ -795,6 +873,8 @@ fn row_to_upstream(row: &Row) -> rusqlite::Result<McpUpstream> {
         read_only: row.get::<_, i64>("read_only")? != 0,
         enabled: row.get::<_, i64>("enabled")? != 0,
         timeout_ms: row.get("timeout_ms")?,
+        catalog_id: non_empty_opt(row.get::<_, String>("catalog_id")?),
+        catalog_version: non_empty_opt(row.get::<_, String>("catalog_version")?),
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })

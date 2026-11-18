@@ -1,5 +1,6 @@
 // jumcp-server：rmcp API 漂移故手写 JSON-RPC（serde_json + tokio + axum），双传输共用 async 链。
 pub mod admin;
+pub mod builtin;
 pub mod catalog;
 pub mod connector;
 pub mod discovery;

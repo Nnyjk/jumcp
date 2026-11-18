@@ -7,7 +7,7 @@
 - 目标环境已 `docker swarm init`（单节点也可以：`docker swarm init --advertise-addr <内网 IP>`），部署节点是 **manager**；Portainer 已连到该 Swarm。
 - 调度节点必须是 **linux/amd64**：镜像只发布 `linux/amd64`（没有 `arm64` manifest）。stack 用 placement constraints 限定，只有满足条件的节点会跑任务；全是 arm64 节点时会一直 `pending`，`docker service ps jumcp_jumcp` 会显示 `no suitable node`。
 - 镜像可拉取：`ghcr.io/nnyjk/jumcp`。package 为 public 时无需登录；为 private 时在 Portainer 里注册 GHCR registry（用户名 + PAT，scope 至少 `read:packages`），并确保 stack 的镜像地址与凭据对应同一个 registry。
-- `latest` 只由 `main` 的 push 产出（见 ci-cd.md 的 tag 规则）。生产建议固定版本 tag（如 `0.0.1.000`，或兼容的三段 `0.0.1`）或 digest，不要跟 `latest`，否则每次 `main` 合并后 redeploy 都会换版本。
+- `latest` 只由 `main` 的 push 产出（见 ci-cd.md 的 tag 规则）。生产建议固定版本 tag（如 `0.0.1.000`，或兼容的三段 `0.0.1`）或 digest，不要跟 `latest`，否则每次 `main` 合并后 redeploy 都会换版本。`dev` 快照 tag（`dev`、`sha-<短 sha>`）会被下一次 `dev` push 覆盖，只用于试跑，不要用于生产。
 
 ## 用 Portainer 部署
 
@@ -22,6 +22,10 @@
    | `JUMCP_ADMIN_TOKENS` | ✅ | 管理面凭证，`id:token,id:token` 形式，每个 token 至少 16 位（如 `admin:<openssl rand -hex 24>`）。未设置或为空时 `docker stack deploy` / Portainer 会在 interpolation 阶段直接失败 |
    | `JUMCP_AGENT_TOKENS` | — | `agent_id:role:token,agent_id:role:token`，**只在 `access_tokens` 表为空时**一次性导入（引导用）。表非空后不再生效，令牌请用管理面 `POST /admin/tokens` 生成 |
    | `JUMCP_IMAGE` | — | 覆盖镜像，默认 `ghcr.io/nnyjk/jumcp:latest`。生产填固定 tag 或 `@sha256:` digest |
+   | `JUMCP_SECRET_KEY` | ✅ | 64 位 hex（`openssl rand -hex 32`）。内置 MCP 包密码字段的**落库**加密密钥；HTTP 模式缺失或不合法会直接拒绝启动。**轮换后旧密文不可解**，需在管理台重填密码 |
+   | `JUMCP_TRANSPORT_KEY` | ✅ | 64 位 hex（`openssl rand -hex 32`）。**传输**加密密钥：管理台从 `GET /admin/transport-key` 取到它，在浏览器里加密 `secret` 字段的请求体；HTTP 模式缺失或不合法同样拒绝启动。与落库密钥用途分离，轮换后只需在管理台重填密码 |
+   | `JUMCP_MCP_UPSTREAM_STDIO` | — | 默认 `1`（stack 里写作 `${JUMCP_MCP_UPSTREAM_STDIO:-1}`），只影响**手工接入的 stdio 上游**；内置包走内嵌 HTTP 端点，不需要它。不允许容器拉起子进程的部署可显式设 `0` |
+   | `JUMCP_MCP_BUNDLED_BIN_DIR` | — | 可选。覆盖**手工 stdio 上游**可执行文件的查找目录。查找顺序：该目录 → `jumcp-server` 同目录（镜像里是 `/usr/local/bin`）→ `PATH`；目录里没有同名文件就继续回落，所以指向一个空目录不会破坏内置包 |
    | `JUMCP_PORT` | — | 对外发布的端口，默认 `8000`（ingress，任意节点该端口都可达） |
    | `RUST_LOG` | — | 默认 `info` |
 
@@ -40,7 +44,23 @@
 
 - `/data` 是命名卷 `jumcp-data`（Compose 项目下实际名 `jumcp_jumcp-data`），存 `registry.sqlite3` 与 `audit.sqlite3`。
 - **命名卷是节点本地卷**（`driver: local`）：卷跟着节点走，不跟着任务走。任务被重调度到另一个节点时会挂上一个**新的空卷**，表现为治理数据与审计链「消失」。单节点部署没有这个问题；多节点部署请用 placement 把任务固定到持有数据的节点（`node.hostname == <node>`），或改用共享存储。
-- 备份：库里是两个 SQLite 文件，**先停服务**（`docker service scale jumcp_jumcp=0`）再拷 `/data`，或用 `sqlite3 <db> ".backup '<目标>'"` 做一致性备份；直接 `cp` 正在被写的库可能拿到损坏副本。
+- 备份：库里是两个 SQLite 文件，**先停服务**（`docker service scale jumcp_jumcp=0`）再拷 `/data`，或用 `sqlite3 <db> ".backup '<目标>'"` 做一致性备份；直接 `cp` 正在被写的库可能拿到损坏副本。注意 `/data/registry.sqlite3` 里的上游 `env` 保存配置值：密码类字段是 `enc:v1:` 密文（依赖 `JUMCP_SECRET_KEY`），其余字段明文；脱敏只发生在 API 输出侧；备份副本与 `/data` 卷权限都要按敏感数据处理（加密存放、限定可读范围）。
+- 内置 MCP 包（`clickhouse-basic`）：安装产物就是 `/data/registry.sqlite3` 里的一条上游记录（`catalog_id` / `catalog_version` 标记来源），**不需要新增卷**，随 `/data` 一起备份/迁移即可；包编译进 `jumcp-server`，没有随包二进制、也不起子进程。能否安装只取决于是否注入了 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（缺任一把时进程不会以 HTTP 模式启动）。
+- 若确实要把宿主上的新版**手工 stdio 上游**可执行文件挂进容器（不重建镜像）：只读 bind 到 `/opt/jumcp/bin`，并设置 `JUMCP_MCP_BUNDLED_BIN_DIR`。`docker run` 等价命令：
+
+  ```bash
+  docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
+    -e JUMCP_ADMIN_TOKENS="admin:<至少 16 位的 token>" \
+    -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
+    -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
+    -e JUMCP_MCP_BUNDLED_BIN_DIR=/opt/jumcp/bin \
+    -v /opt/jumcp/bin:/opt/jumcp/bin:ro \
+    -v jumcp-data:/data \
+    jumcp:local
+  ```
+
+  Stack 里的等价写法就是 `portainer-stack.yml` 中 volumes 下注释掉的那行 `/opt/jumcp/bin:/opt/jumcp/bin:ro`，外加 environment 里的 `JUMCP_MCP_BUNDLED_BIN_DIR: /opt/jumcp/bin`。查找顺序是该目录 → 服务可执行文件同目录（`/usr/local/bin`）→ `PATH`，目录里没有同名文件就继续回落，所以挂一个空目录不会破坏内置包。
+- 换镜像后已安装的上游仍在（那行记录还在 `/data` 里）；旧版 stdio 安装在 HTTP 模式启动时自动迁移成内嵌 HTTP 上游（DSN 解析失败的行保留原样并 warn，需要重装）。不需要的上游用 `DELETE /admin/mcp/catalog/{id}/install/{upstream_id}` 卸载（只删该包装出来的上游）。
 - 升级：Portainer 里改 `JUMCP_IMAGE` 后 **Update the stack**（勾选 re-pull image），或命令行 `docker service update --image ghcr.io/nnyjk/jumcp:<tag> jumcp_jumcp`。
 - 回滚：Portainer 的 **Rollback the stack**，或 `docker service rollback jumcp_jumcp`。
 - `update_config.order: stop-first`（回滚同样）意味着升级是**先停后起**：会有短暂停机，换来的是同一时刻只有一个进程写 SQLite。`failure_action: rollback` + `monitor: 30s` 让新任务起不来时自动回滚到上一个 spec。
@@ -56,8 +76,12 @@
 只做配置解析（不改本机 Docker 状态、不需要 Swarm）：
 
 ```bash
-JUMCP_ADMIN_TOKENS=ci-placeholder docker stack config -c deploy/portainer-stack.yml
-JUMCP_ADMIN_TOKENS=ci-placeholder docker compose -f deploy/portainer-stack.yml config
+JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
+  JUMCP_TRANSPORT_KEY=$(printf '0%.0s' {1..64}) \
+  docker stack config -c deploy/portainer-stack.yml
+JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
+  JUMCP_TRANSPORT_KEY=$(printf '0%.0s' {1..64}) \
+  docker compose -f deploy/portainer-stack.yml config
 ```
 
 两者都退出 0 即 YAML 合法、变量引用可解析。`docker compose config` 会提示 `version` 已废弃（Compose v2+ 的警告，可忽略；`docker stack` 仍按 3.8 解析）。

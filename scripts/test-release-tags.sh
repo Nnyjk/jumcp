@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release-tags.sh 的离线用例：三段/四段版本、main、非法格式、镜像前缀与 GITHUB_OUTPUT。
+# release-tags.sh 的离线用例：三段/四段版本、dev 快照、main、非法格式、镜像前缀与 GITHUB_OUTPUT。
 # 只依赖 bash，不需要 docker、网络或 CI 环境；CI 的 scripts job 与本地 test-all 都跑它。
 #
 # 用法：
@@ -50,6 +50,7 @@ expect_fail() { # 名称 ref_type ref_name
   fi
 }
 
+expect_ok "dev 快照（不带 latest）" dev "dev,sha-0123456" branch dev
 expect_ok "main push" main "latest,main,sha-0123456" branch main
 expect_ok "四段版本 v0.0.1.000" 0.0.1.000 \
   "0.0.1.000,0.0.1,0.0,sha-0123456" tag v0.0.1.000
@@ -65,6 +66,17 @@ if [ "$prefixed" = "$want_prefixed" ]; then
   echo "ok   --image 前缀：${prefixed}"
 else
   echo "FAIL --image 前缀：'${prefixed}'（期望 '${want_prefixed}'）" >&2
+  failed=$((failed + 1))
+fi
+
+# dev 快照同样要拼前缀，并且不带 latest
+total=$((total + 1))
+prefixed_dev="$(run branch dev --image ghcr.io/nnyjk/jumcp | sed -n 's/^tags=//p')"
+want_prefixed_dev="ghcr.io/nnyjk/jumcp:dev,ghcr.io/nnyjk/jumcp:sha-0123456"
+if [ "$prefixed_dev" = "$want_prefixed_dev" ]; then
+  echo "ok   --image 前缀（dev）：${prefixed_dev}"
+else
+  echo "FAIL --image 前缀（dev）：'${prefixed_dev}'（期望 '${want_prefixed_dev}'）" >&2
   failed=$((failed + 1))
 fi
 
@@ -87,7 +99,8 @@ expect_fail "非法 tag v1.2" tag v1.2
 expect_fail "标签缺 v 前缀 1.2.3" tag 1.2.3
 expect_fail "非法 tag v1.2.3.4.5" tag v1.2.3.4.5
 expect_fail "非数字段 v1.2.x" tag v1.2.x
-expect_fail "dev 分支不发布" branch dev
+expect_fail "feature 分支不发布" branch feature/split-cd
+expect_fail "其它 ref 类型不发布" pull_request 42
 
 echo "----"
 if [ "$failed" -ne 0 ]; then

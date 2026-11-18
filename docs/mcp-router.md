@@ -46,9 +46,23 @@
 工具，因此不会成为绕过维护通道（组 `admin`）的旁路。
 
 token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与上游暴露名
-（`<server_id>__<tool>`）：白名单是精确匹配，未列出的名字在 `tools/list`、发现面与
-`tools/call` 三处都表现为"不存在"（调用写 `policy_decision`）。创建令牌时上游名必须符合
-`<server_id>__<tool>` 形状，但不要求上游此刻已注册。
+（`<server_id>__<tool>`）。条目有三种形态：
+
+| 条目 | 含义 |
+| --- | --- |
+| `search_capabilities`、`clickhouse__query` | 精确名：内置 id 或某个上游暴露名 |
+| `clickhouse__*` | 该上游的全部工具，含之后才注册/刷新的工具 |
+| `*` | 全部工具，含后续安装的上游 |
+
+前缀按 `__` 边界匹配（`clickhouse__*` 不覆盖 `clickhouse2__query`）；`**`、`a__b__*`、
+`*__x`、`__*`、空串等反解不到上游的形状在创建令牌时拒绝（`MCP_VALIDATION_ERROR`）。
+空名单 `[]` 是"没有任何工具"，与不限制的 `*` 语义相反。未列出的名字在 `tools/list`、
+发现面与 `tools/call` 三处都表现为"不存在"（调用写 `policy_decision`）。
+
+`JUMCP_AGENT_TOKENS` 启动引导导入的身份默认 `*`：环境令牌是部署方自备的身份，工具范围
+交给授权组与上游开关约束；写死内置 id 会让之后安装的上游永远进不了它的可见集。上游安装
+或新增工具之后，授予路径是"先 `POST /admin/upstreams/{id}/refresh` 拉到工具名，再新建令牌
+勾选 `<server_id>__*` 或 `*`"——精确名只对刷新前已存在的工具有效。
 
 `tools/list` 的每条内置工具带 `category`；`search_capabilities` 支持可选 `category` 过滤；
 `describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（托管能力归 `analysis`）。
@@ -73,6 +87,7 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 | `read_only` | 默认 `true`；`false` 仅在 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 时允许注册 |
 | `enabled` | 默认 `true`；`false` 时不投影也不转发 |
 | `timeout_ms` | 1..120000，默认 10000；作用于建连、`tools/list` 与 `tools/call` |
+| `catalog_id` / `catalog_version` | 只读坐标，由内置包安装时写入（§3）；不在 `PUT` 的可写字段里，手工创建为 `null` |
 
 `env` / `headers` 的值允许两种形态：字面量，或 `env:NAME`（建连时从进程环境解析，
 变量缺失即建连失败，不静默空串）。两种传输都在建连时解析 `env` 引用：`http` 不使用 `env`，
@@ -101,7 +116,138 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 - 工具缓存仍是进程内 30s TTL、无持久化：`GET .../tools` 只读缓存（与 `GET /admin/upstreams`
   同一语义），需要最新清单时显式 `POST .../refresh`。
 
-## 3. 命名与冲突
+## 3. 内置 MCP 包
+
+「内置包」把「一个已知的 MCP server + 一份配置模板」收敛成一次安装。目录来自**代码内静态表**
+（`jumcp-core::builtin`，由各插件 crate 声明），没有远程拉取，也不接受任意 URL 安装。
+安装产物是一台普通 HTTP 上游，URL 指向本进程的内嵌端点
+`POST /internal/mcp/{package_id}/{upstream_id}`；`/admin/upstreams` 可见、可编辑（包管理字段除外）、
+可单独删除，运行期只有 HTTP 上游这一条路径。插件标准与端点协议见 `docs/builtin-mcp.md`。
+
+| 目录条目字段 | 说明 |
+|---|---|
+| `id` / `name` / `summary` / `version` | 包标识、展示名、摘要、版本 |
+| `tags` | 检索标签 |
+| `transport` | 恒为 `http`（内置包只经内嵌 HTTP 端点接入） |
+| `default_upstream_id` | 未传 `upstream_id` 时的上游 id |
+| `fields` | 安装表单字段：`key`、`label`、`kind`（只有 `text` 与 `password` 两种）、`required`、`secret`、`default`、`placeholder`、`help` |
+| `tools` | 包声明的工具清单 `{name,summary}`，用于安装前展示；实际工具以 `tools/list` 为准 |
+| `installations` | `mcp_upstreams` 里 `catalog_id` 等于包 id 的行，见下 |
+
+字段到上游 env 的映射由包定义固定（字段声明里的 `env`）。`secret=true` 的字段**必须密文提交**：
+管理台用 `GET /admin/transport-key` 下发的 `JUMCP_TRANSPORT_KEY` 在浏览器里把它加密成
+`enc:v1:<hex>`（AES-256-GCM，与落库同一线格式），服务端用传输密钥解密后再用
+`JUMCP_SECRET_KEY` 重新加密落库。明文提交直接拒绝（`MCP_TRANSPORT_CIPHERTEXT_REQUIRED`），
+不存在「解不开就当明文用」。目录、安装响应与上游 `GET` 都只回显
+非密字段，密字段只给 `secrets_set: {key: bool}`——明文与密文都不出现。`config` 的值一律按字符串提交；
+`kind` 只决定表单控件（`password` 是给 `secret` 字段用的输入框），不做取值校验。
+
+`installations` 每条：`upstream_id`、`name`、`group`、`enabled`、`transport`、`url`、
+`config`（仅非密字段的当前值）、`secrets_set`、`catalog_version`、`created_at`、`updated_at`。
+目录不触网，因此不含探测状态。
+
+当前目录只有 `clickhouse-basic`：字段 `url`（必填，ClickHouse HTTP 端点，如
+`http://host:8123`；不接受带 userinfo 的 URL，缺端口时 http 记 8123、https 记 8443）、
+`username`（必填，默认 `default`）、`password`（密）、`database`（可选）、
+`allowed_schemas`（可选，逗号分隔的 database 白名单；白名单非空时，未指定库的查询以列表**首个库**
+为会话库，多库场景请在 SQL 里写库前缀；库名按实际大小写填写，比较不区分大小写）；
+工具 `query` / `list_databases` / `list_tables`。
+
+### 3.1 安装
+
+`POST /admin/mcp/catalog/{id}/install`：
+
+```json
+{
+  "upstream_id": "clickhouse",
+  "name": "ClickHouse 基础查询",
+  "group": "db.read.core",
+  "enabled": true,
+  "config": {
+    "url": "http://127.0.0.1:8123",
+    "username": "default",
+    "password": "enc:v1:<hex(12B nonce ‖ ciphertext+tag)>"
+  }
+}
+```
+
+- `password` 这类 `secret=true` 字段的值必须是 `JUMCP_TRANSPORT_KEY` 下的 `enc:v1:` 密文；
+  `enc:v1` 里没有明文密码，日志/审计/错误响应也不会带上它。空串表示未提供（不写该 env）。
+- `group` 必填，必须是 effective policy 里的组（不能是 `basic`）；`upstream_id` 缺省取目录的
+  `default_upstream_id`，`name` 缺省取包的展示名，`enabled` 缺省 `true`。
+- 生成的上下游固定为：`transport="http"`、`url={端点}/internal/mcp/{package_id}/{upstream_id}`、
+  `command`/`args` 为空；`env` 由 `config` 按字段映射生成（值会 `trim`；未填且字段有 `default` 时用
+  默认值；仍为空的可选字段不写入 `env`；secret 值加密后写入）；`category="custom"`、`read_only=true`、
+  `timeout_ms=30000`；`catalog_id`/`catalog_version` 记录安装来源；id/name 校验与 `validate()` 与手工创建一致。
+- 成功 `200 {"upstream": UpstreamItem}`（敏感 env 已脱敏），审计沿用 upstream `create`，
+  `data` 带 `catalog_id`。
+
+### 3.2 配置编辑
+
+`PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config`，body `{"config": {fieldKey: string}}`：
+
+- 只更新出现的 key；未出现的 key 保持原值。secret 字段传空串 = 保持原值（浏览器回填的空输入框
+  不能顺手清掉密码）；非空值必须是 `enc:v1:` 传输密文，明文会被 `400
+  MCP_TRANSPORT_CIPHERTEXT_REQUIRED` 拒绝。非密字段传空串表示清空，清空必填字段会被拒。
+- 合并后重新校验必填（secret 以"已有非空或本次提供"为准）；校验失败不写库。未提交的 secret
+  不解密，因此换过 `JUMCP_SECRET_KEY` 之后改别的字段仍然成功，旧密文原地保留。
+- 成功 `200 {"installation": InstallationItem}`（同目录 `installations` 的元素），写 `admin_change`
+  审计（secret 一律 `***`）。密钥未显式改写时保留磁盘上的旧密文，不做无意义的重加密。
+
+### 3.3 卸载
+
+`DELETE /admin/mcp/catalog/{id}/install/{upstream_id}`：只有 `catalog_id` 等于该包 id 的行会被
+删除（连同工具组覆盖与连接缓存，写 upstream `delete` 审计）；手工创建或由别的包安装的上游
+一律 `404 MCP_UPSTREAM_NOT_FOUND`。卸载不动历史审计；包 id 不存在时先报 `404 MCP_CATALOG_NOT_FOUND`。
+
+### 3.4 错误码
+
+错误按下表自上而下判定（部署能力先于请求内容）：
+
+| 情形 | 响应 |
+|---|---|
+| 包 id 不存在（安装/卸载/改配置） | `404 MCP_CATALOG_NOT_FOUND` |
+| 进程没有内置端点（stdio 模式）或没有 `JUMCP_SECRET_KEY` | `503 MCP_BUILTIN_UNAVAILABLE`（message/hint 说明需要 HTTP 模式 + 密钥） |
+| 进程没有 `JUMCP_TRANSPORT_KEY`（非 HTTP 构造下才会出现） | `503 MCP_TRANSPORT_KEY_MISSING` |
+| 缺 `group`、缺必填字段（`data.field` 指向字段 key，message 用字段 `label`）、`config` 出现包未声明的键（message「未知配置字段：k1,k2」，`data.field` 为首个未知键，`data.unknown` 列出全部、按字典序） | `400 MCP_VALIDATION_ERROR` |
+| `secret=true` 字段的非空值不是 `enc:v1:` 密文 | `400 MCP_TRANSPORT_CIPHERTEXT_REQUIRED`（message「secret 字段必须密文传输：&lt;key&gt;」） |
+| `secret` 密文用传输密钥解不开（密钥已轮换/被篡改） | `400 MCP_TRANSPORT_DECRYPT_FAILED`（message「secret 字段密文无法解密：&lt;key&gt;」） |
+| `secret` 密文解出来是空串 | `400 MCP_VALIDATION_ERROR`（message「secret 字段不能为空：&lt;key&gt;」） |
+| `secret` 密文超过 4096 字符 | `400 MCP_VALIDATION_ERROR`（`data.max_len`） |
+| `group` 不在 effective policy 或为 `basic` | `400 MCP_UPSTREAM_INVALID` |
+| `upstream_id` 已存在或为保留 id | `409 MCP_UPSTREAM_CONFLICT` |
+| 卸载/改配置时该上游不是这个包安装的 | `404 MCP_UPSTREAM_NOT_FOUND` |
+
+校验失败不落行：失败请求不会留下半配置的上游。
+
+### 3.5 传输密钥与密文提交
+
+`GET /admin/transport-key`（需管理鉴权，响应 `Cache-Control: no-store`）：
+
+```json
+{ "algorithm": "AES-256-GCM", "key": "<64 位小写 hex>" }
+```
+
+- 密钥就是进程的 `JUMCP_TRANSPORT_KEY`。管理台在浏览器里用 WebCrypto 的 AES-256-GCM 加密
+  `secret=true` 的字段，线格式与落库**完全一致**：`enc:v1:` + `hex(12 字节随机 nonce ‖ ciphertext ‖ tag)`，
+  AAD 为空，hex 小写。服务端解出明文后用 `JUMCP_SECRET_KEY` 重新加密再落库——两把密钥用途分离，
+  传输密钥泄漏不等于库里的密文可解，反之亦然。
+- 为什么经鉴权端点下发而不是编译进前端 bundle：静态资源不需要登录就能下载，密钥进构建产物等于公开。
+- 轮换：换掉 `JUMCP_TRANSPORT_KEY` 后，未重新提交的旧传输密文不可解，保存会得到
+  `MCP_TRANSPORT_DECRYPT_FAILED`，重新填一次密码即可；落库密文由 `JUMCP_SECRET_KEY` 管理，
+  与传输密钥轮换无关。
+- **边界**：这把共享密钥随页面下发，只让「请求体里的密码是密文」，避免密码在请求日志、抓包、浏览器
+  表单回放里直接可读；它**不替代 TLS**，能读到页面与响应的中间人同样能拿到密钥。
+
+### 3.6 与手工上游的关系
+
+安装产物没有特殊运行期路径，但有**包管理字段**：`transport`、`url`、`command`、`args`、`env`、
+`headers` 由包维护，`PUT /admin/upstreams/{id}` 改它们会 `409 MCP_UPSTREAM_PACKAGE_MANAGED`
+（`data.fields` 列出被改的字段）。`name`、`group`、`enabled`、`read_only`、`timeout_ms` 仍可改，
+启停按钮照常可用；要改配置请走 §3.2 的 PATCH。`PUT` 保留 `catalog_id`/`catalog_version`
+（UPDATE 语句不含这两列），`DELETE /admin/upstreams/{id}` 也能删。
+
+## 4. 命名与冲突
 
 上游工具对外名为 `<server_id>__<tool>`：两侧只保留 `[A-Za-z0-9_-]`，其他字符转 `-`。
 **不做截断**：整名超过 64 字符的工具会让整台上游被拒绝（`status=error` + 明确
@@ -119,7 +265,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 
 拒绝是整台上游粒度：不会出现"只接入一半工具"的静默降级。
 
-## 4. 传输
+## 5. 传输
 
 **HTTP Streamable MCP**：`POST` 上游 URL，`Accept: application/json, text/event-stream`；
 响应既可以是单个 JSON 报文，也可以是 SSE 事件流（逐 `data:` 事件解析，取与请求 id 匹配的
@@ -129,15 +275,17 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 
 只允许 http/https；禁止 URL userinfo；重定向只在同 host 内跟随（最多 3 跳），跨 host 直接停止。
 
-**stdio**：默认关闭。仅当 `JUMCP_MCP_UPSTREAM_STDIO=1` 时允许注册与连接；命令用
-`tokio::process::Command` 直接 spawn（不经过 shell），显式 `.env_remove` 掉
+**stdio**（仅手工上游；内置包不走这条路）：默认关闭。仅当 `JUMCP_MCP_UPSTREAM_STDIO=1` 时允许
+注册与连接；命令用
+`tokio::process::Command` 直接 spawn（不经过 shell；`command` 按 §3.2 解析，随包分发的
+连接器不必写绝对路径），显式 `.env_remove` 掉
 `JUMCP_ADMIN_TOKENS` 与 `JUMCP_AGENT_TOKENS`，stdin/stdout 走行分隔 JSON-RPC，stderr 丢弃
 （上游可能把 env 里的凭据打到 stderr，而 `status_message` 会出现在 GET 响应里）。
 进程随连接池回收（`kill_on_drop`）。
 
 旧版 HTTP+SSE 传输不实现。
 
-## 5. 可见性、预算与调用解析
+## 6. 可见性、预算与调用解析
 
 - 上游工具默认只对 `group ∈ scope.groups` 的请求可见/可调；组不在 scope 内时与"不存在"同构。
   例外是逐工具加入 `basic` 的成员：它们对所有 scope 可见/可调（见 §2.1），组门在**工具级**
@@ -147,7 +295,8 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 - 上游工具**始终**出现在 `tools/list`（不受平铺阈值影响），并计入常驻预算；上游工具全部
   视为常驻项，`truncate` 溢出时保留它们、只裁 managed 平铺项。
 - 授权是"组 ∧ 工具名 allowlist"两道：`group` 决定该上游对谁可用，token 的
-  `builtin_tools` 决定该身份能看见/调用哪些**名字**（内置 id 或上游暴露名）。
+  `builtin_tools` 决定该身份能看见/调用哪些**名字**（内置 id、上游暴露名、`<server_id>__*`
+  或 `*`，见上文 allowlist 语义）。
   `tools/call` 的 allowlist 判定先于上游解析（只查 SQLite 前缀），被拒绝的名字不会产生
   任何上游连接或 `tools/list` 拉取；不在任何上游前缀上的名字仍返回 `-32602`。
 - `read_only=false` 的上游在投影与调用两处都要求 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`：
@@ -160,7 +309,7 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
   `MCP_UPSTREAM_ERROR` / `MCP_UPSTREAM_UNREACHABLE` / `MCP_EXEC_TIMEOUT`，**不会**变成本服务
   的协议级错误。
 
-## 6. 失败隔离与状态
+## 7. 失败隔离与状态
 
 单个上游不可达只影响它自己：其他上游与内置工具照常工作。工具缓存 TTL 30 秒；管理面写操作
 （create/update/delete/refresh）立即失效对应上游的连接与缓存。不做后台轮询。
@@ -181,7 +330,7 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 `POST /admin/upstreams/{id}/refresh` 会立即建连并拉取；连接失败仍返回 `200`，由
 `status=error` 与 `status_message` 表达，UI 直接展示。
 
-## 7. 审计与脱敏
+## 8. 审计与脱敏
 
 - 上游调用写 `tool_call`：`object_type="tool"`、`object_id=<暴露名>`、`action="call"`；
   `data` 含 `upstream_id`、`upstream_tool`、`exposed_tool`、`duration_ms`、`outcome`、
@@ -191,7 +340,7 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   `create|update|delete|refresh|update_tool_groups`；`changes` 只含真实变化的字段（env/headers 只输出键与
   脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`group`/`category`/
   `read_only`/`enabled`（refresh 另含 `tool_count`/`status`；`update_tool_groups` 另含
-  `basic_total`）。
+  `basic_total`；由内置包安装的上游另含 `catalog_id`/`catalog_version`）。
 - 逐工具加入 `basic` 的 `changes` 每条是 `{field:"tool_group", tool:<原始工具名>,
   before:<原组或 null>, after:<"basic" 或 null>}`（`after=null` 表示移出 `basic` 回到继承）；
   无真实变化不写审计。
@@ -199,7 +348,7 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   只输出哈希。
 - 审计、日志、GET 响应都不出现上游密钥明文。
 
-## 8. 管理面 API
+## 9. 管理面 API
 
 所有路由挂 `/admin`，Bearer + `require_token`，写操作要求审计已启用（fail-closed）。
 
@@ -208,11 +357,16 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 | `GET /admin/upstreams` | `200 {items:[UpstreamItem], total:int}` |
 | `GET /admin/upstreams/{id}` | `200 UpstreamItem`；不存在 `404 MCP_UPSTREAM_NOT_FOUND` |
 | `POST /admin/upstreams` | `200 UpstreamItem`；id 重复 `409 MCP_UPSTREAM_CONFLICT` |
-| `PUT /admin/upstreams/{id}` | `200 UpstreamItem`；`id` 不可改 |
+| `PUT /admin/upstreams/{id}` | `200 UpstreamItem`；`id` 不可改；包安装行的包管理字段被改时 `409 MCP_UPSTREAM_PACKAGE_MANAGED` |
 | `DELETE /admin/upstreams/{id}` | `200 {deleted:true}` |
 | `POST /admin/upstreams/{id}/refresh` | `200 UpstreamItem`（失败也是 200 + `status=error`） |
 | `GET /admin/upstreams/{id}/tools` | `200 UpstreamTools`；只读缓存、不触网 |
 | `PUT /admin/upstreams/{id}/tools/basic` | `200 {changed:[…], basic_total, tools:[UpstreamToolItem]}` |
+| `GET /admin/mcp/catalog` | `200 {items:[CatalogItem]}`；目录 + 主机状态 + `installations`，见 §3 |
+| `POST /admin/mcp/catalog/{id}/install` | `200 {upstream:UpstreamItem}`；错误码见 §3.4 |
+| `PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config` | `200 {installation:InstallationItem}`；见 §3.2 |
+| `DELETE /admin/mcp/catalog/{id}/install/{upstream_id}` | `200 {deleted:true}`；非本包安装 `404 MCP_UPSTREAM_NOT_FOUND` |
+| `GET /admin/transport-key` | `200 {algorithm:"AES-256-GCM", key:"<64 位 hex>"}`，`Cache-Control: no-store`；未配置 `503 MCP_TRANSPORT_KEY_MISSING`，见 §3.5 |
 
 `GET .../tools` 响应：`{status, status_message, last_checked_at, total, basic_total,
 orphaned_total, tools:[UpstreamToolItem]}`；`UpstreamToolItem` = `name`（原始工具名）、
@@ -236,13 +390,14 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 `UpstreamItem` 字段（snake_case）：`id`、`name`、`transport`、`url`（http 才有值，否则
 `null`）、`command`（stdio 才有值，否则 `null`）、`args`、`env`、`headers`、`group`、
 `category`、`read_only`、`enabled`、`timeout_ms`、`status`、`status_message`、`tool_count`、
-`last_checked_at`、`updated_at`。
+`last_checked_at`、`updated_at`、`catalog_id`、`catalog_version`（后两者由内置包安装写入，手工创建为 `null`）。
 
 ### 密钥脱敏与 PUT 保留语义
 
 - `GET` 对**敏感 header** 返回值 `***`：`Authorization`、`Cookie`、`Set-Cookie`、
   `Proxy-Authorization`，以及 key 含 `token`/`secret`/`password` 的项。
-- `env` 按同一规则：key 含 `token`/`secret`/`password`（以及其他密钥类关键词）的项输出 `***`。
+- `env` 按同一规则（小写 key 含下列任一即脱敏）：`authorization`、`cookie`、`token`、`secret`、
+  `password`、`api-key`、`apikey`、`dsn`——内置包写入的 `JUMCP_CLICKHOUSE_PASSWORD` 因此显示 `***`。
 - `env:NAME` 是引用而非密钥，原样返回；其他普通 header/env 原样返回。
 - `PUT` 收到敏感字段的 `***` 时**保留旧值**，绝不把占位符写库；新建或新增键给 `***`
   而无旧值可保留 → `400 MCP_UPSTREAM_INVALID`。
@@ -260,17 +415,21 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 | `read_only=false` 但 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM!=1` | `400 MCP_UPSTREAM_WRITE_FORBIDDEN` |
 | 上游不存在 | `404 MCP_UPSTREAM_NOT_FOUND` |
 
-## 9. 部署开关
+## 10. 部署开关
 
 | 变量 | 作用 |
 |---|---|
 | `JUMCP_MCP_UPSTREAM_STDIO=1` | 允许注册/连接 stdio 上游（默认关闭） |
 | `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` | 允许注册 `read_only=false` 的上游（默认关闭） |
+| `JUMCP_SECRET_KEY=<64 位 hex>` | 内置包密码字段的加密密钥；HTTP 模式必需，缺失/非法即拒绝启动（fail-closed） |
+| `JUMCP_TRANSPORT_KEY=<64 位 hex>` | 传输密钥，管理台加密 `secret` 字段请求体用；HTTP 模式必需，缺失/非法即拒绝启动（fail-closed） |
+| `JUMCP_MCP_BUNDLED_BIN_DIR=<目录>` | 手工 stdio 上游命令解析的第一个候选，用于随包分发或非常规部署；每次解析时读取，未设置则只看服务同目录与 `PATH` |
 
-两个开关都在进程启动时读取；改动需要重启。上游的增删改**不需要**重启：管理面写成功后，
+前两个开关都在进程启动时读取，改动需要重启；`JUMCP_MCP_BUNDLED_BIN_DIR` 每次解析时读取。
+上游的增删改**不需要**重启：管理面写成功后，
 下一次 `tools/list` / `tools/call` 即反映变化。
 
-## 10. 明确不支持
+## 11. 明确不支持
 
 - 上游的 `resources` / `prompts` / `sampling` / `logging` / `completion`；
 - 逐上游透传端点与字节级反向代理；

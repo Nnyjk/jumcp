@@ -50,7 +50,14 @@ export default defineConfig({
       '/admin': { target: apiTarget, changeOrigin: true, configure: devAdminAuth },
       // MCP 接入：令牌页复制的 URL 是本页同源 /mcp，开发期必须转发到后端才可用。
       // 这里不注入管理面 Bearer：Authorization 原样透传客户端自己的 access token。
-      '/mcp': { target: apiTarget, changeOrigin: true },
+      // 前缀 /mcp 同时会命中前端路由 /mcp-install：文档导航交回 SPA，只有 XHR/fetch 才代理。
+      '/mcp': {
+        target: apiTarget,
+        changeOrigin: true,
+        bypass(request) {
+          return request.headers.accept?.includes('text/html') ? '/index.html' : undefined
+        },
+      },
       // SPA 自身也有 /health 路由：只有 XHR/fetch 才代理到后端，文档导航必须落到前端路由。
       '/health': {
         target: apiTarget,

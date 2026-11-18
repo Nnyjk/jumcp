@@ -65,12 +65,16 @@ RUN apt-get update \
  && install -d -o 10001 -g 10001 -m 0755 /app /app/config /app/web \
  && install -d -o 10001 -g 10001 -m 0750 /data
 
-# 两个二进制放在同一目录：ConnectorExecutor 默认在可执行文件同目录查找 connector agent。
+# 二进制放在同一目录：ConnectorExecutor 默认在可执行文件同目录查找 connector agent。
+# 内置 MCP 包（clickhouse-basic）不再是独立二进制：它编译进 jumcp-server，经内嵌 HTTP 端点接入。
 COPY --from=backend-builder /out/jumcp-server /out/jumcp-connector-clickhouse /usr/local/bin/
 COPY --from=web-builder /out/web /app/web
 COPY config/policy.toml /app/config/policy.toml
 
-# 管理面凭证（JUMCP_ADMIN_TOKENS）必须由运行时注入，镜像里不设默认值。
+# 管理面凭证（JUMCP_ADMIN_TOKENS）与两把密钥必须由运行时注入，镜像里不设默认值：
+# - JUMCP_SECRET_KEY（64 位 hex）：落库加密，内置包密码以 enc:v1 密文存进注册表；
+# - JUMCP_TRANSPORT_KEY（64 位 hex）：请求体传输加密，管理台提交 secret 字段前用它加密。
+# 缺任一密钥（或密钥非法）时 HTTP 模式拒绝启动，避免密码明文落盘或被明文提交。
 ENV JUMCP_MCP_WEB_DIR=/app/web \
     JUMCP_MCP_TRANSPORT=streamable-http \
     JUMCP_MCP_HOST=0.0.0.0 \

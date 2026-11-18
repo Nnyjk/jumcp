@@ -111,11 +111,34 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     service = service.with_templates(registry);
+    // 内置 MCP 端点只在 HTTP 模式存在：stdio 模式下没有本进程 HTTP 监听可指。
+    let builtin_endpoint = if settings.transport == "stdio" {
+        None
+    } else {
+        Some(
+            jumcp_server::builtin::BuiltinEndpoint::local(&settings.host, settings.port)
+                .map_err(|e| anyhow::anyhow!("内置 MCP 端点不可用: {e}"))?,
+        )
+    };
+    let mut upstreams = jumcp_server::UpstreamManager::new(store.clone(), settings.upstream_write);
+    if let Some(endpoint) = &builtin_endpoint {
+        // 迁移必须在管理器建连之前：否则第一次 tools/list 会先按 stdio 旧行拉起子进程并失败。
+        let key = settings
+            .secret_key
+            .clone()
+            .expect("HTTP 模式的 JUMCP_SECRET_KEY 已在 Settings::validate 校验");
+        let migrated = jumcp_server::builtin::migrate_legacy_packages(&store, &key, endpoint)
+            .map_err(|e| anyhow::anyhow!("迁移内置 MCP 安装失败: {e}"))?;
+        if migrated > 0 {
+            tracing::warn!(
+                migrated,
+                "已把 clickhouse-basic 的 stdio 安装迁移为 HTTP 内嵌端点；密码已重新加密"
+            );
+        }
+        upstreams = upstreams.with_builtin(endpoint.clone());
+    }
     // router 上游：管理面写成功即生效，因此管理器在服务启动时固定挂上（只读配置来自 SQLite）。
-    service = service.with_upstreams(Arc::new(jumcp_server::UpstreamManager::new(
-        store.clone(),
-        settings.upstream_write,
-    )));
+    service = service.with_upstreams(Arc::new(upstreams));
 
     if let Some(log) = audit {
         service = service.with_audit(log);
@@ -126,7 +149,14 @@ async fn main() -> anyhow::Result<()> {
     if settings.transport == "stdio" {
         run_stdio(server).await
     } else {
-        run_http(server, service.clone(), store.clone(), settings).await
+        run_http(
+            server,
+            service.clone(),
+            store.clone(),
+            settings,
+            builtin_endpoint,
+        )
+        .await
     }
 }
 
@@ -173,6 +203,7 @@ async fn run_http(
     service: Arc<Service>,
     store: Arc<CapabilityStore>,
     settings: Settings,
+    builtin_endpoint: Option<jumcp_server::builtin::BuiltinEndpoint>,
 ) -> anyhow::Result<()> {
     // fail-closed：没有 token 就不开管理面，也不提供"半开放"降级。
     if settings.admin_tokens.is_empty() {
@@ -205,11 +236,23 @@ async fn run_http(
         tokio::net::TcpListener::bind(format!("{}:{}", settings.host, settings.port)).await?;
     let admin = jumcp_server::admin::AdminState {
         service,
-        store,
+        store: store.clone(),
         tokens: settings.admin_tokens.clone(),
+        transport_key: settings.transport_key.clone(),
     };
     let admin_app = jumcp_server::admin::router(admin);
-    let app = admin_app.merge(jumcp_server::mcp::http_router(server));
+    let mut app = admin_app.merge(jumcp_server::mcp::http_router(server));
+    if let Some(endpoint) = &builtin_endpoint {
+        let key = Arc::new(
+            settings
+                .secret_key
+                .clone()
+                .expect("HTTP 模式的 JUMCP_SECRET_KEY 已在 Settings::validate 校验"),
+        );
+        app = app.merge(jumcp_server::builtin::router(
+            jumcp_server::builtin::BuiltinState::new(store.clone(), key, endpoint),
+        ));
+    }
     // 管理台静态托管：`JUMCP_MCP_WEB_DIR` 为空即不挂；
     // 非空时目录/产物不合法直接拒绝启动，绝不静默降级成 404。
     let app = jumcp_server::web::attach(app, &settings.web_dir)

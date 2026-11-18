@@ -25,7 +25,7 @@ impl QueryExecutor for FakeExecutor {
     }
 }
 
-fn settings(stdio: bool, write: bool) -> Settings {
+pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
     let mut roles = std::collections::HashMap::new();
     roles.insert(
         "analyst".into(),
@@ -126,6 +126,7 @@ pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
         service: service.clone(),
         store: store.clone(),
         tokens: admin_tokens,
+        transport_key: Some(crate::support::transport_key()),
     };
     let app = jumcp_server::admin::router(admin)
         .merge(http_router(Arc::new(McpServer::from_arc(service))));

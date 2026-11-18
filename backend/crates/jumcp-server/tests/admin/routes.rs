@@ -48,5 +48,23 @@ async fn routes_are_documented() {
             .iter()
             .any(|(_, path)| *path == "/admin/upstreams/{id}/tools/basic")
     );
-    assert_eq!(table.len(), 35);
+    assert!(table.iter().any(|(_, path)| *path == "/admin/mcp/catalog"));
+    assert!(
+        table
+            .iter()
+            .any(|(_, path)| *path == "/admin/transport-key")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(_, path)| *path == "/admin/mcp/catalog/{id}/install")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(_, path)| *path == "/admin/mcp/catalog/{id}/install/{upstream_id}")
+    );
+    assert!(table.iter().any(|(method, path)| *method == "PATCH"
+        && *path == "/admin/mcp/catalog/{id}/install/{upstream_id}/config"));
+    assert_eq!(table.len(), 40);
 }

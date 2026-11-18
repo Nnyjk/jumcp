@@ -19,6 +19,7 @@ import type {
   CapabilityVersionsPage,
   CreatedCapability,
   DeletedAccessToken,
+  DeletedMcpInstallation,
   GroupCreateInput,
   GroupItem,
   GroupPage,
@@ -26,6 +27,11 @@ import type {
   GroupUpdateInput,
   HealthPayload,
   ItemPage,
+  McpCatalogInstallation,
+  McpCatalogPage,
+  McpInstallConfigInput,
+  McpInstallInput,
+  McpInstallResult,
   Page,
   RejectedCapability,
   ReviewQueueItem,
@@ -33,6 +39,7 @@ import type {
   TokenOptions,
   ToolCallsPage,
   ToolStatsPayload,
+  TransportKey,
   UpdatedCapabilityDefinition,
   UpdatedBasicTools,
   UpdateBasicToolsInput,
@@ -376,4 +383,64 @@ export async function updateUpstreamBasicTools(
     `/admin/upstreams/${encodeURIComponent(id)}/tools/basic`,
     { method: 'PUT', body: input },
   )
+}
+
+/* ----------------------------- MCP 安装目录 ------------------------------ */
+
+/**
+ * 安装目录：包定义、安装字段、工具与已安装实例一次返回。
+ * 目录项 id 只用于安装接口路径，已安装实例仍以上游 id 为准。
+ */
+export async function fetchMcpCatalog(signal?: AbortSignal): Promise<McpCatalogPage> {
+  return request<McpCatalogPage>('/admin/mcp/catalog', { signal })
+}
+
+/**
+ * 安装目录项：成功返回新上游（与 GET /admin/upstreams/{id} 同形）。
+ * 409=MCP_UPSTREAM_CONFLICT，400 为字段校验失败或上游 id 冲突。
+ */
+export async function installMcpCatalogEntry(
+  id: string,
+  input: McpInstallInput,
+): Promise<McpInstallResult> {
+  return request<McpInstallResult>(`/admin/mcp/catalog/${encodeURIComponent(id)}/install`, {
+    method: 'POST',
+    body: input,
+  })
+}
+
+/**
+ * 修改已安装实例的配置：非密字段全量提交（空串清空），密字段只提交本次输入、缺键即保持原值。
+ * 响应只回传最新 installation（密文依旧不回显），页面按整页失效重取，不做乐观更新。
+ */
+export async function updateMcpInstallConfig(
+  id: string,
+  upstreamId: string,
+  input: McpInstallConfigInput,
+): Promise<{ installation: McpCatalogInstallation }> {
+  return request<{ installation: McpCatalogInstallation }>(
+    `/admin/mcp/catalog/${encodeURIComponent(id)}/install/${encodeURIComponent(upstreamId)}/config`,
+    { method: 'PATCH', body: input },
+  )
+}
+
+/** 卸载目录项安装的实例：删除上游配置，router 同步移除其工具。 */
+export async function uninstallMcpCatalogEntry(
+  id: string,
+  upstreamId: string,
+): Promise<DeletedMcpInstallation> {
+  return request<DeletedMcpInstallation>(
+    `/admin/mcp/catalog/${encodeURIComponent(id)}/install/${encodeURIComponent(upstreamId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/* ---------------------------- 传输加密密钥 ------------------------------ */
+
+/**
+ * 浏览器端传输加密密钥：密码字段必须用它做 AES-256-GCM 加密后再提交。
+ * 同一管理鉴权；密钥未配置时后端返回 503 MCP_TRANSPORT_KEY_MISSING，调用方应提示而不发安装/改配置请求。
+ */
+export async function fetchTransportKey(signal?: AbortSignal): Promise<TransportKey> {
+  return request<TransportKey>('/admin/transport-key', { signal })
 }

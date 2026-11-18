@@ -71,7 +71,7 @@
 | `deprecate` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `reject` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `group_create` / `group_update` / `group_delete` | `group{name,priority,min_budget,roles}` |
-| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`enabled` |
+| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`enabled`；由内置包安装时另含 `catalog_id`、`catalog_version` |
 | `refresh`（`object_type="upstream"`） | `transport`、`group`、`category`、`read_only`、`tool_count`、`status`；失败时事件顶层另有 `error_code`/`error_message` |
 | `update_tool_groups`（`object_type="upstream"`） | `basic_total` |
 | `token_create` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`；**绝不含明文 token 或 hash** |
@@ -250,7 +250,7 @@ body: { name, role, groups: string[], builtin_tools: string[],
 - `name` 1..64 字符；`caller` 符合 `^[a-z0-9._-]{2,32}$`；`source` 1..64 且 `^[a-z0-9._-]+$`；
 - `role` 必须是 `policy.roles` 已定义角色；
 - `groups` 去重后非空，且每个组都来自 `effective_policy`（配置组 + 管理组，**允许包含 `admin`**）；
-- `builtin_tools` 去重后必须是 `BUILTIN_CAPABILITY_IDS` 的子集（空数组合法）；`admin_*` 还要求 `groups` 含 `admin`，否则 400；
+- `builtin_tools` 去重后每项必须是合法 allowlist 条目：内置 id、上游暴露名 `<server_id>__<tool>`、`*` 或 `<server_id>__*`（空数组合法，表示没有任何工具；`**`、`a__b__*`、`*__x`、`__*`、空串一律 400）；`admin_*` 还要求 `groups` 含 `admin`，否则 400；
 - `expires_at` 可空；非 RFC3339 或早于当前时间一律拒绝。
 
 写 `admin_change`：`object_type="token"`、`object_id=id`、`action="token_create"`、`source="admin-api"`，`data` 只放上述配置与 `token_prefix`。审计未启用时拒绝写入（`MCP_AUDIT_ERROR`）。
@@ -294,13 +294,19 @@ body: { name, role, groups: string[], builtin_tools: string[],
 ```
 { roles: [{ code, name, default_groups: string[], default_budget }],
   groups: [{ code, name, source: "policy"|"managed", priority, min_budget, token_count }],
-  builtin_tools: [{ name, label, group: "builtin"|"admin" }] }
+  builtin_tools: [{ name, label, group: "builtin"|"admin" }],
+  tool_wildcards: [{ value: "*", label }],
+  upstreams: [{ id, name, group, enabled, tool_count, wildcard }],
+  upstream_tools: [{ name, upstream_id, tool, group, label }] }
 ```
 
 - 角色与组都返回 `code` + `name`：`code` 是权限标识（token.role、token.groups、审计 actor.role 一律用它），`name` 只是中文展示名，**不参与**任何权限判定；
 - `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；旧的「name=code」语义已删除；
 - `groups` 是配置组 + 管理组合并（`Service::effective_policy`）后的结果，`token_count` 是该组被多少个**未撤销** token 引用；
-- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/登记模板草案/审核队列/审计查询/改可见性）。
+- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/登记模板草案/审核队列/审计查询/改可见性）；
+- `tool_wildcards` 是 allowlist 的两档通配（`*`），`upstreams[].wildcard` 是 `<id>__*` 形态，前端据此提供"整台上游"授权；
+- `upstreams` 列出全部已注册上游（未 refresh 的也在，`tool_count=0`），`upstream_tools` 的 `name` 是暴露名、`tool` 是上游原始名、`group` 是生效组（`basic` 覆盖优先），`label` 形如 `<上游名> / <原始工具名>`；
+- 三个上游字段只读 registry 里的缓存视图，**不触网**：授予面不因管理面打开而探测上游；未配置上游管理器时三个字段都是空数组。
 
 ### 7.11 角色与组的 code / name 双轨
 
@@ -392,7 +398,7 @@ DELETE /admin/groups/{code}
 ### 11.3 scope 规则
 
 - token 的 `groups` 同时是**默认组与硬上限**：未声明时使用它；header/`_meta` 只能在其中收窄。越界仍按租户模式判定（strict → `MCP_GROUP_FORBIDDEN`，intersect → 裁剪并标记 degraded），**永远不会扩展到角色默认组**。
-- token 的 `builtin_tools` 是**内置工具精确 allowlist**：`tools/list` 只输出命中项，`tools/call` 对内置工具再判一次（列表过滤不放行调用）。`admin_*` 还需 scope.groups 含 `admin`（双重判定）；两者都不是请求头可扩大的。
+- token 的 `builtin_tools` 是**工具名 allowlist**（内置 id、上游暴露名 `<server_id>__<tool>`、`<server_id>__*` 整台上游、`*` 全部工具）：`tools/list` 只输出命中项，`tools/call` 再判一次（列表过滤不放行调用）。`admin_*` 还需 scope.groups 含 `admin`（双重判定）；两者都不是请求头可扩大的。
 - managed 能力仍按组过滤（`published ∧ discoverable/callable ∧ group ∈ scope`）；header/`_meta` 同样不能扩大 token 组。
 - stdio/管理面 actor 的 `allowed_groups`/`allowed_builtin_tools` 均为 `None`，行为保持不变。
 
@@ -400,5 +406,5 @@ DELETE /admin/groups/{code}
 
 启动时若 `access_tokens` 为空且 `JUMCP_AGENT_TOKENS` 非空，把每个静态 token 一次性导入为 active 记录：
 `name="环境引导令牌"`、`source="bootstrap"`、`caller=agent_id`、`role` 同配置、`groups=该角色 default_groups`、
-`builtin_tools=全部内置 id`、`created_by="env"`；日志输出「已导入 N 个引导令牌」。
+`builtin_tools=["*"]`（全部工具，含之后安装的上游；可见性仍由组与上游开关约束）、`created_by="env"`；日志输出「已导入 N 个引导令牌」。
 导入的是同一明文的 sha256，原静态 token 仍可用；表非空时绝不重导。

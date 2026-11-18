@@ -24,6 +24,15 @@ services:
       JUMCP_ADMIN_TOKENS: ${JUMCP_ADMIN_TOKENS:?必须设置 JUMCP_ADMIN_TOKENS（格式 id:token,id:token，token 至少 16 位）}
       # 可选：`agent_id:role:token`，只在 access_tokens 表为空时一次性导入（引导用），表非空后不再生效。
       JUMCP_AGENT_TOKENS: ${JUMCP_AGENT_TOKENS:-}
+      # 必填：64 位 hex（32 字节），用于加密内置包配置里的密码类字段。
+      # 缺省/非法时 HTTP 模式拒绝启动；生成方式：openssl rand -hex 32。
+      # 轮换后旧密文不可解，需在管理台重填密码。
+      JUMCP_SECRET_KEY: ${JUMCP_SECRET_KEY:?JUMCP_SECRET_KEY 必须提供 64 位 hex}
+      # 必填：64 位 hex（32 字节）的传输密钥，与 JUMCP_SECRET_KEY 用途分离——
+      # 管理台用它加密 secret 字段的请求体，服务端用它解密后再用 JUMCP_SECRET_KEY 落库。
+      # 缺省/非法时 HTTP 模式拒绝启动；生成方式：openssl rand -hex 32。
+      # 轮换后未重新提交的旧密文只影响传输层（落库密文仍可解），页面刷新重新加密即可。
+      JUMCP_TRANSPORT_KEY: ${JUMCP_TRANSPORT_KEY:?JUMCP_TRANSPORT_KEY 必须提供 64 位 hex（生成方式：openssl rand -hex 32）}
       RUST_LOG: ${RUST_LOG:-info}
 
     ports:
@@ -34,6 +43,9 @@ services:
         mode: ingress
 
     volumes:
+      # 安装产物（上游行，含 catalog_id/catalog_version）、令牌、审计全部落在这两个 SQLite
+      # （/data/registry.sqlite3 与 /data/audit.sqlite3）里，因此不需要额外卷。
+      # 内置 MCP 包编译进 jumcp-server，不存在需要挂载的可执行文件。
       - jumcp-data:/data
 
     stop_grace_period: 30s
