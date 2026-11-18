@@ -2,7 +2,7 @@ name: CI
 
 # 触发：dev（默认分支/集成分支）push、PR（目标 dev 或 main）、手动。
 # main 上的日常改动一律经 dev → main 的发版 PR 进入，因此 CI 不订阅 main push，
-# 避免与 release.yml 在同一 ref 上重复跑一遍全量校验。
+# 产物发布由 image-cd.yml / web-cd.yml 承担，CI 只负责校验，不在同一 ref 上重复跑。
 # 目标为 main 的 PR 额外跑 release source is dev：main 只接受 dev 的发版 PR。
 on:
   push:
@@ -149,7 +149,7 @@ jobs:
           JUMCP_TRANSPORT_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
         run: docker stack config -c deploy/portainer-stack.yml > /dev/null
 
-      # 只构建本地镜像（load），不登录、不 push：发布由 release.yml 负责。
+      # 只构建本地镜像（load），不登录、不 push：发布由 image-cd.yml 负责。
       # provenance/sbom 在 load 模式下不可用，显式关闭。
       - name: Build linux/amd64 image
         uses: docker/build-push-action@v6
