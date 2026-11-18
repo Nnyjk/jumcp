@@ -6,8 +6,8 @@
 
 | 分支 | 角色 | 规则 |
 |---|---|---|
-| `main` | 发布分支 | 只接受 `dev` 的发版 PR（merge commit，另有 `release source is dev` 校验来源）；禁止日常直接 push；合并即触发 release 并产出 GHCR 镜像 |
-| `dev` | 默认分支、集成分支 | 日常改动的汇聚点；只接受 PR；每次 push 跑完整 CI（含镜像构建冒烟），但不登录、不推送 GHCR |
+| `main` | 发布分支 | 只接受 `dev` 的发版 PR（merge commit，另有 `release source is dev` 校验来源）；禁止日常直接 push；合并即触发 image CD（GHCR 镜像）与 web CD（Web 包） |
+| `dev` | 默认分支、集成分支 | 日常改动的汇聚点；只接受 PR；每次 push 跑完整 CI（含镜像构建冒烟，不登录、不推送 GHCR），同时 image CD 推 `dev` 快照、web CD 上传 `dev` 的 Web 包 |
 | `feature/*` | 单个改动的短期分支 | 从 `dev` 切出，PR 目标 `dev`，合并后可删 |
 | `sync/main-to-dev` | 发版后的同步分支 | 从 `dev` 切出、合入 `main`，PR 目标 `dev`；保证 `dev` 含 `main` 的发布 merge commit |
 
@@ -111,9 +111,9 @@ gh pr merge <PR> --merge
 
 合并后：
 
-1. `main` push 自动触发 `release.yml`，产出 `ghcr.io/<owner>/jumcp` 的 `latest`、`main`、`sha-<短 sha>`。发版 PR 上 `release source is dev` 校验来源分支必须是 `dev`，`feature/*` 直接 PR 到 `main` 会被拒绝。
-2. 确认 release run 成功、镜像按 digest 回拉冒烟通过；`latest` 只由 `main` 产出，`dev` 的任何活动都不产生镜像（对 `dev` 手动 `workflow_dispatch` 时 `publish` job 直接跳过）。
-3. 需要版本 tag 时再打：`git tag v0.0.1.000 <merge-sha> && git push origin v0.0.1.000`，产出 `0.0.1.000` / `0.0.1` / `0.0`（不改 `latest`）；tag 必须是 `v` + 3 或 4 段数字，`v1.2.3` 产出 `1.2.3` / `1.2`。规则与复算方式见 `scripts/release-tags.sh`。tag 必须指向 `main` 历史内的提交——tag 触发会跑 `merge-base --is-ancestor`，打在 `dev` 提交上会失败退出。
+1. `main` push 自动触发 `image-cd.yml` 与 `web-cd.yml`：镜像产出 `ghcr.io/<owner>/jumcp` 的 `latest`、`main`、`sha-<短 sha>`，Web 包产出 `jumcp-admin-web-main.tar.gz` artifact。发版 PR 上 `release source is dev` 校验来源分支必须是 `dev`，`feature/*` 直接 PR 到 `main` 会被拒绝。
+2. 确认两个 CD run 成功、镜像按 digest 回拉冒烟通过；`latest` 只由 `main` 产出，`dev` 的 push 只推 `dev` 快照（`dev`/`sha-<短 sha>`），对 feature 分支手动 `workflow_dispatch` 时两个 workflow 的构建 job 都直接跳过。
+3. 需要版本 tag 时再打：`git tag v0.0.1.000 <merge-sha> && git push origin v0.0.1.000`，产出 `0.0.1.000` / `0.0.1` / `0.0`（不改 `latest`），同时把 `jumcp-admin-web-0.0.1.000.tar.gz` 挂到该 tag 的 Release；tag 必须是 `v` + 3 或 4 段数字，`v1.2.3` 产出 `1.2.3` / `1.2`。规则与复算方式见 `scripts/release-tags.sh`。tag 必须指向 `main` 历史内的提交——tag 触发会跑 `merge-base --is-ancestor`，打在 `dev` 提交上会失败退出。
 4. 发版后立刻回到第 0 步，把 `main` 同步回 `dev`；`dev` 继续接收日常 PR，下一轮发版重复上面的流程。
 
 ## 禁止事项
@@ -121,8 +121,8 @@ gh pr merge <PR> --merge
 - 不直接 push `main`（也不直接 push `dev`，日常改动一律走 PR）。
 - 不使用 `git push --force` / `--force-with-lease` 改写 `main` 或 `dev` 历史（受保护分支会拒绝，也不要尝试绕过）。
 - 发版 PR 不用 squash / rebase 合并，避免 `main` 与 `dev` 历史分叉。
-- 不在 `dev` 上发版：对 `dev` 手动 `workflow_dispatch` 时 release 的 `publish` job 会直接跳过（不构建、不推镜像）；手工发布只允许 `main`。
-- 不在 `dev` 的提交上打 `v*` tag：release 会校验 tag 是否在 `main` 历史内，不满足直接失败；发布 tag 一律打在 `main` 的发布提交上。
+- 不在 `dev` 上手工发布正式版：对 `dev` 手动 `workflow_dispatch` 只会得到 `dev` 快照（`dev`/`sha-<短 sha>`），对 feature 分支手动 dispatch 时两个 CD 的构建 job 会整体跳过；正式版只由 `main` 产出。
+- 不在 `dev` 的提交上打 `v*` tag：image CD 会校验 tag 是否在 `main` 历史内，不满足直接失败；发布 tag 一律打在 `main` 的发布提交上。
 - 发版合入 `main` 后不做 `main → dev` 同步就开下一轮发版：`strict` 保护会以「分支不是最新」挡住发版 PR。
 - 不提交 token/secret，不在 workflow 里打印凭证；GHCR 登录只用 `GITHUB_TOKEN`。
 - 不发未经 CI 验证的版本：required checks 未全绿不合并。

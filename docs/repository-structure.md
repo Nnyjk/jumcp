@@ -13,7 +13,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 | `scripts/` | 本地与 CI 共用的启动/测试/冒烟脚本（PowerShell + Bash 双份） |
 | `docs/` | 当前有效的方案、契约与运维文档 |
 | `notes/` | 工作笔记：踩坑、约束、被否决的决定（`notes/mcp_plan/` 的架构预览与落地计划是历史记录，不作为契约） |
-| `.github/workflows/` | CI 与 release 流水线 |
+| `.github/workflows/` | CI（`ci.yml`）、镜像 CD（`image-cd.yml`）与无头 Web CD（`web-cd.yml`） |
 | `Dockerfile` / `.dockerignore` | 多阶段构建：Rust release 编译 → Node 构建管理台 → `debian:bookworm-slim` 运行时 |
 | `README.md` / `CONTRIBUTING.md` / `AGENTS.md` | 项目说明 / 协作与分支模型 / 文档与注释规范 |
 | `LICENSE` | MIT |
@@ -116,7 +116,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 - `scripts/`：`dev.ps1`/`dev.sh`（一键启动前后端）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
 - `docs/`：只写**当前有效**的结论（方案、契约、运维与 CI），结论变了就改原文，不保留阶段性设计与变更叙述；这类历史与被否决项放 `notes/`。文档索引在 `README.md`。
 - `notes/`：只记踩坑、约束、被否决的决定与开发期重要信息，路径 `notes/<module>/<note_name>.md`；结论一旦稳定就上升进 `docs/`。规范见 `AGENTS.md`。
-- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动，只读、不推镜像）与 `release.yml`（`main` push、`v*` tag、手动，推 GHCR）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
+- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动，只读、不推镜像）、`image-cd.yml`（`dev`/`main` push、`v*` tag、手动，推 GHCR 并在 digest 上冒烟）与 `web-cd.yml`（同触发面，产出无头 Web 包 artifact，tag 时挂 GitHub Release）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
 
 ## 目录约定
 

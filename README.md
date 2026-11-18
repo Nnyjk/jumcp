@@ -119,14 +119,15 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
 - `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
 - 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
 - CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；脚本 `bash -n` 与发布 tag 解析用例；`linux/amd64` 镜像构建 + 容器冒烟 + Swarm stack 配置校验（`docker stack config`）；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
-- release（`.github/workflows/release.yml`）：仅由 `main` push、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`（tag 与 `VERSION` 由 `scripts/release-tags.sh` 确定性算出：`main` 给 `latest`/`main`/`sha-<短 sha>`，版本 tag 给精确版本与兼容 tag；`latest` 只给 `main`，带 provenance 与 SBOM），按 digest 回拉后再冒烟。`publish` job 限定 `refs/heads/main` 与 `refs/tags/v*`：对 `dev` 手动 dispatch 会整 job 跳过，`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验），所以在 `dev` 上既不能手动发布也不能靠打 tag 发布。
+- image CD（`.github/workflows/image-cd.yml`）：由 `dev` push（快照）、`main` push（正式）、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`。tag 与 `VERSION` 由 `scripts/release-tags.sh` 确定性算出：`dev` 给 `dev`/`sha-<短 sha>`，`main` 给 `latest`/`main`/`sha-<短 sha>`，版本 tag 给精确版本与兼容 tag（`latest` 只给 `main`），带 provenance 与 SBOM，push 后按 digest 回拉再冒烟。`publish` job 限定 `refs/heads/dev`、`refs/heads/main` 与 `refs/tags/v*`：对 feature 分支手动 dispatch 会整 job 跳过；`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验）。
+- web CD（`.github/workflows/web-cd.yml`）：触发面与 image CD 相同，构建 `jumcp-admin-web-<version>.tar.gz`（`admin-web/dist` 打包）并上传 artifact（保留 30 天）；`v*` tag 时再把同一份包挂到该 tag 的 GitHub Release（只有这一步需要 `contents: write`）。
 - 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`、内置包链路：目录 `transport` → 安装（密码以传输密文提交）→ refresh 拉到 3 个工具 → 改配置（不回显密文）→ 卸载）。
 
 完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
 
 **Portainer / Swarm**：`deploy/portainer-stack.yml` 是可直接粘贴进 Portainer（Stacks → Add stack）或 `docker stack deploy -c` 的部署定义——单副本、`stop-first` 更新与回滚（SQLite 单写者，不能多副本）、`/data` 挂命名卷、`JUMCP_ADMIN_TOKENS`、`JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY` 必填 fail-fast、镜像与端口可用 `JUMCP_IMAGE` / `JUMCP_PORT` 覆盖。前置条件、Portainer 操作步骤、鉴权边界、备份升级与多节点限制见 `docs/portainer-swarm.md`。
 
-分支模型：`main` 只做发布、不接受日常直接 push，且只接受 `dev` 的发版 PR（另有 `release source is dev` 检查来源）；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 release。发版后要把 `main` 合回 `dev` 做同步，否则 `strict` 保护会挡住下一次发版 PR。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
+分支模型：`main` 只做发布、不接受日常直接 push，且只接受 `dev` 的发版 PR（另有 `release source is dev` 检查来源）；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 image CD 与 web CD。发版后要把 `main` 合回 `dev` 做同步，否则 `strict` 保护会挡住下一次发版 PR。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
 
 ## 测试
 
