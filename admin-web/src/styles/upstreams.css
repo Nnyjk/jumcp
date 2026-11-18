@@ -1,18 +1,42 @@
-/* MCP 接入 · 安装目录页签：包卡片网格 + 字段/工具清单 + 包内已安装实例表。颜色只用 tokens.css 语义变量。 */
+/* MCP 接入 · 安装目录页签：过滤 + 紧凑卡片网格 + 详情弹窗（字段/工具/实例表）。颜色只用 tokens.css 语义变量。 */
+
+.mcp-catalog-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.mcp-catalog-filter {
+  flex: 0 1 260px;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.mcp-catalog-filter .input {
+  width: 100%;
+}
+
+.mcp-catalog-count {
+  margin-left: auto;
+  align-self: center;
+  flex: none;
+}
 
 .mcp-catalog-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
-  align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+  align-items: stretch;
 }
 
 .mcp-package {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-4);
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-subtle);
@@ -21,7 +45,7 @@
 .mcp-package-head {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .mcp-package-title {
@@ -34,20 +58,14 @@
 
 .mcp-package-title h3 {
   font-size: var(--fs-16);
-  line-height: 22px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
 }
 
 .mcp-package-id {
   color: var(--text-tertiary);
   font-size: var(--fs-12);
   overflow-wrap: anywhere;
-}
-
-.mcp-package-summary {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--fs-13);
-  line-height: 20px;
 }
 
 .mcp-package-meta {
@@ -63,89 +81,73 @@
   font-weight: 600;
 }
 
-.mcp-package-transport {
-  color: var(--text-tertiary);
-  font-size: var(--fs-12);
-}
-
-.mcp-package-label {
-  color: var(--text-secondary);
-  font-size: var(--fs-12);
-  font-weight: 600;
-}
-
-.mcp-package-default {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.mcp-package-default code {
-  color: var(--text-primary);
-  font-size: var(--fs-12);
-  overflow-wrap: anywhere;
-}
-
-.mcp-package-fields,
-.mcp-package-tools,
-.mcp-package-installs {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.mcp-def-list {
+.mcp-package-summary {
   margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mcp-def-list li {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-  min-width: 0;
-}
-
-.mcp-def-list code {
-  flex: none;
-  color: var(--accent);
-  font-size: var(--fs-12);
-}
-
-.mcp-def-summary {
-  min-width: 0;
-  color: var(--text-tertiary);
-  font-size: var(--fs-12);
-  line-height: 18px;
-}
-
-.mcp-package-install-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.mcp-package-installs .table-tools {
-  padding-top: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-14);
+  line-height: 20px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .mcp-package-foot {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-top: auto;
   padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
 
-.mcp-package-foot .hint {
-  flex: 1 1 auto;
+.mcp-package-foot .btn:first-child {
+  margin-right: auto;
+}
+
+/* 详情弹窗 */
+
+.mcp-detail-summary {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-14);
+  line-height: 20px;
+}
+
+.mcp-detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+}
+
+.mcp-detail-facts code {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.mcp-detail-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mcp-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   min-width: 0;
-  max-width: none;
+  margin-bottom: var(--space-4);
+}
+
+.mcp-detail-title {
+  margin: 0;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--text-secondary);
 }
