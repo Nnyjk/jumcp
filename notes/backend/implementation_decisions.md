@@ -10,7 +10,7 @@
 - **限制与预算语义分离**：行数/单格字符超限夹紧并回显（`effective_max_rows` / `next_offset`）；token 预算超限显式失败或进摘要模式。二者混用等于静默降级。
 - **能力指针行可更新，历史不可改**：`capabilities` 行指向当前版本；`capability_versions` 由 append-only trigger 保护。不是靠禁止指针更新来保证"编辑即新版本"。
 - **管理面身份来自凭证，而非请求头**：`JUMCP_ADMIN_TOKENS="id:token,id:token"`，token 常量时间比较后派生 actor id；`X-Admin-Actor` 仅作一致性校验（不一致 400），审计主体恒用派生 id。主体因此不可伪造：`capabilities.submitted_by` 记录提审人，publish 时把批准人（token 派生）写入 `approved_by` 与审计 `approval`。
-- **前端不持有管理面凭证**：`VITE_*` 是编译期内联，任何凭证都会随构建产物公开。dev 由 Vite 代理在 `proxyReq` 注入 `Authorization`（token 只存在于 Node 进程环境，`JUMCP_DEV_ADMIN_TOKEN`）；生产由网关/BFF 注入或改用会话 Cookie；构建期守卫在 production 模式检测到 `VITE_ADMIN_*` 直接终止构建。
+- **前端不持有管理面凭证**：`VITE_*` 是编译期内联，任何凭证都会随构建产物公开。管理台改为**登录页 + HttpOnly 会话 cookie**：用户把 `JUMCP_ADMIN_TOKENS` 里的某个 token 一次性 `POST /admin/login` 交给后端，此后同源请求自动带 cookie（`SameSite=Strict`，非 GET 校验同源）。**没有网关/BFF，也没有 Vite 注入**；dev 期 Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` / `JUMCP_DEV_API_TARGET` 两个地址变量）；构建期守卫在 production 模式检测到 `VITE_ADMIN_*` 直接终止构建。
 - **数组参数本轮不启用**：`array<T>` 在注册期拒绝（`MCP_TEMPLATE_INVALID` / `rule=array_param_unsupported`），因为 `$n::T[]` 的 ANY 展开尚未实现——不留"注册放行、首次调用必炸"的中间态。
 - **null 参数必须显式 cast**：`Value::Null` 只能按 text OID 绑定，`$1 IS NULL OR col = $1` 作用在 int/date 上会得到 `operator does not exist`。绑定前校验：null 且占位符无 `::type` → `MCP_NULL_PARAM_NEEDS_CAST`（提示 `$1::int`）。
 

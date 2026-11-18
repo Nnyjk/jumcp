@@ -108,7 +108,7 @@
 | `JUMCP_AGENT_TOKENS` | 空 | `/mcp` `agent_id:role:token,...`；为空时 `/mcp` 一律 `MCP_UNAUTHORIZED` |
 | `RUST_LOG` | `info` | 日志级别 |
 | `JUMCP_TEST_PG_DSN` / `JUMCP_TEST_INFLUX_DSN` | 未设置 | 真实库 `#[ignore]` 测试 |
-| `JUMCP_DEV_ADMIN_TOKEN` / `JUMCP_DEV_API_TARGET` / `JUMCP_DEV_PG_DSN` / `JUMCP_DEV_INFLUX_DSN` | 开发脚本注入 | `scripts/dev.ps1` / `dev.sh` |
+| `JUMCP_DEV_ADMIN_TARGET` / `JUMCP_DEV_API_TARGET` / `JUMCP_DEV_PG_DSN` / `JUMCP_DEV_INFLUX_DSN` | 开发脚本设置 | `scripts/dev.ps1` / `dev.sh`（两个地址变量只指定 Vite 转发目标，不含凭证） |
 
 `config/policy.toml` 当前**没有** `[[datasources]]` 段（实际数据源由 `scripts/dev.ps1 -PgDsn/-InfluxDsn` 生成 `.dev-data/policy.toml`）；角色 3 个（analyst/executor/admin），组 7 个，`tenant_budget_cap=2000`，`allow_intersect=false`。
 

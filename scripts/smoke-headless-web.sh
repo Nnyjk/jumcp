@@ -180,4 +180,21 @@ ASSET_BYTES="$(wc -c <"$TMP_ROOT/asset.js" | tr -d ' ')"
 [ "$ASSET_BYTES" -gt 0 ] || fail "GET $ASSET 返回空文件"
 echo "    ok: $ASSET → 200（${ASSET_BYTES} bytes）"
 
+# 4. 未登录访问：静态托管不鉴权，首屏是登录页壳——`/login` 走同一条 SPA 回退，
+#    响应里不能出现 Set-Cookie/Location（否则说明静态层在做鉴权或重定向，与管理面契约冲突）。
+get "$BASE/login" "$TMP_ROOT/login.html" -H 'Accept: text/html' -D "$TMP_ROOT/login.headers"
+[ "$CODE" = "200" ] || fail "未登录 GET /login 期望 200（登录页壳），实际 $CODE"
+case "$CTYPE" in
+  text/html*) ;;
+  *) fail "GET /login 的 Content-Type 期望 text/html，实际 '$CTYPE'" ;;
+esac
+html_has_root "$TMP_ROOT/login.html" || fail 'GET /login 的登录页壳缺少 id="root"'
+if grep -qi '^set-cookie:' "$TMP_ROOT/login.headers"; then
+  fail '未登录 GET /login 不应下发 Set-Cookie（静态站不签发会话）'
+fi
+if grep -qi '^location:' "$TMP_ROOT/login.headers"; then
+  fail '未登录 GET /login 不应重定向（SPA 自己决定跳登录页）'
+fi
+echo "    ok: 未登录 GET /login → 200 登录页壳（无 Set-Cookie / 无重定向）"
+
 echo "==> smoke-headless-web 全部通过"

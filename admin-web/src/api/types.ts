@@ -150,11 +150,19 @@ export interface AuditQuery {
   order?: AuditOrder | undefined
 }
 
-/** GET /admin/me：后端按 token 派生的当前主体。 */
-export interface AdminIdentity {
+/** GET /admin/session：会话（HttpOnly cookie）与 GET /admin/me 共用的当前主体形态。 */
+export interface AdminActor {
   id: string
   role: string
   type: string
+}
+
+/** GET /admin/me 的主体：与会话主体同一形态。 */
+export type AdminIdentity = AdminActor
+
+/** GET /admin/session 的响应体。 */
+export interface AdminSession {
+  actor: AdminActor
 }
 
 /** 生命周期状态（与双布尔正交）。 */

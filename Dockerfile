@@ -75,22 +75,33 @@ COPY config/policy.toml /app/config/policy.toml
 # - JUMCP_SECRET_KEY（64 位 hex）：落库加密，内置包密码以 enc:v1 密文存进注册表；
 # - JUMCP_TRANSPORT_KEY（64 位 hex）：请求体传输加密，管理台提交 secret 字段前用它加密。
 # 缺任一密钥（或密钥非法）时 HTTP 模式拒绝启动，避免密码明文落盘或被明文提交。
+#
+# 两个监听面（不能相同，相同即拒绝启动）：
+# - JUMCP_MCP_PORT（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent 与网关；
+# - JUMCP_ADMIN_PORT（管理面）：`/admin/*`、`/health` 与管理台静态站（JUMCP_MCP_WEB_DIR），给浏览器。
+# 管理台登录用 cookie 会话，因此还有两个可选旋钮：
+# - JUMCP_ADMIN_SESSION_TTL_SECS（默认 43200 = 12 小时）；
+# - JUMCP_ADMIN_COOKIE_SECURE=1 仅在 HTTPS（TLS 终止在网关时也算）下启用，否则浏览器不回传 cookie。
 ENV JUMCP_MCP_WEB_DIR=/app/web \
     JUMCP_MCP_TRANSPORT=streamable-http \
     JUMCP_MCP_HOST=0.0.0.0 \
     JUMCP_MCP_PORT=8000 \
+    JUMCP_ADMIN_PORT=8080 \
     JUMCP_MCP_CONFIG_FILE=/app/config/policy.toml \
     JUMCP_MCP_REGISTRY_PATH=/data/registry.sqlite3 \
     JUMCP_MCP_AUDIT_PATH=/data/audit.sqlite3 \
     RUST_LOG=info
 
 WORKDIR /app
-EXPOSE 8000
+# 两个面都要发布：只开 8000 会让管理台登录页拿不到 cookie（另一个端口不可达）。
+EXPOSE 8000 8080
 VOLUME ["/data"]
 USER 10001:10001
 STOPSIGNAL SIGTERM
 
+# 两个面各探一次：healthcheck 不该假设自己在哪个端口上（也顺手验证分面真的起了两个监听）。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${JUMCP_MCP_PORT:-8000}/health" -o /dev/null || exit 1
+  CMD curl -fsS "http://127.0.0.1:${JUMCP_MCP_PORT:-8000}/health" -o /dev/null \
+   && curl -fsS "http://127.0.0.1:${JUMCP_ADMIN_PORT:-8080}/health" -o /dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/jumcp-server"]

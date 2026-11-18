@@ -2,7 +2,9 @@
 //!
 //! 边界：
 //! - 只在 streamable-http 模式挂载（stdio 无管理面）；未配置 `JUMCP_ADMIN_TOKENS` 时进程拒绝启动。
-//! - 身份只能来自 token→actor 映射：`X-Admin-Actor` 仅用于一致性校验，永远以派生 id 为准。
+//! - 管理面与 MCP 面是**两个监听**（`JUMCP_ADMIN_PORT` / `JUMCP_MCP_PORT`），本文件只服务管理面。
+//! - 身份只能来自 token→actor 映射：会话 cookie（`POST /admin/login`）与 Bearer 二选一，
+//!   cookie 优先；`X-Admin-Actor` 仅用于一致性校验，永远以派生 id 为准。
 //! - 全部拒绝写 `policy_decision`，成功写 `admin_change`（submit 在此层写，publish/visibility 由
 //!   CapabilityStore 写，避免同一变更两条记录）。
 //! - 审计查询只读：不提供任何 UPDATE/DELETE 入口，DB 层另有 append-only trigger 兜底。
@@ -20,7 +22,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use jumcp_core::access::{AccessTokenRecord, NewAccessToken};
-use jumcp_core::audit::{AuditLog, ChainVerdict, Envelope, Order};
+use jumcp_core::audit::{AuditLog, Envelope, Order};
 use jumcp_core::config::{
     AdminTokens, MAX_GROUPS, RESERVED_GROUP_NAMES, is_principal_id, is_reserved_group_name,
     validate_display_name, validate_group_name,
@@ -41,6 +43,7 @@ use std::sync::Arc;
 mod capabilities;
 mod groups;
 mod packages;
+mod session;
 mod stats;
 mod surface;
 mod tokens;
@@ -51,6 +54,7 @@ mod writes;
 use self::capabilities::{capabilities, capability_detail, capability_versions};
 use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
 use self::packages::{install_package, list_catalog, uninstall_package, update_package_config};
+use self::session::{login, logout, session_info};
 use self::stats::{tool_calls, tool_stats};
 pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
@@ -82,6 +86,8 @@ const FILTER_KEYS: &[&str] = &[
     "token_id",
     "ts_after",
     "ts_before",
+    // 面的过滤：`/admin/audit-events?surface=admin|mcp` 让运维能只要平台面或只要业务面。
+    "surface",
 ];
 
 #[derive(Clone)]
@@ -100,9 +106,11 @@ pub struct AuthenticatedAdmin {
     pub id: String,
 }
 
-/// 挂在 streamable-http 监听上的完整路由：`/health` 免鉴权，`/admin/*` 必须带 Bearer token。
+/// 挂在管理面监听上的完整路由：`/health` 免鉴权，`/admin/login`、`/admin/logout` 自校验，
+/// 其余 `/admin/*` 必须带会话 cookie 或 Bearer token。
 pub fn router(state: AdminState) -> Router {
-    let admin = Router::new()
+    let protected = Router::new()
+        .route("/session", get(session_info))
         .route("/me", get(me))
         .route("/audit-events", get(audit_events))
         .route("/capabilities", get(capabilities).post(create_capability))
@@ -148,8 +156,17 @@ pub fn router(state: AdminState) -> Router {
         .route("/capabilities/{id}/deprecate", post(deprecate_capability))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            require_token,
+            require_admin_identity,
         ));
+    // 登录/注销**不**挂在鉴权层后面：登录当然不能要求已登录，注销必须幂等（重复注销仍 204）。
+    // 限流器按 router 实例创建：它只该保护这台进程的登录口，且并行测试之间不能互相 429。
+    let admin = Router::new()
+        .route(
+            "/login",
+            post(login).layer(Extension(session::LoginLimiter::default())),
+        )
+        .route("/logout", post(logout))
+        .merge(protected);
     Router::new()
         .route("/health", get(health))
         .nest("/admin", admin)
@@ -169,6 +186,9 @@ impl From<McpError> for ApiError {
 fn status_for(code: &str) -> StatusCode {
     match code {
         "MCP_UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
+        // 同源校验失败是"已认证但不许这么做"，必须与 401 区分：前端据此提示而不是跳登录页。
+        "MCP_FORBIDDEN" => StatusCode::FORBIDDEN,
+        "MCP_RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
         "MCP_APPROVAL_REQUIRED"
         | "MCP_VALIDATION_ERROR"
         | "MCP_BAD_REQUEST"
@@ -273,13 +293,56 @@ fn reject(state: &AdminState, actor: &Actor, e: McpError, detail: Value) -> ApiE
     }
 }
 
-async fn require_token(State(state): State<AdminState>, mut req: Request, next: Next) -> Response {
+/// 管理面鉴权：**会话 cookie 优先，其次 Bearer**。
+///
+/// - 带 cookie 就只按 cookie 判定（无效即 401，不回落 Bearer）：否则"会话已吊销"会被同浏览器的
+///   其它凭据掩盖，且 cookie 身份的同源检查能被 Bearer 顺手绕过；
+/// - cookie 身份的非 GET 请求必须同源（403 `MCP_FORBIDDEN`，不是 401）；
+/// - Bearer 是脚本通道，不受同源限制（没有浏览器参与，也不存在被借用的 cookie）；
+/// - 成功后注入 `AuthenticatedAdmin{ id }`，语义统一为**管理员 token id**——cookie 会话也是
+///   由某个 token 登录建立的，审计里的 actor 因此与 Bearer 完全同构，不必为浏览器开新人格。
+async fn require_admin_identity(
+    State(state): State<AdminState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    if let Some(presented) = session::cookie_value(req.headers(), session::SESSION_COOKIE) {
+        let actor = admin_actor("");
+        let session = match state.store.admin_session(&presented) {
+            Ok(session) => session,
+            Err(e) => return ApiError::from_mcp_via_policy(&state, &actor, e).into_response(),
+        };
+        let Some(session) = session else {
+            let e = McpError::new(
+                "MCP_UNAUTHORIZED",
+                json!({"hint": "管理台会话无效或已过期：请重新登录"}),
+            );
+            return ApiError::from_mcp_via_policy(&state, &actor, e).into_response();
+        };
+        if session::csrf_violation(req.method(), req.headers()) {
+            let e = McpError::new(
+                "MCP_FORBIDDEN",
+                json!({
+                    "hint": "cookie 身份的非 GET 请求必须同源：Origin/Referer 的 host 需与 Host 一致",
+                }),
+            );
+            return ApiError::from_mcp_via_policy(&state, &actor, e).into_response();
+        }
+        // last_seen 只是"最近活跃"信号，写失败不该把已认证的浏览器挡在外面。
+        if let Err(e) = state.store.touch_admin_session(&session.id) {
+            tracing::warn!(error = %e.message, "管理台会话 last_seen_at 更新失败");
+        }
+        req.extensions_mut().insert(AuthenticatedAdmin {
+            id: session.token_id,
+        });
+        return next.run(req).await;
+    }
     let derived = bearer(req.headers()).and_then(|token| state.tokens.authenticate(token));
     let Some(id) = derived else {
         let actor = admin_actor("");
         let e = McpError::new(
             "MCP_UNAUTHORIZED",
-            json!({"hint": "管理面需要 Authorization: Bearer <JUMCP_ADMIN_TOKENS 中的 token>"}),
+            json!({"hint": "管理面需要会话 cookie（POST /admin/login）或 Authorization: Bearer <JUMCP_ADMIN_TOKENS 中的 token>"}),
         );
         return ApiError::from_mcp_via_policy(&state, &actor, e).into_response();
     };
@@ -339,6 +402,9 @@ fn require_audit(state: &AdminState, actor: &Actor, surface: &str) -> Result<(),
 pub fn routes() -> Vec<(&'static str, &'static str)> {
     vec![
         ("GET", "/health"),
+        ("POST", "/admin/login"),
+        ("POST", "/admin/logout"),
+        ("GET", "/admin/session"),
         ("GET", "/admin/me"),
         ("GET", "/admin/audit-events"),
         ("GET", "/admin/capabilities"),

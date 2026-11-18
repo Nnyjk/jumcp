@@ -1,10 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { AuthProvider } from './auth/AuthContext'
+import { useAuth } from './auth/session'
+import { loginTarget, loginUrl } from './auth/redirect'
 import { BackButton } from './components/BackButton'
 import { LoadingState } from './components/PageShell'
 import { Sidebar, type NavEntry } from './components/Sidebar'
 import { TitleBar } from './components/TitleBar'
 import DashboardPage from './pages/dashboard'
+import LoginPage, { SessionSplash, SessionUnavailable } from './pages/login'
 import { AdminViewContext, VIEW_TITLE, useAdminViewStack } from './viewStack'
 
 // 路由级分包：工作台是入口页面保持静态，其余页面按需加载，避免单包超过 500 kB。
@@ -47,7 +51,47 @@ const NAV_ITEMS: PageMeta[] = [
 
 const COLLAPSED_KEY = 'jumcp-admin-nav-collapsed'
 
+/**
+ * 会话闸门：未登录只能看见登录页，已登录才能进管理台外壳。
+ * 管理面现在跑在自己的端口（52913），身份来自 HttpOnly cookie，不再由网关注入 Bearer。
+ */
 export default function App() {
+  return (
+    <AuthProvider>
+      <AppGate />
+    </AuthProvider>
+  )
+}
+
+function AppGate() {
+  const { session, retry } = useAuth()
+  const location = useLocation()
+
+  if (session.state === 'pending') return <SessionSplash />
+  if (session.state === 'failed') {
+    return <SessionUnavailable message={session.message} onRetry={retry} />
+  }
+  if (session.state === 'anonymous') {
+    if (location.pathname === '/login') {
+      return (
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      )
+    }
+    // 保留原始路径：`?from=` 便于刷新/分享，state.from 供无刷新回跳（两者同一份值）。
+    return <Navigate to={loginUrl(location)} replace state={{ from: location }} />
+  }
+  if (location.pathname === '/login') {
+    // 登录成功：回到被拦下的原始路径（`?from=` 或 history state），没有则进工作台。
+    return <Navigate to={loginTarget(location)} replace />
+  }
+  return <AdminShell />
+}
+
+function AdminShell() {
+  const { signOut } = useAuth()
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -107,6 +151,10 @@ export default function App() {
           collapsed={collapsed}
           onToggleCollapsed={() => setCollapsed((value) => !value)}
           onNavigate={clear}
+          onSignOut={() => {
+            // 会话清空后闸门自动跳 /login（带 from），这里不重复导航以免两处竞速。
+            void signOut()
+          }}
         />
         <div className="shell-main">
           <TitleBar title={title} />

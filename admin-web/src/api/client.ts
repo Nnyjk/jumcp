@@ -25,19 +25,28 @@ export interface RequestOptions {
   params?: QueryParams | undefined
   body?: unknown | undefined
   signal?: AbortSignal | undefined
+  /** 登录/会话探测等自带 401 语义的请求跳过全局登出跳转。 */
+  skipUnauthorized?: boolean | undefined
 }
 
 const BASE_URL = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
 
 /**
- * 前端不携带任何管理面凭证：token 只存在于网关/BFF 与后端之间，
- * 操作者身份由后端按 token 派生，前端既不读取也不发送 Authorization / X-Admin-Actor。
+ * 身份来自 HttpOnly 会话 cookie（`jumcp_session`，登录接口下发），前端不接触 token：
+ * 不读取、不存储、也不发送 Authorization，凭据全程不出浏览器 cookie jar。
  */
+let unauthorizedHandler: (() => void) | undefined
+
+/** 由 AuthProvider 注入：任何非豁免请求返回 401 时清登录态并跳登录页（client 不依赖 router）。 */
+export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+  unauthorizedHandler = handler
+}
+
 function buildInit(options: RequestOptions): RequestInit {
   const headers: Record<string, string> = {}
   if (options.body !== undefined) headers['content-type'] = 'application/json'
 
-  const init: RequestInit = { method: options.method ?? 'GET' }
+  const init: RequestInit = { method: options.method ?? 'GET', credentials: 'include' }
   if (Object.keys(headers).length > 0) init.headers = headers
   if (options.body !== undefined) init.body = JSON.stringify(options.body)
   if (options.signal !== undefined) init.signal = options.signal
@@ -93,7 +102,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new ApiError(0, 'NETWORK_ERROR', `无法连接后端 ${url}`)
   }
   if (!response.ok) {
-    throw errorFromResponse(response.status, await response.text())
+    const error = errorFromResponse(response.status, await response.text())
+    if (error.status === 401 && options.skipUnauthorized !== true) unauthorizedHandler?.()
+    throw error
   }
   const text = await response.text()
   if (text.trim() === '') return undefined as T
