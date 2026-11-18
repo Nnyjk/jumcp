@@ -7,7 +7,7 @@
 - 目标环境已 `docker swarm init`（单节点也可以：`docker swarm init --advertise-addr <内网 IP>`），部署节点是 **manager**；Portainer 已连到该 Swarm。
 - 调度节点必须是 **linux/amd64**：镜像只发布 `linux/amd64`（没有 `arm64` manifest）。stack 用 placement constraints 限定，只有满足条件的节点会跑任务；全是 arm64 节点时会一直 `pending`，`docker service ps jumcp_jumcp` 会显示 `no suitable node`。
 - 镜像可拉取：`ghcr.io/nnyjk/jumcp`。package 为 public 时无需登录；为 private 时在 Portainer 里注册 GHCR registry（用户名 + PAT，scope 至少 `read:packages`），并确保 stack 的镜像地址与凭据对应同一个 registry。
-- `latest` 只由 `main` 的 push 产出（见 ci-cd.md 的 tag 规则）。生产建议固定版本 tag（如 `0.0.1.000`，或兼容的三段 `0.0.1`）或 digest，不要跟 `latest`，否则每次 `main` 合并后 redeploy 都会换版本。
+- `latest` 只由 `main` 的 push 产出（见 ci-cd.md 的 tag 规则）。生产建议固定版本 tag（如 `0.0.1.000`，或兼容的三段 `0.0.1`）或 digest，不要跟 `latest`，否则每次 `main` 合并后 redeploy 都会换版本。`dev` 快照 tag（`dev`、`sha-<短 sha>`）会被下一次 `dev` push 覆盖，只用于试跑，不要用于生产。
 
 ## 用 Portainer 部署
 

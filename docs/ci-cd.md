@@ -1,20 +1,21 @@
 # CI/CD
 
-面向 `Nnyjk/jumcp` 的持续集成与发布流水线。两个 workflow：
+面向 `Nnyjk/jumcp` 的持续集成与发布流水线。三个 workflow：
 
 | workflow | 触发 | 作用 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、脚本语法与发布 tag 解析、镜像构建与冒烟、Swarm stack 配置校验、PR 依赖审查 |
-| `.github/workflows/release.yml` | push `main`、tag `v*`（必须指向 `main` 历史）、`workflow_dispatch`（只有 `main` / `v*` tag 真正发布） | 构建并推送 GHCR 镜像，回拉 digest 再冒烟 |
+| `.github/workflows/ci.yml` | push `dev`、`pull_request`（目标 `dev` / `main`）、`workflow_dispatch` | 后端静态检查与测试、管理台构建与无头 Web 冒烟、脚本语法与发布 tag 解析、镜像构建与冒烟、Swarm stack 配置校验、PR 依赖审查。只读：不登录、不推任何 registry |
+| `.github/workflows/image-cd.yml` | push `dev`、push `main`、tag `v*`（必须指向 `main` 历史）、`workflow_dispatch`（只有 `dev` / `main` / `v*` tag 真正构建） | 构建 `linux/amd64` 镜像并推 GHCR（`dev` 推快照 tag，`main` 推 `latest`，tag 推版本号），按 digest 回拉再冒烟 |
+| `.github/workflows/web-cd.yml` | 同上 | 构建无头 Web 包（`jumcp-admin-web-<version>.tar.gz`）并上传 artifact；tag 触发时再挂到该 tag 的 GitHub Release |
 
-CI 只订阅 `dev` 的 push：`main` 上的改动只能经 `dev → main` 的发版 PR 进入，合并后的全量发布校验由 release 承担，避免同一 ref 上重复跑两遍。PR 则同时接受目标 `dev`（日常）与 `main`（发版 PR）。
+CI 只订阅 `dev` 的 push 与 PR：`main` 上的改动只能经 `dev → main` 的发版 PR 进入，合并后的产物发布由 `image-cd` / `web-cd` 承担，避免同一 ref 上重复跑全量校验。PR 则同时接受目标 `dev`（日常）与 `main`（发版 PR）。
 
-`release.yml` 在 `github.ref` 触发条件之外还有两道来源防线，`dev` 绕不过去：
+`image-cd.yml` 在 `github.ref` 触发条件之外还有两道来源防线，`dev` 不会被当成正式版发布：
 
-- `publish` job 的 `if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')`：`workflow_dispatch` 可以选任意 ref，选到 `dev` 时整个 job 跳过，不构建、不推镜像。
+- `publish` job 的 `if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')`：`workflow_dispatch` 可以选任意 ref，选到 feature 分支时整个 job 跳过，不构建、不推镜像。
 - tag 触发先跑 `git fetch --no-tags origin main`，再用 `git merge-base --is-ancestor "$GITHUB_SHA" origin/main` 校验：tag 必须打在 `main` 的提交上，在 `dev` 提交上打 `v*` tag 会失败退出（所以 checkout 用 `fetch-depth: 0`）。
 
-CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attestations: write`、`id-token: write`。两个 workflow 都用 `concurrency` 控并发：CI 取消同 ref 的旧运行，release 不取消。
+权限与并发：CI 只有 `contents: read`；`image-cd` 额外要 `packages: write`、`attestations: write`、`id-token: write`；`web-cd` 默认 `contents: read`，只有 tag 场景的 `release` job 提升到 `contents: write`（GitHub 权限是 job 级的，所以拆成两个 job）。并发：CI 取消同 ref 的旧运行，`image-cd` / `web-cd` 不取消（`cancel-in-progress: false`）。
 
 ## 分支模型与发布流程
 
@@ -27,18 +28,19 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 流程：
 
 1. 从 `dev` 切 `feature/<主题>`，在其中开发、本地校验（见 `CONTRIBUTING.md`）。
-2. 开 PR 到 `dev`：CI 跑 `backend` / `web` / `scripts` / `image` / `dependency review`，全部通过后合并（squash 或 merge 均可，历史留在 `dev`）。
-3. 发版前确认 `dev` 已包含 `main`（上一轮发版后做过第 6 步的同步）；若 `main` 领先，先做一次 `main → dev` 的同步 PR 再发版。
+2. 开 PR 到 `dev`：CI 跑 `backend` / `web` / `scripts` / `image` / `dependency review`，全部通过后合并（squash 或 merge 均可，历史留在 `dev`）。合并后 `image-cd` 推 `dev` 快照镜像，`web-cd` 上传 `dev` 的 Web 包 artifact。
+3. 发版前确认 `dev` 已包含 `main`（上一轮发版后做过第 7 步的同步）；若 `main` 领先，先做一次 `main → dev` 的同步 PR 再发版。
 4. 发版：`dev` 的 PR 目标改为 `main`，**必须用 merge commit**（`gh pr merge --merge`，不用 squash/rebase），保留 `dev` 的完整提交历史。这个 PR 除了常规检查，还会跑 `release source is dev`（来源分支不是 `dev` 直接失败）。
-5. 合并进 `main` 即触发 `release.yml`，产出 `latest` + `main` + `sha-<短 sha>` 镜像。
-6. 发版后把 `main` 合回 `dev`（`sync/main-to-dev` 分支 → PR 到 `dev`，merge commit）。`main` 因发版多一个 merge commit，`dev` 若不含它，`strict` 会让下一次发版 PR 卡在「分支不是最新」。
+5. 合并进 `main` 即触发 `image-cd.yml` 与 `web-cd.yml`：镜像产出 `latest` + `main` + `sha-<短 sha>`，Web 包产出 `jumcp-admin-web-main.tar.gz` artifact。
+6. 需要正式版本号时在 `main` 的发布提交上打 `v*` tag：`image-cd` 改产版本号 tag（不动 `latest`），`web-cd` 把同一份 Web 包挂到该 tag 的 GitHub Release。
+7. 发版后把 `main` 合回 `dev`（`sync/main-to-dev` 分支 → PR 到 `dev`，merge commit）。`main` 因发版多一个 merge commit，`dev` 若不含它，`strict` 会让下一次发版 PR 卡在「分支不是最新」。
 
 关键约束：
 
 - `main` 不接受日常直接 push，也不承接 `feature/*` 的 PR（`release source is dev` 会拒绝）。
-- release 只由 `main` push、`v*` tag、`workflow_dispatch` 触发；`dev` 的任何活动都不登录、不推送 GHCR——对 `dev` 手动 `workflow_dispatch` 时 `publish` job 直接跳过。
+- `image-cd` 由 `dev` push（快照）、`main` push（正式）、`v*` tag 与 `workflow_dispatch` 触发；`web-cd` 触发面相同。对 feature 分支手动 dispatch 时两个 workflow 的构建 job 都整体跳过。
 - `v*` tag 必须打在 `main` 历史内的提交上：tag 触发会跑 `merge-base --is-ancestor`，在 `dev` 提交上打 tag 会失败退出。
-- `latest` 只由 `main` 的 push 产出（规则写在 `scripts/release-tags.sh`，只有 `main` 分支序列才带 `latest`）；默认分支是 `dev`，不能用「默认分支即发布分支」的假设。
+- `latest` 只由 `main` 的 push 产出（规则写在 `scripts/release-tags.sh`，只有 `main` 分支序列才带 `latest`）；`dev` 快照只有 `dev` 与 `sha-<7 位>`，不能把 `dev` 当正式版本 pin。
 - 版本 tag 必须是 `v` + 3 或 4 段数字：`v1.2.3` 产出 `1.2.3` / `1.2`，`v0.0.1.000` 产出 `0.0.1.000` / `0.0.1` / `0.0`；tag push 不改 `latest`。
 - tag 名非法（`v1.2`、缺 `v` 前缀）时 `scripts/release-tags.sh` 直接失败退出，不构建、不推送。
 
@@ -72,7 +74,7 @@ CI 权限只有 `contents: read`；release 额外要 `packages: write`、`attest
 ### `scripts`（timeout 5 分钟）
 
 1. 逐个 `bash -n scripts/*.sh`：语法错误在任何脚本上都会先在这里暴露
-2. `bash scripts/test-release-tags.sh`：发布 tag 解析的离线用例（`main` / `v1.2.3` / `v1.2.3.4` / `v0.0.1.000` / 非法格式 / `--image` 前缀 / `--github-output`），不依赖网络与 docker
+2. `bash scripts/test-release-tags.sh`：发布 tag 解析的离线用例（`dev` 快照 / `main` / `v1.2.3` / `v1.2.3.4` / `v0.0.1.000` / 非法格式 / `--image` 前缀 / `--github-output`），不依赖网络与 docker
 
 ### `image`（timeout 90 分钟）
 
@@ -101,17 +103,19 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
 ### 地址与 tag
 
 - 地址：`ghcr.io/nnyjk/jumcp`（`ghcr.io/<owner>/jumcp`，owner 一律转小写）
-- tag 与 `VERSION` 构建参数由 `scripts/release-tags.sh` 唯一决定，release 流水线调它写 `GITHUB_OUTPUT`，本地可用同一脚本复算：
+- tag 与 `VERSION` 构建参数由 `scripts/release-tags.sh` 唯一决定，`image-cd` 流水线调它写 `GITHUB_OUTPUT`，本地可用同一脚本复算：
 
 | 触发 | `version`（即 `VERSION` build arg） | tags |
 |---|---|---|
+| `dev` push / 在 `dev` 上手动 dispatch | `dev` | `dev`、`sha-<短 sha>`（快照，不带 `latest`） |
 | `main` push / 在 `main` 上手动 dispatch | `main` | `latest`、`main`、`sha-<短 sha>` |
 | tag `v1.2.3` | `1.2.3` | `1.2.3`、`1.2`、`sha-<短 sha>` |
 | tag `v0.0.1.000`（四段） | `0.0.1.000` | `0.0.1.000`、`0.0.1`、`0.0`、`sha-<短 sha>` |
 
+- `dev` 是集成分支快照：`dev` tag 会被下一次 push 覆盖，只能用来试跑与回滚参考，不适合任何「固定版本」的部署
 - 四段版本额外产出三段兼容 tag，供只认 semver `X.Y.Z` 的消费方 pin；精确 `0.0.1.000` 始终存在
 - `latest` 只在 `main` 分支序列出现；tag push 不改 `latest`
-- tag 名（`v` + 3/4 段数字）、分支（只有 `main`）在构建前校验，非法输入 fail-fast
+- tag 名（`v` + 3/4 段数字）、分支（只有 `dev` 与 `main`）在构建前校验，非法输入 fail-fast
 - 每次发布带 `provenance: true` 与 `sbom: true`（attestation 随镜像 push 到 GHCR）
 - 发布门禁：push 之后按 `ghcr.io/<owner>/jumcp@<digest>` 回拉，再跑同一份 `scripts/smoke-image.sh`；任一断言失败即发布失败
 
@@ -135,6 +139,28 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
   - `JUMCP_MCP_REGISTRY_PATH=/data/registry.sqlite3`、`JUMCP_MCP_AUDIT_PATH=/data/audit.sqlite3`
 - `JUMCP_ADMIN_TOKENS` **没有任何默认值**：HTTP 模式下不配就拒绝启动（fail-closed）。镜像里不含任何 token/secret
 - 部署形态：单容器 `docker run` 见下文「运行命令」；Portainer / Docker Swarm 用 `deploy/portainer-stack.yml`（单副本、`stop-first`、命名卷），前置条件与边界见 [portainer-swarm.md](portainer-swarm.md)
+
+## 无头 Web 包（`web-cd.yml`）
+
+管理台的静态产物单独发一份，不必等镜像、也不依赖镜像构建。`build` job（Node 22 + npm 缓存，`timeout 20 分钟`）：
+
+1. `npm ci` → `npm run lint` → `npm run typecheck` → `npm run test:transport` → `npm run build`（工作目录 `admin-web`）
+2. 在仓库根跑 `bash scripts/smoke-headless-web.sh`：产物必须能当静态站点提供
+3. `bash scripts/release-tags.sh --github-output` 取 `version`（与镜像同一份规则，不带 `--image` 前缀）
+4. `tar -C admin-web/dist -czf jumcp-admin-web-$version.tar.gz .`
+5. 上传 artifact `jumcp-admin-web-headless-<run_id>`（保留 30 天，`if-no-files-found: error`）
+
+`release` job 只在 `v*` tag 上运行（`needs: build`，`permissions: contents: write`）：下载同一 artifact，用 `softprops/action-gh-release@v2` 创建/更新该 tag 的 Release（`generate_release_notes: true`、`fail_on_unmatched_files: true`）。分支运行不会拿到写权限。
+
+产物矩阵：
+
+| 触发 | `version` | 产物 |
+|---|---|---|
+| `dev` push | `dev` | `jumcp-admin-web-dev.tar.gz` artifact |
+| `main` push | `main` | `jumcp-admin-web-main.tar.gz` artifact |
+| tag `v0.0.1.000` | `0.0.1.000` | `jumcp-admin-web-0.0.1.000.tar.gz` artifact + 该 tag 的 Release 附件 |
+
+解包即 `dist` 内容（`index.html`、`assets/`），可直接交给任意静态服务器；`tar -C admin-web/dist .` 解包时落在当前目录，不要指望有顶层目录。
 
 ## 运行命令
 
@@ -166,11 +192,12 @@ bash scripts/release-tags.sh [--ref-type branch|tag] [--ref-name <ref>] [--sha <
                              [--image <registry/repo>] [--github-output]
 ```
 
-- 输入缺省取 `GITHUB_REF_TYPE` / `GITHUB_REF_NAME` / `GITHUB_SHA`（release 流水线直接用环境变量），本地模拟用参数
+- 输入缺省取 `GITHUB_REF_TYPE` / `GITHUB_REF_NAME` / `GITHUB_SHA`（两条 CD 流水线直接用环境变量），本地模拟用参数
 - 输出 `version=…` 与 `tags=…`（逗号分隔）；`--github-output` 写 `$GITHUB_OUTPUT`，`--image` 给每个 tag 加仓库前缀
+- 分支规则：`dev` → `dev` + `sha-<7 位>`；`main` → `latest` + `main` + `sha-<7 位>`；其它分支退出码 2
 - 本地复算发版 tag：`bash scripts/release-tags.sh --ref-type tag --ref-name v0.0.1.000 --sha <sha>`
-- 退出码：0 成功、2 参数/ref 非法（非 `main` 分支、tag 不是 `v` + 3/4 段数字）
-- 用例：`bash scripts/test-release-tags.sh`（CI 的 `scripts` job 跑同一份）
+- 退出码：0 成功、2 参数/ref 非法（非 `dev`/`main` 分支、tag 不是 `v` + 3/4 段数字）
+- 用例：`bash scripts/test-release-tags.sh`（CI 的 `scripts` job 跑同一份，覆盖 `dev` 快照、`main`、三段/四段 tag、`--image` 前缀、`--github-output` 与各类非法输入）
 
 ### `scripts/smoke-headless-web.sh`
 
