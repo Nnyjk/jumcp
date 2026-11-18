@@ -16,12 +16,9 @@ mod client;
 mod http;
 mod stdio;
 
-// 目录页（GET /admin/mcp/catalog）与安装校验要判断"这台机器能不能跑起来"，
-// 必须和真正 spawn 时用同一个解析函数，因此从这里转出。
-pub(crate) use self::stdio::bundled_binary;
-
 use self::client::UpstreamClient;
 
+use crate::builtin::BuiltinEndpoint;
 use crate::catalog::{Capability, SOURCE_UPSTREAM};
 use crate::discovery;
 use jumcp_core::entry::EffectiveScope;
@@ -191,6 +188,8 @@ pub struct UpstreamManager {
     inner: Mutex<Inner>,
     /// 每个上游一把建连锁：并发请求不会为同一上游拉起两个 stdio 进程/两条初始化链。
     connect_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    /// 内置 MCP 端点：URL 命中其 base 时注入进程内 Bearer token（见 builtin 模块）。
+    builtin: Option<BuiltinEndpoint>,
 }
 
 impl UpstreamManager {
@@ -216,7 +215,19 @@ impl UpstreamManager {
             http,
             inner: Mutex::new(Inner::default()),
             connect_locks: Mutex::new(HashMap::new()),
+            builtin: None,
         }
+    }
+
+    /// 挂上内置 MCP 端点（HTTP 模式启动时由 main 注入）。
+    pub fn with_builtin(mut self, endpoint: BuiltinEndpoint) -> Self {
+        self.builtin = Some(endpoint);
+        self
+    }
+
+    /// 内置端点信息；`None` 表示本次启动没有内嵌端点（stdio 模式或测试未注入）。
+    pub fn builtin_endpoint(&self) -> Option<&BuiltinEndpoint> {
+        self.builtin.as_ref()
     }
 
     pub fn store(&self) -> &Arc<CapabilityStore> {
@@ -324,7 +335,7 @@ impl UpstreamManager {
         if let Some(client) = self.pooled(&def.id, &generation) {
             return Ok((client, generation));
         }
-        let client = UpstreamClient::connect(self.http.clone(), def)
+        let client = UpstreamClient::connect(self.http.clone(), def, self.builtin.as_ref())
             .await
             .map_err(|e| e.with_hash(&generation))?;
         let client = Arc::new(client);

@@ -10,6 +10,7 @@ import type {
 } from '../../api/types'
 import { Field } from '../../components/Field'
 import { UPSTREAM_CATEGORY_LABEL, UPSTREAM_TRANSPORT_LABEL } from '../../labels'
+import { validateUpstreamId } from '../../lib/upstreamId'
 import { noticeFromError, type Notice } from '../../notice'
 import {
   CATEGORY_OPTIONS,
@@ -82,16 +83,9 @@ export function UpstreamForm({
     const trimmedName = name.trim()
 
     if (existing === undefined) {
-      if (trimmedId === '') {
-        setFormError('上游 id 不能为空。')
-        return
-      }
-      if (!/^[a-z][a-z0-9_-]{1,31}$/.test(trimmedId)) {
-        setFormError('首字符小写字母，后续只允许小写字母、数字、_、-，长度 2–32。')
-        return
-      }
-      if (trimmedId.includes('__')) {
-        setFormError('id 不能包含连续两个下划线（__ 是工具名分隔符）。')
+      const idError = validateUpstreamId(trimmedId)
+      if (idError !== undefined) {
+        setFormError(idError)
         return
       }
     }

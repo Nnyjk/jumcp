@@ -4,11 +4,13 @@
 pub mod access;
 pub mod audit;
 pub mod budget;
+pub mod builtin;
 pub mod canonical;
 pub mod config;
 pub mod entry;
 pub mod errors;
 pub mod registry;
+pub mod secret;
 pub mod template;
 
 pub use canonical::{canonical_json, definition_hash, hash_concat, sha256_hex};

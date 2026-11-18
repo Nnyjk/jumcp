@@ -1,15 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { installMcpCatalogEntry } from '../../api/admin'
-import type { GroupItem, McpCatalogEntry, McpCatalogField, UpstreamItem } from '../../api/types'
+import type { GroupItem, McpCatalogEntry, UpstreamItem } from '../../api/types'
 import { Field } from '../../components/Field'
+import { encryptSecret, withTransportRetry } from '../../lib/transport'
+import { validateUpstreamId } from '../../lib/upstreamId'
 import { noticeFromError, type Notice } from '../../notice'
+import { CatalogField } from './CatalogField'
+import { isSecretField } from './upstreamTools'
 
-/** 与 UpstreamForm 相同的 id 规则：首字符小写字母，后续小写字母/数字/_/-，长度 2–32。 */
-const UPSTREAM_ID_PATTERN = /^[a-z][a-z0-9_-]{1,31}$/
+/** 安装表单沿用共享的 id 规则（`src/lib/upstreamId.ts`），不在页面里重复正则与文案。 */
 
 /**
- * 目录安装表单：包声明的 fields 决定输入项，password 只进 React 状态、不回显任何已存值。
+ * 目录安装表单：包声明的 fields 决定输入项，密文字段只进 React 状态、不回显任何已存值。
  * 提交成功后由父组件卸载本表单，密码不会被留在页面状态里。
  */
 export function InstallForm({
@@ -44,21 +47,24 @@ export function InstallForm({
   const useGroupSelect = !groupsError && groupChoices.length > 0
 
   const mutation = useMutation({
-    mutationFn: () => {
-      // 只提交填写过的字段：可选字段留空时不伪造空串，交给后端按缺省处理。
-      const values: Record<string, string> = {}
-      for (const field of entry.fields) {
-        const value = config[field.key] ?? ''
-        if (value !== '') values[field.key] = value
-      }
-      return installMcpCatalogEntry(entry.id, {
-        upstream_id: upstreamId.trim(),
-        name: name.trim(),
-        group,
-        enabled,
-        config: values,
-      })
-    },
+    mutationFn: () =>
+      withTransportRetry(async () => {
+        // 只提交填写过的字段：可选字段留空时不伪造空串，交给后端按缺省处理。
+        // 密文字段必须是传输加密后的 `enc:v1:` 密文；加密失败直接抛错（不发请求）。
+        const values: Record<string, string> = {}
+        for (const field of entry.fields) {
+          const value = config[field.key] ?? ''
+          if (value === '') continue
+          values[field.key] = isSecretField(field) ? await encryptSecret(value) : value
+        }
+        return installMcpCatalogEntry(entry.id, {
+          upstream_id: upstreamId.trim(),
+          name: name.trim(),
+          group,
+          enabled,
+          config: values,
+        })
+      }),
     onSuccess: (result) => onInstalled(result.upstream),
     onError: (error) => {
       const notice = noticeFromError(error, '安装失败')
@@ -69,16 +75,9 @@ export function InstallForm({
 
   const submit = () => {
     const trimmedId = upstreamId.trim()
-    if (trimmedId === '') {
-      setFormError('上游 id 不能为空。')
-      return
-    }
-    if (!UPSTREAM_ID_PATTERN.test(trimmedId)) {
-      setFormError('首字符小写字母，后续只允许小写字母、数字、_、-，长度 2–32。')
-      return
-    }
-    if (trimmedId.includes('__')) {
-      setFormError('id 不能包含连续两个下划线（__ 是工具名分隔符）。')
+    const idError = validateUpstreamId(trimmedId)
+    if (idError !== undefined) {
+      setFormError(idError)
       return
     }
     if (name.trim() === '') {
@@ -170,7 +169,7 @@ export function InstallForm({
       </div>
 
       {entry.fields.map((field) => (
-        <CatalogFieldInput
+        <CatalogField
           key={field.key}
           field={field}
           value={config[field.key] ?? ''}
@@ -180,11 +179,12 @@ export function InstallForm({
               [field.key]: value,
             }))
           }
+          hint={isSecretField(field) ? '保存后不回显。' : undefined}
         />
       ))}
 
       <p className="hint">
-        敏感字段（password 类）只用于本次提交：安装后目录与上游详情都不会回显，需要修改请到上游详情重新填写。
+        密文字段只用于本次提交：安装后目录与上游详情都不会回显，需要修改请用实例行的「编辑配置」重新输入。
       </p>
 
       {formError !== undefined && (
@@ -198,52 +198,5 @@ export function InstallForm({
         </button>
       </div>
     </form>
-  )
-}
-
-/** 字段控件按 kind 渲染：password 用隐藏输入，number 用数值输入，其余按单行文本。 */
-function CatalogFieldInput({
-  field,
-  value,
-  onChange,
-}: {
-  field: McpCatalogField
-  value: string
-  onChange: (value: string) => void
-}) {
-  const hintParts: string[] = []
-  if (field.help !== undefined && field.help !== null && field.help.trim() !== '') hintParts.push(field.help)
-  if (field.kind === 'password' || field.secret) hintParts.push('保存后不回显。')
-
-  const hint = hintParts.length > 0 ? hintParts.join(' ') : undefined
-
-  return (
-    <Field label={field.label} title={field.key} required={field.required} hint={hint}>
-      {field.kind === 'password' ? (
-        <input
-          className="input"
-          type="password"
-          autoComplete="new-password"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={field.placeholder ?? ''}
-        />
-      ) : field.kind === 'number' ? (
-        <input
-          className="input"
-          type="number"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={field.placeholder ?? ''}
-        />
-      ) : (
-        <input
-          className="input"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={field.placeholder ?? ''}
-        />
-      )}
-    </Field>
   )
 }

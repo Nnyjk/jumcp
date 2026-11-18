@@ -158,6 +158,7 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
         service: service.clone(),
         store: store.clone(),
         tokens: admin_tokens,
+        transport_key: None,
     };
     let app = jumcp_server::admin::router(admin)
         .merge(http_router(Arc::new(McpServer::from_arc(service))));
@@ -880,6 +881,7 @@ fn harness_without_audit() -> NoAuditHarness {
         service: service.clone(),
         store: store.clone(),
         tokens: boot.admin_tokens,
+        transport_key: None,
     };
     let app = jumcp_server::admin::router(admin)
         .merge(http_router(Arc::new(McpServer::from_arc(service))));

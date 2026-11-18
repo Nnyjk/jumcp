@@ -208,8 +208,8 @@ if port_listening "$BACKEND_PORT" "$BACKEND_HOST"; then
 fi
 
 # 2) 每次启动都增量构建：二进制存在不代表是最新代码
-echo "==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse（增量构建，避免运行过期二进制）"
-( cd "$BACKEND_DIR" && cargo build --bin jumcp-server --bin jumcp-connector-clickhouse --bin jumcp-mcp-clickhouse ) || { echo "后端构建失败（cargo build 退出码非 0）" >&2; exit 1; }
+echo "==> cargo build --bin jumcp-server --bin jumcp-connector-clickhouse（增量构建，避免运行过期二进制）"
+( cd "$BACKEND_DIR" && cargo build --bin jumcp-server --bin jumcp-connector-clickhouse ) || { echo "后端构建失败（cargo build 退出码非 0）" >&2; exit 1; }
 
 SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server"
 [ -x "$SERVER_BIN" ] || SERVER_BIN="$BACKEND_DIR/target/debug/jumcp-server.exe"
@@ -229,6 +229,11 @@ BACKEND_LOG="$LOG_DIR/backend.log"
   export JUMCP_MCP_AUDIT_PATH="$DATA_DIR/audit.sqlite3"
   export JUMCP_ADMIN_TOKENS="$ADMIN_TOKENS"
   export JUMCP_AGENT_TOKENS="$AGENT_TOKENS"
+  # 本地开发用固定密钥：HTTP 模式缺它会拒绝启动（密码字段加密用）。
+  export JUMCP_SECRET_KEY="${JUMCP_SECRET_KEY:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  # 传输密钥（与落库密钥用途分离）：管理台在浏览器里用它加密 secret 字段。
+  # 固定值仅供本地开发，生产必须用 `openssl rand -hex 32` 生成并通过 secret 注入。
+  export JUMCP_TRANSPORT_KEY="${JUMCP_TRANSPORT_KEY:-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}"
   exec "${BACKEND_ENV[@]}" "$SERVER_BIN"
 ) >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!

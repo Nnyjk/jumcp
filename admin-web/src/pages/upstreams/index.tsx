@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   deleteUpstream,
@@ -18,6 +18,7 @@ import { DASH, formatDateTime } from '../../format'
 import { UPSTREAM_STATUS_LABEL, UPSTREAM_TRANSPORT_LABEL } from '../../labels'
 import { noticeFromError, type Notice } from '../../notice'
 import { BasicToolsModal } from './BasicToolsModal'
+import { CatalogTab } from './CatalogTab'
 import { UpstreamForm } from './UpstreamForm'
 import {
   GROUP_OPTIONS_LIMIT,
@@ -26,13 +27,37 @@ import {
   type EditorTarget,
 } from './upstreamTools'
 
+type UpstreamTab = 'list' | 'catalog'
+
+const TABS: Array<{ key: UpstreamTab; label: string }> = [
+  { key: 'list', label: '接入清单' },
+  { key: 'catalog', label: '安装目录' },
+]
+
 export default function UpstreamsPage() {
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<UpstreamTab>('list')
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [editor, setEditor] = useState<EditorTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<UpstreamItem | null>(null)
   const [deleteError, setDeleteError] = useState<Notice | undefined>(undefined)
   const [basicTarget, setBasicTarget] = useState<UpstreamItem | null>(null)
+
+  /** 按 ARIA tabs 约定响应方向键/Home/End：移动选中项并把焦点交给新页签按钮。 */
+  const handleTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const lastIndex = TABS.length - 1
+    let target: number | undefined
+    if (event.key === 'ArrowRight') target = index === lastIndex ? 0 : index + 1
+    else if (event.key === 'ArrowLeft') target = index === 0 ? lastIndex : index - 1
+    else if (event.key === 'Home') target = 0
+    else if (event.key === 'End') target = lastIndex
+    if (target === undefined) return
+    event.preventDefault()
+    const next = TABS[target]
+    if (next === undefined) return
+    setTab(next.key)
+    document.getElementById(`upstreams-tab-${next.key}`)?.focus()
+  }
 
   const upstreamsQuery = useQuery({
     queryKey: ['upstreams'],
@@ -253,59 +278,91 @@ export default function UpstreamsPage() {
         </InfoBar>
       )}
 
-      <Card
-        title="上游接入清单"
-        subtitle={subtitle}
-        actions={
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => setEditor({ mode: 'create' })}
-          >
-            新建接入
-          </button>
-        }
-        flush
-      >
-        {upstreamsQuery.isPending && <LoadingState rows={6} label="正在加载上游接入" />}
-        {upstreamsQuery.isError && (
-          <div className="state-wrap">
-            <ErrorState error={upstreamsQuery.error} />
+      <Card title="MCP 接入" subtitle="上游接入清单与内置 MCP 安装目录">
+        <nav className="tabbar" role="tablist" aria-label="MCP 接入分栏">
+          {TABS.map((item, index) => (
             <button
+              key={item.key}
               type="button"
-              className="btn btn-secondary"
-              onClick={() => upstreamsQuery.refetch()}
-              disabled={upstreamsQuery.isFetching}
+              role="tab"
+              id={`upstreams-tab-${item.key}`}
+              aria-controls={tab === item.key ? `upstreams-panel-${item.key}` : undefined}
+              aria-selected={tab === item.key}
+              tabIndex={tab === item.key ? 0 : -1}
+              className="tab"
+              onClick={() => setTab(item.key)}
+              onKeyDown={(event) => handleTabKey(event, index)}
             >
-              重试
+              {item.label}
             </button>
-          </div>
-        )}
-        {upstreamsQuery.data !== undefined && rows.length === 0 && (
-          <EmptyState
-            hint="还没有 MCP 上游接入。内置的基础 / 分析 / 审计三组工具由后端注册；自定义上游可用右上角「新建接入」创建。"
-            action={
+          ))}
+        </nav>
+      </Card>
+
+      <div
+        className="tab-panel"
+        role="tabpanel"
+        id={`upstreams-panel-${tab}`}
+        aria-labelledby={`upstreams-tab-${tab}`}
+      >
+        {tab === 'list' && (
+          <Card
+            title="上游接入清单"
+            subtitle={subtitle}
+            actions={
               <button
                 type="button"
-                className="btn btn-secondary"
+                className="btn btn-primary btn-sm"
                 onClick={() => setEditor({ mode: 'create' })}
               >
                 新建接入
               </button>
             }
-          />
+            flush
+          >
+            {upstreamsQuery.isPending && <LoadingState rows={6} label="正在加载上游接入" />}
+            {upstreamsQuery.isError && (
+              <div className="state-wrap">
+                <ErrorState error={upstreamsQuery.error} />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => upstreamsQuery.refetch()}
+                  disabled={upstreamsQuery.isFetching}
+                >
+                  重试
+                </button>
+              </div>
+            )}
+            {upstreamsQuery.data !== undefined && rows.length === 0 && (
+              <EmptyState
+                hint="还没有 MCP 上游接入。可先在「安装目录」页签安装内置包，或用右上角「新建接入」创建自定义上游。"
+                action={
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setEditor({ mode: 'create' })}
+                  >
+                    新建接入
+                  </button>
+                }
+              />
+            )}
+            {rows.length > 0 && (
+              <DataTable
+                label="MCP 上游接入清单"
+                meta={`共 ${rows.length} 行`}
+                columns={columns}
+                rows={rows}
+                rowKey={(row) => row.id}
+                minWidth="1184px"
+              />
+            )}
+          </Card>
         )}
-        {rows.length > 0 && (
-          <DataTable
-            label="MCP 上游接入清单"
-            meta={`共 ${rows.length} 行`}
-            columns={columns}
-            rows={rows}
-            rowKey={(row) => row.id}
-            minWidth="1184px"
-          />
-        )}
-      </Card>
+
+        {tab === 'catalog' && <CatalogTab onNotice={setNotice} />}
+      </div>
 
       {editor !== null && (
         <Modal

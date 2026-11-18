@@ -90,7 +90,67 @@ pub struct Dsn {
     pub database: Option<String>,
 }
 
+/// ClickHouse HTTP 端点的网络部分（不含凭据与库名）。
+///
+/// 无端口时按 ClickHouse 惯例取 http=8123 / https=8443；不接受 URL 内嵌 userinfo，
+/// 凭据只经独立字段传入，避免密码进入会被日志记录的 URL。
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl Endpoint {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let url = Url::parse(raw).map_err(|_| "URL 不是合法地址".to_string())?;
+        let scheme = url.scheme().to_ascii_lowercase();
+        if scheme != "http" && scheme != "https" {
+            return Err("URL 必须使用 http:// 或 https://".to_string());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("URL 不能包含用户名或密码；凭据请填在独立字段".to_string());
+        }
+        let host = url
+            .host_str()
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| "URL 缺少主机".to_string())?
+            .to_string();
+        let port = url
+            .port()
+            .unwrap_or(if scheme == "https" { 8443 } else { 8123 });
+        Ok(Self { scheme, host, port })
+    }
+
+    /// 不含 userinfo 的 `scheme://host:port`。
+    pub fn base(&self) -> String {
+        format!(
+            "{}://{}:{}",
+            self.scheme,
+            host_for_url(&self.host),
+            self.port
+        )
+    }
+}
+
 impl Dsn {
+    /// 按已拆解的部分直接构造（不拼回字符串再解析）。
+    pub fn from_parts(
+        endpoint: &Endpoint,
+        user: &str,
+        password: &str,
+        database: Option<&str>,
+    ) -> Self {
+        Self {
+            scheme: endpoint.scheme.clone(),
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            user: user.to_string(),
+            password: password.to_string(),
+            database: database.filter(|db| !db.is_empty()).map(str::to_string),
+        }
+    }
+
     /// 解析 `http://user:pass@host:port[/database]`。
     ///
     /// 错误信息**不含**原始 DSN：解析失败时不能把密码带进日志或错误响应。
@@ -133,12 +193,20 @@ impl Dsn {
 
     /// 不含 userinfo 的 HTTP endpoint：凭据走请求头，不放进 URL。
     pub fn endpoint(&self) -> String {
-        let host = if self.host.contains(':') && !self.host.starts_with('[') {
-            format!("[{}]", self.host)
-        } else {
-            self.host.clone()
-        };
-        format!("{}://{}:{}", self.scheme, host, self.port)
+        format!(
+            "{}://{}:{}",
+            self.scheme,
+            host_for_url(&self.host),
+            self.port
+        )
+    }
+}
+
+fn host_for_url(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
     }
 }
 
@@ -169,15 +237,20 @@ pub struct ClickHouseAgent {
 impl ClickHouseAgent {
     pub fn from_dsn(dsn: &str) -> Result<Self, AgentError> {
         let dsn = Dsn::parse(dsn).map_err(AgentError::config)?;
+        Self::from_parts(&dsn)
+    }
+
+    /// 从已拆解的 DSN 构造；配置已由管理面按字段校验，这里不再回拼字符串。
+    pub fn from_parts(dsn: &Dsn) -> Result<Self, AgentError> {
         let default_database = dsn
             .database
             .clone()
             .unwrap_or_else(|| "default".to_string());
         let mut client = Client::default()
             .with_url(dsn.endpoint())
-            .with_user(dsn.user);
+            .with_user(dsn.user.clone());
         if !dsn.password.is_empty() {
-            client = client.with_password(dsn.password);
+            client = client.with_password(dsn.password.clone());
         }
         if let Some(database) = &dsn.database {
             client = client.with_database(database);

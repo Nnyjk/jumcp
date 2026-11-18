@@ -20,10 +20,8 @@ use tokio::sync::Mutex as AsyncMutex;
 /// 3. PATH——保持既有部署方式（用户自己装的二进制）不变。
 ///
 /// 带路径分隔符的命令被视为用户明确指定路径，**必须是已存在的文件**：不做名字查找、
-/// 不补 `.exe`、不按 PATH 解析，文件不存在就返回 `None`。目录页据此显示
-/// `binary_present=false`、安装校验回 400 `MCP_UPSTREAM_BINARY_MISSING`；但 spawn 侧对
-/// `None` 会退回原样命令交给系统处理，因此"这里解析失败"不等于"一定起不来"。
-/// 目录页与安装校验共用本函数：两处判断分叉会让用户看到"可安装"却在安装时被拒。
+/// 不补 `.exe`、不按 PATH 解析，文件不存在就返回 `None`。spawn 侧对 `None` 会退回原样
+/// 命令交给系统处理，因此"这里解析失败"不等于"一定起不来"。
 pub(crate) fn bundled_binary(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.components().count() > 1 {
@@ -78,7 +76,7 @@ impl StdioTransport {
         def: &McpUpstream,
         env: BTreeMap<String, String>,
     ) -> Result<Self, UpstreamFailure> {
-        // 同一个解析函数也给目录页与安装校验用：显示"可安装"必须意味着真的能启动。
+        // 解析不到就退回原样命令，让系统按自己的规则（含 PATHEXT）处理。
         let program = match bundled_binary(&def.command) {
             Some(path) => path.into_os_string(),
             None => def.command.clone().into(),

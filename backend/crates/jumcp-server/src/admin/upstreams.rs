@@ -351,7 +351,7 @@ pub(super) async fn create_upstream(
     let upstream = build_upstream(&state, &actor, SURFACE, None, body, None)?;
     let created = router
         .store()
-        .insert_upstream(&upstream, &actor)
+        .insert_upstream(&upstream, &[], &actor)
         .map_err(|e| {
             reject(
                 &state,
@@ -391,9 +391,49 @@ pub(super) async fn update_upstream(
             )
         })?;
     let upstream = build_upstream(&state, &actor, SURFACE, Some(&id), body, Some(&existing))?;
+    // 包安装行的传输/地址/命令/环境变量/请求头由包管理：手改会与安装时生成的 URL、
+    // 加密字段脱节，因此只允许改名称/组/启停/只读/超时。
+    if existing.catalog_id.is_some() {
+        let mut changed: Vec<&str> = Vec::new();
+        if upstream.transport != existing.transport {
+            changed.push("transport");
+        }
+        if upstream.url != existing.url {
+            changed.push("url");
+        }
+        if upstream.command != existing.command {
+            changed.push("command");
+        }
+        if upstream.args != existing.args {
+            changed.push("args");
+        }
+        if upstream.env != existing.env {
+            changed.push("env");
+        }
+        if upstream.headers != existing.headers {
+            changed.push("headers");
+        }
+        if !changed.is_empty() {
+            return Err(reject(
+                &state,
+                &actor,
+                McpError::with_message(
+                    "MCP_UPSTREAM_PACKAGE_MANAGED",
+                    "该上游由内置包安装：传输/地址/命令/参数/环境变量/请求头由包管理".into(),
+                    json!({
+                        "id": id,
+                        "fields": changed,
+                        "catalog_id": existing.catalog_id,
+                        "hint": "改字段请用 PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config",
+                    }),
+                ),
+                json!({"surface": SURFACE, "id": id}),
+            ));
+        }
+    }
     let updated = router
         .store()
-        .update_upstream(&upstream, &actor)
+        .update_upstream(&upstream, &[], &actor)
         .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE, "id": id})))?;
     if existing.definition_hash() != updated.definition_hash() {
         router.invalidate(&updated.id);

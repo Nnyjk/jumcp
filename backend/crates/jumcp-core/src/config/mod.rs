@@ -4,6 +4,7 @@
 //! 本模块保留组名/展示名门禁与 `Settings` 入口；租户策略、数据源引用、主体令牌见同目录兄弟模块。
 
 use crate::budget::OverflowPolicy;
+use crate::secret::SecretKey;
 use std::path::Path;
 
 mod datasource;
@@ -104,6 +105,13 @@ pub struct Settings {
     pub upstream_stdio: bool,
     /// 允许注册 `read_only=false` 的上游（`JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`）。
     pub upstream_write: bool,
+    /// 配置字段加密密钥（`JUMCP_SECRET_KEY`，64 位 hex）。HTTP 模式必需：
+    /// 内置 MCP 的密码类字段落库前用它加密；缺失/非法即拒绝启动，避免明文密码落盘。
+    pub secret_key: Option<SecretKey>,
+    /// 传输密钥（`JUMCP_TRANSPORT_KEY`，64 位 hex）。HTTP 模式必需：
+    /// 浏览器用它加密 secret 字段，服务端只接受 `enc:v1:` 密文；与 `secret_key`
+    /// 用途分离（传输 vs 落库），泄露一把不会连带另一把。
+    pub transport_key: Option<SecretKey>,
     pub policy: TenantPolicy,
     pub datasources: Vec<DatasourceRef>,
 }
@@ -126,6 +134,8 @@ impl Default for Settings {
             budget_overflow: "fail".to_string(),
             upstream_stdio: false,
             upstream_write: false,
+            secret_key: None,
+            transport_key: None,
             policy: TenantPolicy::default(),
             datasources: vec![],
         }
@@ -175,6 +185,14 @@ impl Settings {
         s.budget_overflow = env_or("JUMCP_MCP_BUDGET_OVERFLOW", &s.budget_overflow);
         s.upstream_stdio = env_or("JUMCP_MCP_UPSTREAM_STDIO", "0") == "1";
         s.upstream_write = env_or("JUMCP_MCP_ALLOW_WRITE_UPSTREAM", "0") == "1";
+        let secret_raw = env_or("JUMCP_SECRET_KEY", "");
+        if !secret_raw.trim().is_empty() {
+            s.secret_key = Some(SecretKey::parse(&secret_raw).map_err(|e| e.to_string())?);
+        }
+        let transport_raw = env_or("JUMCP_TRANSPORT_KEY", "");
+        if !transport_raw.trim().is_empty() {
+            s.transport_key = Some(SecretKey::parse(&transport_raw).map_err(|e| e.to_string())?);
+        }
         if Path::new(&s.config_file).exists() {
             let text = std::fs::read_to_string(&s.config_file).map_err(|e| e.to_string())?;
             s.policy = toml::from_str(&text).map_err(|e| format!("TOML 解析失败: {e}"))?;
@@ -188,6 +206,18 @@ impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         if !matches!(self.transport.as_str(), "stdio" | "streamable-http") {
             return Err(format!("transport 非法: {}", self.transport));
+        }
+        if self.transport == "streamable-http" && self.secret_key.is_none() {
+            return Err(
+                "JUMCP_SECRET_KEY 未设置：HTTP 模式必须注入 64 位十六进制密钥（生成方式：openssl rand -hex 32）"
+                    .to_string(),
+            );
+        }
+        if self.transport == "streamable-http" && self.transport_key.is_none() {
+            return Err(
+                "JUMCP_TRANSPORT_KEY 未设置：HTTP 模式必须注入 64 位十六进制密钥（生成方式：openssl rand -hex 32）"
+                    .to_string(),
+            );
         }
         if !matches!(self.groups_mode.as_str(), "strict" | "intersect") {
             return Err(format!("groups_mode 非法: {}", self.groups_mode));

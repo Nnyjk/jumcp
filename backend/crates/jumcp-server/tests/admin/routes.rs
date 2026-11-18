@@ -52,6 +52,11 @@ async fn routes_are_documented() {
     assert!(
         table
             .iter()
+            .any(|(_, path)| *path == "/admin/transport-key")
+    );
+    assert!(
+        table
+            .iter()
             .any(|(_, path)| *path == "/admin/mcp/catalog/{id}/install")
     );
     assert!(
@@ -59,5 +64,7 @@ async fn routes_are_documented() {
             .iter()
             .any(|(_, path)| *path == "/admin/mcp/catalog/{id}/install/{upstream_id}")
     );
-    assert_eq!(table.len(), 38);
+    assert!(table.iter().any(|(method, path)| *method == "PATCH"
+        && *path == "/admin/mcp/catalog/{id}/install/{upstream_id}/config"));
+    assert_eq!(table.len(), 40);
 }

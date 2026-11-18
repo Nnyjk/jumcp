@@ -32,6 +32,7 @@
 | --- | --- |
 | `/admin`、`/admin/*` | 管理 API（要求 `Authorization: Bearer <admin token>`） |
 | `/mcp` | MCP 接入（POST） |
+| `/internal/mcp/*` | 内置 MCP 内嵌端点（POST，只接受进程内 Bearer token；不对静态资源开放） |
 | `GET`/`HEAD` `/health` 且 `Accept` 含 `text/html` | 管理台 `index.html`（浏览器导航，`Cache-Control: no-cache`） |
 | 其他 `/health`（探针、curl、XHR） | 后端健康检查 JSON |
 | `/health/*` | 后端路径空间：JSON 404 |

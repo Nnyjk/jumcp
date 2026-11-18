@@ -276,6 +276,10 @@ CHECK_LOG="$TMP_DIR/checks.log"
   export JUMCP_MCP_AUDIT_PATH="$TMP_DIR/audit.sqlite3"
   export JUMCP_ADMIN_TOKENS="$ADMIN_TOKENS"
   export JUMCP_AGENT_TOKENS="$AGENT_TOKENS"
+  # 测试固定密钥：HTTP 模式缺它会拒绝启动。
+  export JUMCP_SECRET_KEY="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  # 传输密钥（与落库密钥用途分离）：仅本地测试用，生产必须 `openssl rand -hex 32`。
+  export JUMCP_TRANSPORT_KEY="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   exec "$SERVER_BIN"
 ) >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
