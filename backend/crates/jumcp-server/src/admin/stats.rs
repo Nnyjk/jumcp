@@ -105,12 +105,16 @@ pub(super) fn observation(env: &Envelope) -> Option<CallObservation> {
 }
 
 /// 窗口内按事件类型扫描（单次上限 `STATS_SCAN_LIMIT`）；返回 (观测, 是否命中扫描上限)。
+///
+/// `surface_not: "admin"` 是统计口径的核心：管理台的每次页面操作都会产生审计事件
+/// （`/admin/tools/stats` 自己就写 `policy_decision`/`admin_change`），把它们算进
+/// "工具调用排行"等于让看板给自己刷量。审计**查询**接口不受影响，平台面事件照旧可查。
 pub(super) fn scan_in_window(
     log: &AuditLog,
     event_type: &str,
     ts_after: &str,
 ) -> Result<(Vec<CallObservation>, bool), McpError> {
-    let filter = json!({"event_type": event_type, "ts_after": ts_after});
+    let filter = json!({"event_type": event_type, "ts_after": ts_after, "surface_not": "admin"});
     let (rows, _total) = log.query_page(Some(&filter), STATS_SCAN_LIMIT, 0, Order::Asc)?;
     let truncated = rows.len() as i64 >= STATS_SCAN_LIMIT;
     Ok((rows.iter().filter_map(observation).collect(), truncated))
@@ -129,7 +133,8 @@ pub(super) fn scan_by_id(
     ts_after: &str,
 ) -> Result<Vec<Envelope>, McpError> {
     const PAGE: i64 = 5_000;
-    let filter = json!({"event_type": event_type, "ts_after": ts_after});
+    // 与 `scan_in_window` 同一口径：平台面事件不计入工具调用明细/排名。
+    let filter = json!({"event_type": event_type, "ts_after": ts_after, "surface_not": "admin"});
     let mut out: Vec<Envelope> = Vec::new();
     let mut offset = 0i64;
     loop {

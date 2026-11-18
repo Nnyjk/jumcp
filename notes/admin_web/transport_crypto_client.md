@@ -6,7 +6,7 @@
 ## 为什么不用 WebCrypto（`crypto.subtle`）
 
 `crypto.subtle` 只在**安全上下文**可用：HTTPS、`localhost`、`127.0.0.1`。本功能要覆盖的恰恰是
-「纯 HTTP 内网 IP」部署（网关没上 TLS 的内网环境），那里 `crypto.subtle === undefined`，管理台会在
+「纯 HTTP 内网 IP」部署（管理面没上 TLS 的内网环境），那里 `crypto.subtle === undefined`，管理台会在
 提交密码时直接抛错——不是降级，而是彻底不可用。因此改用 `@noble/ciphers`（2.4.0，纯 JS、零依赖、
 已审计），并且**不自写 AES/GCM**。
 

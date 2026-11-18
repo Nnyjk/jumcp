@@ -25,7 +25,7 @@ export function PageShell({ children }: { children: ReactNode }) {
 }
 
 const STATUS_HINT: Record<number, string> = {
-  401: '管理面按 Bearer token 判定身份。前端不持有凭证：请确认网关/BFF 已注入 Authorization，本地开发用 JUMCP_DEV_ADMIN_TOKEN 启动。',
+  401: '会话已过期，请重新登录。',
   403: '当前主体没有该 admin 接口的角色授权；拒绝已写入 policy_decision 审计。',
 }
 

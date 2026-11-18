@@ -47,22 +47,22 @@ Fluent 2 风格的管理面。信息架构以「能力」为主键：列表页�
 - 组与角色都是 `code + name` 双字段：`code` 是唯一契约值（能力、令牌、审计 `actor.role`、组 `group` 字段都传 code），界面显示中文 `name` 并用 `title` 保留 code；缺映射时回退 code，不隐藏原值。引用数据统一来自 `GET /admin/groups` 与 `GET /admin/roles`，共享 `groups` / `roles` query key，不逐页重复请求。
 - `GET /admin/groups?q=&source=policy|managed|builtin&role=<code>`：`q` 同时匹配 code 与 name；页面按后端过滤结果展示，`total` 与筛选一致。`source=builtin` 目前返回后端合成的 `basic` 条目：`{code:"basic",name:"基础工具",priority:0,min_budget:800,roles:[],grantable:false,token_count:0,capability_count:<n>}`，它不可编辑、不可删除，行内显示「不可编辑」且不出现编辑/删除按钮。组写操作：`POST /admin/groups` 带 `code`，`PUT /admin/groups/{code}` 改名/预算/角色（code 不可改）；策略组只读语义只在来源徽标与卡头说明，行内不重复，策略组不可编辑；受管组可维护。
 - 审计 `actor` 含可选 `source` / `token_id`（MCP token 事件携带）；旧事件缺少字段时展示「—」，不按旧字段推断。审计主体角色、组对象与组字段展示中文名（title 保留 code）；token ID 在表格中截断到 12 位，完整值在 `title` 与详情弹层。
-- 工具台账与调用明细只聚合审计 v2 事件（带 `object_id`）；旧格式调用不计入聚合，页面上有固定口径说明，`calls=0` 不代表从未调用。审计查询中旧格式事件只折叠展示原始载荷，不猜旧字段。
+- 工具台账与调用明细只聚合审计 v2 事件（带 `object_id`）；旧格式调用不计入聚合，页面上有固定口径说明，`calls=0` 不代表从未调用。审计查询中旧格式事件只折叠展示原始载荷，不猜旧字段。平台自身的管理操作（登录、审核、发布等）不计入调用统计，口径文案由 `src/components/ScopeNote.tsx` 统一渲染。
 
 ## 启动
 
-推荐用仓库根目录的一键启动脚本（会同时拉起后端并注入管理面凭证）：
+推荐用仓库根目录的一键启动脚本（会同时拉起管理面后端、admin 安全网关与本前端）：
 
 ```bash
 pwsh scripts/dev.ps1      # Windows / PowerShell 7+（后端 + 本前端）
 scripts/dev.sh            # Linux / macOS / CI
 ```
 
-手动起前端时必须带上管理面 token，否则所有请求 401：
+管理台现在有自己的端口与登录页：打开前端后先看到「jumcp 管理台」登录页，输入管理员访问令牌换取会话（HttpOnly cookie），未登录时任何页面都会被重定向回登录页并带上 `?from=<原路径>`。
 
 ```bash
 npm install
-JUMCP_DEV_ADMIN_TOKEN=tok_alice_000000000 npm run dev   # 监听 0.0.0.0:5173，本机访问 http://127.0.0.1:5173
+npm run dev        # 监听 0.0.0.0:5173，本机访问 http://127.0.0.1:5173
 npm run build      # tsc --noEmit + vite build，产物在 dist/
 npm run typecheck
 npm run lint
@@ -70,11 +70,12 @@ npm run lint
 
 ## 后端地址与鉴权配置
 
-- `VITE_API_BASE`：后端 admin API 根地址，缺省空串（走同源相对路径）。例：`VITE_API_BASE=http://127.0.0.1:8000`
-- 前端不读取也不发送任何管理面凭证：没有 `VITE_ADMIN_*` 变量，`Authorization` / `X-Admin-Actor` 均不由浏览器发出，操作者身份由后端按 token 派生。
-- `JUMCP_DEV_API_TARGET`：开发期 Vite 代理的后端地址，默认 `http://127.0.0.1:8000`。与 `JUMCP_DEV_ADMIN_TOKEN` 一样只存在于 Node 进程环境，不是 `VITE_*` 变量、不会进浏览器产物；后端换端口时用它覆盖，例如 `JUMCP_DEV_API_TARGET=http://127.0.0.1:8100 JUMCP_DEV_ADMIN_TOKEN=... npm run dev`。
-- 本地开发：Vite 代理把 `/admin`、`/health` 转发到 `JUMCP_DEV_API_TARGET`（默认 `http://127.0.0.1:8000`）并注入 Bearer，token 只存在于 Node 进程环境 —— `JUMCP_DEV_ADMIN_TOKEN=... npm run dev`（后端 token 由 `JUMCP_ADMIN_TOKENS="alice:tok1,bob:tok2"` 配置）。**一键启动脚本已经代你设好这个变量**：`pwsh scripts/dev.ps1`（或 `scripts/dev.sh`）会同时拉起后端与前端并注入 `JUMCP_DEV_ADMIN_TOKEN`，直接开 http://127.0.0.1:5173 即可；手动起则必须自己 export，否则请求全部 401。
-- 生产部署：静态产物与后端同源部署，由网关/BFF 在 `/admin` 路径注入 `Authorization`（或改用会话 Cookie），前端不做任何凭证处理；缺凭证时后端返回 401。
+- `VITE_API_BASE`：管理面 admin API 根地址，缺省空串（走同源相对路径）。例：`VITE_API_BASE=http://127.0.0.1:8080`
+- 身份来自会话 cookie：`POST /admin/login` 下发 `Set-Cookie: jumcp_session=...; HttpOnly; SameSite=Strict; Path=/`，前端所有请求带 `credentials: 'include'`。浏览器不读取、不存储、也不发送 `Authorization` / `X-Admin-Actor`；没有 `VITE_ADMIN_*` 变量，令牌不写 `localStorage`/`sessionStorage`、也不放进 URL。
+- 会话探测与登出：`GET /admin/session` 返回当前主体，`POST /admin/logout` 吊销会话（幂等）；任意接口返回 401 时前端清登录态并跳 `/login?from=<当前路径>`，登录成功后回跳。
+- `JUMCP_DEV_API_TARGET` / `JUMCP_DEV_ADMIN_TARGET`：开发期 Vite 代理的两个后端地址。后端拆成两个端口——MCP 面（`/mcp`、`/health`）默认 `http://127.0.0.1:8000`，管理面（`/admin`）默认 `http://127.0.0.1:8080`。两者都只存在于 Node 进程环境，不是 `VITE_*` 变量、不会进浏览器产物；后端换端口时用它们覆盖，例如 `JUMCP_DEV_ADMIN_TARGET=http://127.0.0.1:8180 npm run dev`。
+- 本地开发：Vite 代理把 `/admin` 转发到 `JUMCP_DEV_ADMIN_TARGET`（默认 8080）、把 `/mcp`、`/health` 转发到 `JUMCP_DEV_API_TARGET`（默认 8000），**不再注入 Bearer**——登录后会话 cookie 随同源请求自动带上。一键启动脚本会分别导出这两个变量（`JUMCP_DEV_ADMIN_TARGET`=管理面端口、`JUMCP_DEV_API_TARGET`=MCP 面端口），直接开 http://127.0.0.1:5173 登录即可；单独起前端时两个后端都需已在对应端口上监听，登录会以「无法连接后端。」提示失败。`JUMCP_DEV_ADMIN_TOKEN` 已不再由前端使用（网关/BFF 注入 Bearer 的路径已被登录态取代），脚本里若仍设置它也不影响本前端。
+- 生产部署：管理面跑在独立端口（52913，MCP 面 52912 不变），静态产物由该端口的服务同源提供；cookie 是 `HttpOnly` 且 `SameSite=Strict`，`Path=/`，HTTP 部署没有 `Secure` 标志（见 `notes/admin_web/login_session.md`）。
 
 ## 边界（不可放宽）
 

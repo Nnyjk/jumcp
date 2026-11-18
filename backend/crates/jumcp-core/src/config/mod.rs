@@ -81,7 +81,16 @@ pub struct Settings {
     pub config_file: String,
     pub transport: String,
     pub host: String,
+    /// MCP 面监听端口（`JUMCP_MCP_PORT`，默认 8000）：只挂 `/mcp`、`/internal/mcp/*`、`/health`。
     pub port: u16,
+    /// 管理面监听端口（`JUMCP_ADMIN_PORT`，默认 8080）：只挂 `/admin/*`、`/health` 与管理台静态站。
+    /// 必须与 `port` 不同，相同即拒绝启动（否则两个面会重新合成一个口）。
+    pub admin_port: u16,
+    /// 管理台会话 cookie 的存活秒数（`JUMCP_ADMIN_SESSION_TTL_SECS`，默认 43200 = 12h）。
+    pub admin_session_ttl_secs: i64,
+    /// 会话 cookie 是否带 `Secure`（`JUMCP_ADMIN_COOKIE_SECURE=1`）。
+    /// 默认关：纯 HTTP 内网部署下带 Secure 会让浏览器根本不发 cookie，等于登录成功但立刻掉线。
+    pub admin_cookie_secure: bool,
     pub audit_path: String,
     /// capability/模板注册表（SQLite）路径：模板与版本历史落这里。
     pub registry_path: String,
@@ -123,6 +132,9 @@ impl Default for Settings {
             transport: "stdio".to_string(),
             host: "0.0.0.0".to_string(),
             port: 8000,
+            admin_port: 8080,
+            admin_session_ttl_secs: 43_200,
+            admin_cookie_secure: false,
             audit_path: "data/audit.sqlite3".to_string(),
             registry_path: "data/registry.sqlite3".to_string(),
             templates_file: String::new(),
@@ -172,6 +184,13 @@ impl Settings {
         s.port = env_or("JUMCP_MCP_PORT", "8000")
             .parse::<u16>()
             .map_err(|_| "JUMCP_MCP_PORT 非法".to_string())?;
+        s.admin_port = env_or("JUMCP_ADMIN_PORT", "8080")
+            .parse::<u16>()
+            .map_err(|_| "JUMCP_ADMIN_PORT 非法".to_string())?;
+        s.admin_session_ttl_secs = env_or("JUMCP_ADMIN_SESSION_TTL_SECS", "43200")
+            .parse::<i64>()
+            .map_err(|_| "JUMCP_ADMIN_SESSION_TTL_SECS 非法".to_string())?;
+        s.admin_cookie_secure = env_or("JUMCP_ADMIN_COOKIE_SECURE", "0") == "1";
         s.audit_path = env_or("JUMCP_MCP_AUDIT_PATH", &s.audit_path);
         s.registry_path = env_or("JUMCP_MCP_REGISTRY_PATH", &s.registry_path);
         s.templates_file = env_or("JUMCP_MCP_TEMPLATES_FILE", &s.templates_file);
@@ -221,6 +240,20 @@ impl Settings {
         }
         if !matches!(self.groups_mode.as_str(), "strict" | "intersect") {
             return Err(format!("groups_mode 非法: {}", self.groups_mode));
+        }
+        if self.admin_session_ttl_secs <= 0 {
+            return Err(format!(
+                "JUMCP_ADMIN_SESSION_TTL_SECS 必须为正数: {}",
+                self.admin_session_ttl_secs
+            ));
+        }
+        // 两个面必须分开监听：端口相同等于把 /admin 与 /mcp 又合回一个口，
+        // 分面隔离（MCP 面看不到管理面、管理面看不到 MCP）会静默失效。
+        if self.transport == "streamable-http" && self.admin_port == self.port {
+            return Err(format!(
+                "JUMCP_ADMIN_PORT 与 JUMCP_MCP_PORT 相同（{}）：管理面与 MCP 面必须使用不同端口",
+                self.port
+            ));
         }
         if self.flatten_threshold < 0 {
             return Err(format!(

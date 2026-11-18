@@ -44,10 +44,10 @@ curl -X POST http://127.0.0.1:8000/mcp \
 
 stdio 接入用 `cargo run -p jumcp-server`（默认 stdio）；HTTP 传输用 `JUMCP_MCP_TRANSPORT=streamable-http cargo run -p jumcp-server`。HTTP 模式必须同时注入两把 64 位 hex 密钥（生成方式 `openssl rand -hex 32`），否则启动即失败：`JUMCP_SECRET_KEY` 负责落库加密，`JUMCP_TRANSPORT_KEY` 负责管理台提交密码时的请求体加密。
 
-- 后端默认监听 `0.0.0.0:8000`、管理台默认监听 `0.0.0.0:5173`（`JUMCP_MCP_HOST` / `-BackendPort` / `--backend-port` 可改；`-WebPort` / `--web-port` 被占用时自动 +1 顺延）；本机访问仍用 `http://127.0.0.1:8000` / `http://127.0.0.1:5173`，容器 / WSL / 局域网用宿主 IP。管理台的 `server.host` 固定为 `0.0.0.0`（`admin-web/vite.config.ts`），手动 `npm run dev` 也是全网卡监听。
+- 后端默认起两个监听：MCP 面 `0.0.0.0:8000`、管理面 `0.0.0.0:8080`（`JUMCP_MCP_HOST` / `-BackendPort` / `-AdminPort` / `--backend-port` / `--admin-port` 可改，两个端口必须不同）；管理台（Vite）默认监听 `0.0.0.0:5173`（`-WebPort` / `--web-port` 被占用时自动 +1 顺延）。本机访问用 `http://127.0.0.1:8000`（MCP 面）/ `http://127.0.0.1:8080`（管理面）/ `http://127.0.0.1:5173`（管理台 UI），容器 / WSL / 局域网用宿主 IP。管理台的 `server.host` 固定为 `0.0.0.0`（`admin-web/vite.config.ts`），手动 `npm run dev` 也是全网卡监听。
 - 每次启动都先 `cargo build --bin jumcp-server --bin jumcp-connector-clickhouse`（增量构建，不会运行过期二进制）；启动前若后端端口**已有监听者**（多半是上次遗留的旧后端），脚本立即失败并打印端口/排查命令（`netstat -ano | findstr :<port>`、`lsof -i :<port>`），**不会自动杀进程**，也不会把旧进程的 `/health` 当成“就绪”。请先停掉旧后端或换端口。
-- **管理面凭证只存在于进程环境**：后端 `JUMCP_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`，前端由 Vite 代理注入 `JUMCP_DEV_ADMIN_TOKEN` —— 不设这个变量，管理台请求会全部 401。
-- 前端代理目标用 `JUMCP_DEV_API_TARGET` 指定（默认 `http://127.0.0.1:8000`），启动器会按后端实际端口自动设置；手动起前端时后端换端口就要带上它。
+- **管理面凭证只存在于进程环境**：后端 `JUMCP_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`；浏览器打开管理台后在**登录页**里输入其中一个 token，换 HttpOnly 会话 cookie。前端不读任何 token 环境变量，也没有任何注入层。
+- 前端代理目标由启动器设置：`/admin` 转发到管理面（`JUMCP_DEV_ADMIN_TARGET`，默认 `http://127.0.0.1:8080`）、`/mcp` 与 `/health` 转发到 MCP 面（`JUMCP_DEV_API_TARGET`，默认 `http://127.0.0.1:8000`）。两个变量只存在于 Node 进程环境；手动起前端时后端换了端口就要带上它们。
 - `-ClickHouseDsn <dsn>` / `--clickhouse-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-clickhouse`，`engine = "clickhouse"`，DSN 走 `JUMCP_DEV_CLICKHOUSE_DSN`）；DSN 形如 `http://<user>:<password>@<host>:<port>[/database]`，凭证只经环境变量传递。`allowed_schemas` 对 ClickHouse 是 **database 白名单**，脚本生成的是空数组（不限制）；不给 DSN 则用 `config/policy.toml` 原样。
 - 脚本会同时构建 `jumcp-server` 与 `jumcp-connector-clickhouse`（数据源执行 agent；内置 MCP 包编译进 `jumcp-server`，没有独立二进制），并为 HTTP 模式设置固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（仅本地；生产必须 `openssl rand -hex 32`）；host 默认在可执行文件同目录查找 agent，也可用 `JUMCP_CLICKHOUSE_AGENT_BIN` 指定绝对路径。
 - `-ResetData` / `--reset-data` 启动前清空 `.dev-data/`（默认保留，便于连续试用）；`-NoWeb` / `--no-web` 只起后端。
@@ -75,7 +75,9 @@ JUMCP_MCP_TRANSPORT=streamable-http cargo run -p jumcp-server  # HTTP（POST /mc
 ```
 
 配置走 `JUMCP_MCP_*`（`JUMCP_MCP_CONFIG_FILE`、`JUMCP_MCP_AUDIT_PATH`、`JUMCP_MCP_REGISTRY_PATH`、
-`JUMCP_MCP_TEMPLATES_FILE`、`JUMCP_MCP_GROUPS_MODE`、`JUMCP_MCP_BUDGET_OVERFLOW=fail|truncate`、`JUMCP_SECRET_KEY`（HTTP 模式必需，64 位 hex，内置包密码字段的落库加密密钥）、`JUMCP_TRANSPORT_KEY`（HTTP 模式必需，64 位 hex，管理台提交 secret 字段时的传输加密密钥，见 `GET /admin/transport-key`）、`JUMCP_MCP_HOST`（默认 `0.0.0.0`）、`JUMCP_ADMIN_TOKENS="id:token,id:token"`（管理面必需）、`JUMCP_AGENT_TOKENS="agent_id:role:token,..."`（**仅用于启动引导**：`access_tokens` 表为空时一次性导入为数据库 token，之后可移除；导入的身份工具范围为 `*`，即全部工具——实际可见性仍由授权组与上游开关决定））。
+`JUMCP_MCP_TEMPLATES_FILE`、`JUMCP_MCP_GROUPS_MODE`、`JUMCP_MCP_BUDGET_OVERFLOW=fail|truncate`、`JUMCP_SECRET_KEY`（HTTP 模式必需，64 位 hex，内置包密码字段的落库加密密钥）、`JUMCP_TRANSPORT_KEY`（HTTP 模式必需，64 位 hex，管理台提交 secret 字段时的传输加密密钥，见 `GET /admin/transport-key`）、`JUMCP_MCP_HOST`（默认 `0.0.0.0`）、`JUMCP_MCP_PORT`（MCP 面端口，默认 `8000`）、`JUMCP_ADMIN_PORT`（管理面端口，默认 `8080`，与 `JUMCP_MCP_PORT` 相同即拒绝启动）、`JUMCP_ADMIN_SESSION_TTL_SECS`（管理台会话 TTL，默认 `43200` = 12 小时）、`JUMCP_ADMIN_COOKIE_SECURE`（置 `1` 才给会话 cookie 加 `Secure`，HTTPS 部署才开；HTTP 下开启会导致浏览器不回传 cookie）、`JUMCP_ADMIN_TOKENS="id:token,id:token"`（管理面必需）、`JUMCP_AGENT_TOKENS="agent_id:role:token,..."`（**仅用于启动引导**：`access_tokens` 表为空时一次性导入为数据库 token，之后可移除；导入的身份工具范围为 `*`，即全部工具——实际可见性仍由授权组与上游开关决定））。
+
+HTTP 模式起**两个监听**：MCP 面（`JUMCP_MCP_PORT`）只挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面（`JUMCP_ADMIN_PORT`）只挂 `/admin/*`、`/health` 与管理台静态站。跨面访问一律 `404`（例如管理面 `POST /mcp`、MCP 面 `GET /admin/me`）。管理台自带登录页：`POST /admin/login {"token":"<admin token>"}` → `204` + HttpOnly 会话 cookie，脚本仍可用 `Authorization: Bearer`。完整契约（cookie 优先、CSRF 同源校验、登录限流、会话表）见 `docs/mcp-router.md` §9.0–9.1。
 
 MCP 接入令牌由管理平台生成并持久化在 registry SQLite 的 `access_tokens` 表；`/mcp` 只认 `Authorization: Bearer <平台 token>`，缺/错/撤销/过期一律 `MCP_UNAUTHORIZED`。创建示例：
 
@@ -107,17 +109,17 @@ curl -X POST http://127.0.0.1:8000/admin/tokens \
 
 ```bash
 docker buildx build --platform linux/amd64 -t jumcp:local --load .
-docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
+docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
   -e JUMCP_ADMIN_TOKENS="admin:<至少 16 位的 token>" \
   -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
   -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
   -v jumcp-data:/data \
   jumcp:local
-# 管理台 http://127.0.0.1:8000/ ，健康检查 GET /health ，MCP POST /mcp
+# 管理台 http://127.0.0.1:8080/ （登录页），健康检查 GET /health （两个面都有），MCP POST http://127.0.0.1:8000/mcp
 ```
 
-- `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`：容器重建不丢治理与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
-- 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，管理面 API 的 Bearer 仍要由网关/BFF 在同源路径注入，不存在镜像内的 token 注入后门。
+- `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`（管理台会话也在 `registry.sqlite3` 的 `admin_sessions` 表）：容器重建不丢治理、会话与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
+- 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，鉴权靠 `POST /admin/login` 换来的 HttpOnly 会话 cookie。没有网关/BFF，也没有镜像内的 token 注入后门。
 - CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；脚本 `bash -n` 与发布 tag 解析用例；`linux/amd64` 镜像构建 + 容器冒烟 + Swarm stack 配置校验（`docker stack config`）；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
 - image CD（`.github/workflows/image-cd.yml`）：由 `dev` push（快照）、`main` push（正式）、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`。tag 与 `VERSION` 由 `scripts/release-tags.sh` 确定性算出：`dev` 给 `dev`/`sha-<短 sha>`，`main` 给 `latest`/`main`/`sha-<短 sha>`，版本 tag 给精确版本与兼容 tag（`latest` 只给 `main`），带 provenance 与 SBOM，push 后按 digest 回拉再冒烟。`publish` job 限定 `refs/heads/dev`、`refs/heads/main` 与 `refs/tags/v*`：对 feature 分支手动 dispatch 会整 job 跳过；`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验）。
 - web CD（`.github/workflows/web-cd.yml`）：触发面与 image CD 相同，构建 `jumcp-admin-web-<version>.tar.gz`（`admin-web/dist` 打包）并上传 artifact（保留 30 天）；`v*` tag 时再把同一份包挂到该 tag 的 GitHub Release（只有这一步需要 `contents: write`）。
@@ -184,7 +186,7 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 
 **审计查询**：默认**最新优先**（`desc`，可切「最旧优先」）；从令牌、能力档案或工具台账进入时在 content 视图内打开并预填筛选（token_id / object_id / event_id），URL 不变，直接访问 `/audit` 路由仍可用并兼容这些查询参数，筛选与「重置」只改页内状态；表格列为 时间 → 摘要 → 主体 → 动作 → 对象 → 操作，结果与审批单由摘要与详情弹层承载（主体里的令牌 ID 表格中截断到 12 位，完整值在 `title`/详情）。时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），完整 RFC3339 保留在 `title` 与详情。详情里对 `tool_call`、`template_run` 展示入参、执行脚本与载荷结构版本。旧格式事件（没有 `object_type` / `object_id` / `action`）界面标注「旧格式事件，仅原始载荷」，不按旧字段推断语义，也不计入工具统计。
 
-所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`，但**必须**带上 `JUMCP_DEV_ADMIN_TOKEN=<管理面 token>`（Vite 代理据此注入 `Authorization`，缺失则请求全部 401），后端 token 由 `JUMCP_ADMIN_TOKENS="id:token,id:token"` 配置。`npm run build` 做类型检查与构建。
+所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`（另开终端跑后端），按后端实际端口设 `JUMCP_DEV_ADMIN_TARGET=<管理面>` 与 `JUMCP_DEV_API_TARGET=<MCP 面>`，然后在 http://127.0.0.1:5173 的登录页里输入 `JUMCP_ADMIN_TOKENS="id:token,id:token"` 中的某个 token。`npm run build` 做类型检查与构建。
 
 ## 文档索引
 

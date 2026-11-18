@@ -11,6 +11,16 @@ version: "3.8"
 #     "Additional property platform is not allowed"），因此平台用 placement constraints 固定。
 #   - registry/audit 是两个 SQLite 文件，单写者：只能 1 副本，更新用 stop-first，绝不能水平扩容。
 #   - `/data` 用命名卷，是节点本地卷：服务重调度到别的节点会拿到空库。
+#
+# 管理台（浏览器）访问：本文件发布两个端口，各自只服务自己的面——
+#   - 8000（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent；
+#   - 8080（管理面）：`/admin/*`、`/health`、管理台静态站，给浏览器。
+# 管理台自带登录页（`POST /admin/login` → HttpOnly 会话 cookie），因此**没有网关**：
+# `deploy/admin-gateway/` 已删除，浏览器直连管理面端口，不再有反向代理注入 Bearer。
+# MCP 客户端也用各自 token 直连 MCP 面，同样不经任何中间层。
+#
+# 安全提示：管理面是浏览器入口，默认 cookie 不带 `Secure`（内网 HTTP）。要经公网暴露，
+# 请在前面挂 TLS 终止并设置 JUMCP_ADMIN_COOKIE_SECURE=1，同时用网络策略限制 8080 的访问来源。
 
 services:
   jumcp:
@@ -24,6 +34,12 @@ services:
       JUMCP_ADMIN_TOKENS: ${JUMCP_ADMIN_TOKENS:?必须设置 JUMCP_ADMIN_TOKENS（格式 id:token,id:token，token 至少 16 位）}
       # 可选：`agent_id:role:token`，只在 access_tokens 表为空时一次性导入（引导用），表非空后不再生效。
       JUMCP_AGENT_TOKENS: ${JUMCP_AGENT_TOKENS:-}
+      # 两个面必须用不同端口，相同即拒绝启动（配置校验，不是运行时事故）。
+      JUMCP_MCP_PORT: "8000"
+      JUMCP_ADMIN_PORT: "8080"
+      # 管理台会话 TTL 与 cookie Secure 开关（HTTPS 部署才置 1）。
+      JUMCP_ADMIN_SESSION_TTL_SECS: ${JUMCP_ADMIN_SESSION_TTL_SECS:-43200}
+      JUMCP_ADMIN_COOKIE_SECURE: ${JUMCP_ADMIN_COOKIE_SECURE:-0}
       # 必填：64 位 hex（32 字节），用于加密内置包配置里的密码类字段。
       # 缺省/非法时 HTTP 模式拒绝启动；生成方式：openssl rand -hex 32。
       # 轮换后旧密文不可解，需在管理台重填密码。
@@ -36,9 +52,15 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
 
     ports:
-      # 长语法 + ingress：任何一个 Swarm 节点上的 <node>:<JUMCP_PORT> 都会路由到唯一副本。
+      # 长语法 + ingress：任何一个 Swarm 节点上的 <node>:<port> 都会路由到唯一副本。
+      # MCP 面：agent 直连这个口。
       - target: 8000
         published: ${JUMCP_PORT:-8000}
+        protocol: tcp
+        mode: ingress
+      # 管理面：浏览器登录台用这个口。只在内网暴露；公网入口请前置 TLS 网关。
+      - target: 8080
+        published: ${JUMCP_ADMIN_PORT_PUBLISHED:-8080}
         protocol: tcp
         mode: ingress
 
@@ -52,7 +74,10 @@ services:
 
     healthcheck:
       # 与镜像内置 HEALTHCHECK 相同的探针；显式声明以便 Swarm 依据它判断任务健康。
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health", "-o", "/dev/null"]
+      # 两个面各探一次：只探一个面时"另一面没监听"会被判定为健康。
+      test:
+        - CMD-SHELL
+        - "curl -fsS http://127.0.0.1:8000/health -o /dev/null && curl -fsS http://127.0.0.1:8080/health -o /dev/null"
       interval: 30s
       timeout: 5s
       retries: 3

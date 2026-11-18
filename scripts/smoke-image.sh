@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验健康、同源管理台静态资源、管理面鉴权、/mcp 与内置 MCP 包安装链路。
+# 镜像冒烟：起容器（非 root、/data 用 tmpfs）后校验双端口分面（MCP 面 8000 / 管理面 8080）、登录会话链路、同源管理台静态资源与内置 MCP 包安装链路。
 # 用途：CI 的镜像 job 与 release 发布后的 digest 回拉校验；本地 `docker build` 后也可直接跑。
 #
 # 用法：scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 #   <image>    DOCKER_IMAGE（如 jumcp:ci、ghcr.io/nnyjk/jumcp@sha256:...）
-#   --port     宿主机端口（默认随机，通过 `-p 127.0.0.1::8000` 分配）
-#   --timeout  等待 /health 就绪的秒数（默认 120）
+#   --port     管理面宿主端口（默认随机，通过 `-p 127.0.0.1::8080` 分配；MCP 面端口始终随机）
+#   --timeout  等待两个面 /health 就绪的秒数（默认 120）
 #
 # 需要：docker、curl、jq（GitHub ubuntu-latest 自带）。
 # 退出码：0 = 全部断言通过；1 = 断言失败；2 = 参数/工具缺失。
@@ -22,7 +22,8 @@ ADMIN_TOKEN="${JUMCP_SMOKE_ADMIN_TOKEN:-tok_smoke_admin_0001}"
 AGENT_ID="agent-analyst"
 AGENT_ROLE="analyst"
 AGENT_TOKEN="${JUMCP_SMOKE_AGENT_TOKEN:-tok_agent_analyst_0001}"
-CONTAINER_PORT=8000
+CONTAINER_MCP_PORT=8000
+CONTAINER_ADMIN_PORT=8080
 CONTAINER_UID=10001
 
 usage() {
@@ -85,10 +86,11 @@ fail() {
   exit 1
 }
 
-# 启动容器
-PUBLISH_ARGS=(-p "127.0.0.1::${CONTAINER_PORT}")
+# 启动容器：两个面各映射一个宿主端口（MCP 面给 agent，管理面给浏览器）。
+# 两个端口都显式发布，否则"管理面在容器内可达、宿主不可达"这类部署事故冒烟看不到。
+PUBLISH_ARGS=(-p "127.0.0.1::${CONTAINER_MCP_PORT}" -p "127.0.0.1::${CONTAINER_ADMIN_PORT}")
 if [ -n "$PORT" ]; then
-  PUBLISH_ARGS=(-p "127.0.0.1:${PORT}:${CONTAINER_PORT}")
+  PUBLISH_ARGS=(-p "127.0.0.1::${CONTAINER_MCP_PORT}" -p "127.0.0.1:${PORT}:${CONTAINER_ADMIN_PORT}")
 fi
 
 # /data 用 tmpfs：既保证非 root（UID 10001）可写，也让每次冒烟都从干净的空库开始。
@@ -103,29 +105,35 @@ docker run -d --name "$NAME" \
   "$IMAGE" >/dev/null || fail "docker run 失败"
 STARTED=1
 
-MAPPING="$(docker port "$NAME" "${CONTAINER_PORT}/tcp" 2>/dev/null | head -n 1)"
-[ -n "$MAPPING" ] || fail "未能解析宿主端口映射（docker port ${NAME} ${CONTAINER_PORT}/tcp 为空）"
-HOST_PORT="${MAPPING##*:}"
+MAPPING_ADMIN="$(docker port "$NAME" "${CONTAINER_ADMIN_PORT}/tcp" 2>/dev/null | head -n 1)"
+[ -n "$MAPPING_ADMIN" ] || fail "未能解析管理面宿主端口映射（docker port ${NAME} ${CONTAINER_ADMIN_PORT}/tcp 为空）"
+MAPPING_MCP="$(docker port "$NAME" "${CONTAINER_MCP_PORT}/tcp" 2>/dev/null | head -n 1)"
+[ -n "$MAPPING_MCP" ] || fail "未能解析 MCP 面宿主端口映射（docker port ${NAME} ${CONTAINER_MCP_PORT}/tcp 为空）"
+HOST_PORT="${MAPPING_ADMIN##*:}"
+HOST_MCP_PORT="${MAPPING_MCP##*:}"
+[ "$HOST_PORT" != "$HOST_MCP_PORT" ] || fail "两个面映射到了同一个宿主端口：$HOST_PORT（分面失效）"
 BASE="http://127.0.0.1:${HOST_PORT}"
-echo "    容器 $NAME → $BASE"
+MCP_BASE="http://127.0.0.1:${HOST_MCP_PORT}"
+echo "    容器 $NAME → 管理面 $BASE，MCP 面 $MCP_BASE"
 
-# 等待就绪
-echo "==> smoke-image: 等待 /health（最长 ${TIMEOUT_S}s）"
-HEALTH_FILE="$TMP_ROOT/health.json"
-ready=0
-deadline=$((SECONDS + TIMEOUT_S))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  running="$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || echo false)"
-  if [ "$running" != "true" ]; then
-    fail "容器已退出，未通过 /health 就绪"
-  fi
-  if curl -fsS --max-time 3 -o "$HEALTH_FILE" "$BASE/health" 2>/dev/null; then
-    ready=1
-    break
-  fi
-  sleep 1
+# 等待就绪：两个面都必须自己回 /health（只探一个面会漏掉"另一面端口没起来"）。
+echo "==> smoke-image: 等待两面的 /health（最长 ${TIMEOUT_S}s）"
+for probe in "$MCP_BASE" "$BASE"; do
+  ready=0
+  deadline=$((SECONDS + TIMEOUT_S))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    running="$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || echo false)"
+    if [ "$running" != "true" ]; then
+      fail "容器已退出，未通过 ${probe}/health 就绪"
+    fi
+    if curl -fsS --max-time 3 -o "$TMP_ROOT/health-probe.json" "$probe/health" 2>/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  [ "$ready" = "1" ] || fail "容器在 ${TIMEOUT_S}s 内未通过 ${probe}/health 就绪"
 done
-[ "$ready" = "1" ] || fail "容器在 ${TIMEOUT_S}s 内未通过 /health 就绪"
 
 # 断言工具
 CODE=""
@@ -199,7 +207,11 @@ health_json() {
 
 health_json "$TMP_ROOT/health.json" "无 Accept 头"
 health_json "$TMP_ROOT/health-xhr.json" "Accept: application/json" -H 'Accept: application/json'
-echo "    ok: /health 探针分支 → 200 JSON 且 audit_chain=valid（无 Accept / Accept: application/json）"
+# MCP 面自己也要回 /health：运维探针不该知道（也不该猜）自己打的是哪个面。
+get "$MCP_BASE/health" "$TMP_ROOT/health-mcp.json"
+[ "$CODE" = "200" ] || fail "GET ${MCP_BASE}/health 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/health-mcp.json" '.audit_chain == "valid"' "MCP 面 /health 的 audit_chain 不是 \"valid\""
+echo "    ok: /health 探针分支 → 200 JSON 且 audit_chain=valid（两面 + 无 Accept / Accept: application/json）"
 
 # 2. /health 浏览器导航分支：同源下 UI 健康页可达（Accept 含 text/html 回退到管理台 index.html）
 get "$BASE/health" "$TMP_ROOT/health-page.html" -H 'Accept: text/html,application/xhtml+xml,*/*;q=0.8'
@@ -258,15 +270,73 @@ get "$BASE/admin/review-queue" "$TMP_ROOT/queue.json" -H "Authorization: Bearer 
 json_is "$TMP_ROOT/queue.json" '(.items | type) == "array"' '/admin/review-queue 响应缺少 items 数组'
 echo "    ok: 带管理 token /admin/review-queue → 200"
 
+# 6b. 分面隔离：一个面上不存在另一个面的端点（含"方法不匹配"的误报：必须是 404 而不是 405）。
+code_of() {
+  # code_of <url> [curl 额外参数...]
+  local url="$1"
+  shift
+  get "$url" "$TMP_ROOT/status.json" "$@"
+  printf '%s' "$CODE"
+}
+
+[ "$(code_of "$MCP_BASE/admin/review-queue" -H "Authorization: Bearer $ADMIN_TOKEN")" = "404" ] \
+  || fail "MCP 面 GET /admin/review-queue 期望 404（管理面端点不得出现在 MCP 面）"
+[ "$(code_of "$MCP_BASE/")" = "404" ] \
+  || fail "MCP 面 GET / 期望 404（MCP 面不得托管管理台页面）"
+[ "$(code_of "$BASE/admin/definitely-not-a-route" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" --data '{}')" = "404" ] \
+  || fail "管理面 POST /admin/definitely-not-a-route 期望 404"
+[ "$(code_of "$BASE/mcp" -X POST -H "Authorization: Bearer $AGENT_TOKEN" --data '{}')" = "404" ] \
+  || fail "管理面 POST /mcp 期望 404（MCP 端点不得出现在管理面）"
+[ "$(code_of "$BASE/internal/mcp/clickhouse-basic/clickhouse" -X POST --data '{}')" = "404" ] \
+  || fail "管理面 POST /internal/mcp/... 期望 404（内置回环口属于 MCP 面）"
+echo "    ok: 分面隔离 → MCP 面看不到 /admin/* 与首页，管理面看不到 /mcp 与 /internal/mcp/*（均为 JSON 404）"
+
+# 6c. 登录契约：token → 会话 cookie → /admin/session → 目录 → logout 后失效。
+#     浏览器不发 Authorization，登录面是它唯一的身份来源；POST 必须带同源 Origin（CSRF）。
+JAR="$TMP_ROOT/cookies.txt"
+LOGIN_CODE="$(curl -sS --max-time 10 -c "$JAR" -o "$TMP_ROOT/login.json" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE" \
+  --data "{\"token\":\"${ADMIN_TOKEN}\"}" "$BASE/admin/login" 2>/dev/null || true)"
+[ "$LOGIN_CODE" = "204" ] || fail "POST /admin/login 期望 204，实际 $LOGIN_CODE"
+grep -qi 'jumcp_session' "$JAR" || fail "POST /admin/login 未下发 jumcp_session cookie"
+grep -qi 'HttpOnly' "$JAR" || fail "jumcp_session cookie 缺少 HttpOnly"
+grep -qi '#HttpOnly_' "$JAR" || fail "cookie 文件未标记 HttpOnly 前缀（curl 以 #HttpOnly_ 行表示）"
+echo "    ok: POST /admin/login → 204 + jumcp_session（HttpOnly）"
+
+LOGIN_FAIL_CODE="$(curl -sS --max-time 10 -o "$TMP_ROOT/login-bad.json" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' --data '{"token":"tok_wrong_0000000000"}' \
+  "$BASE/admin/login" 2>/dev/null || true)"
+[ "$LOGIN_FAIL_CODE" = "401" ] || fail "错误 token 的 POST /admin/login 期望 401，实际 $LOGIN_FAIL_CODE"
+json_is "$TMP_ROOT/login-bad.json" '.error.code == "MCP_UNAUTHORIZED"' '错误 token 的错误码不是 MCP_UNAUTHORIZED'
+echo "    ok: 错误 token 登录 → 401（MCP_UNAUTHORIZED）"
+
+get "$BASE/admin/session" "$TMP_ROOT/session.json" -b "$JAR"
+[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/session 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/session.json" '.actor.id == "smoke" and .actor.role == "admin" and .actor.type == "admin"' \
+  '/admin/session 的 actor 形状不对'
+echo "    ok: cookie 身份 GET /admin/session → 200（actor.id=smoke）"
+
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog-cookie.json" -b "$JAR"
+[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/mcp/catalog 期望 200，实际 $CODE"
+echo "    ok: cookie 身份 GET /admin/mcp/catalog → 200（管理台不再需要注入 Bearer）"
+
+LOGOUT_CODE="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  -X POST -H "Origin: $BASE" -b "$JAR" "$BASE/admin/logout" 2>/dev/null || true)"
+[ "$LOGOUT_CODE" = "204" ] || fail "POST /admin/logout 期望 204，实际 $LOGOUT_CODE"
+get "$BASE/admin/session" "$TMP_ROOT/session-after.json" -b "$JAR"
+[ "$CODE" = "401" ] || fail "logout 之后 cookie 身份 GET /admin/session 期望 401，实际 $CODE"
+json_is "$TMP_ROOT/session-after.json" '.error.code == "MCP_UNAUTHORIZED"' 'logout 后未登录的错误码不是 MCP_UNAUTHORIZED'
+echo "    ok: POST /admin/logout → 204 且旧 cookie 立即 401（会话已吊销）"
+
 # 7. /mcp：agent token 走完 initialize + tools/list
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["db.read.core"]}}}}'
-post_json "$BASE/mcp" "$TMP_ROOT/mcp_init.json" "$INIT_BODY" "$AGENT_TOKEN"
+post_json "$MCP_BASE/mcp" "$TMP_ROOT/mcp_init.json" "$INIT_BODY" "$AGENT_TOKEN"
 [ "$CODE" = "200" ] || fail "POST /mcp initialize 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/mcp_init.json" '.result.serverInfo != null' '/mcp initialize 响应缺少 result.serverInfo'
 echo "    ok: POST /mcp initialize → 200"
 
 LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-post_json "$BASE/mcp" "$TMP_ROOT/mcp_tools.json" "$LIST_BODY" "$AGENT_TOKEN"
+post_json "$MCP_BASE/mcp" "$TMP_ROOT/mcp_tools.json" "$LIST_BODY" "$AGENT_TOKEN"
 [ "$CODE" = "200" ] || fail "POST /mcp tools/list 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/mcp_tools.json" \
   '((.result.tools // []) | map(.name) | index("search_capabilities")) != null' \
@@ -345,7 +415,7 @@ json_is "$TMP_ROOT/pkg_patch.json" \
 echo "    ok: PATCH .../config → 200（url 已更新，secrets_set.password=true，密码未回显）"
 
 PKG_LIST_BODY='{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
-post_json "$BASE/mcp" "$TMP_ROOT/pkg_tools.json" "$PKG_LIST_BODY" "$AGENT_TOKEN"
+post_json "$MCP_BASE/mcp" "$TMP_ROOT/pkg_tools.json" "$PKG_LIST_BODY" "$AGENT_TOKEN"
 [ "$CODE" = "200" ] || fail "POST /mcp tools/list（安装 ${PKG_ID} 后）期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_tools.json" \
   '((.result.tools // []) | map(.name) | index("clickhouse__query")) != null' \

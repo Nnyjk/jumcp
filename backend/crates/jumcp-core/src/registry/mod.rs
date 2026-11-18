@@ -12,12 +12,14 @@ use std::sync::Mutex;
 mod groups;
 mod lifecycle;
 mod record;
+mod sessions;
 mod upstreams;
 
 pub use groups::ManagedGroup;
 pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,
 };
+pub use sessions::AdminSession;
 pub use upstreams::{
     EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, TOOL_WILDCARD_ALL,
     UPSTREAM_CATEGORIES, UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP,
@@ -129,6 +131,12 @@ CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
     upstream_id TEXT NOT NULL, tool_name TEXT NOT NULL, group_code TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (upstream_id, tool_name)
 );
+-- 管理台会话：cookie 值即 id（32 字节 CSPRNG hex），身份由 token_id 指回 admin token 表。
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id TEXT PRIMARY KEY, token_id TEXT NOT NULL, created_at INTEGER,
+    expires_at INTEGER, last_seen_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
 "#).map_err(|e| McpError::store(e.to_string()))?;
         // 已有库补列：CREATE TABLE IF NOT EXISTS 不会为已存在的表加列。
         for (table, column) in [

@@ -105,7 +105,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 | `src/motion/` | 过渡与动画原语（`useGsap.ts`） |
 | `src/styles/` | `index.css` 为汇总入口，`components.css` 按顺序 `@import` `styles/components/*.css`（顺序即级联优先级，勿重排）；另有 `layout.css`、`modal.css`、`dashboard.css`、`tokens.css` 与主题变量 |
 | `src/*.ts` | 跨页面工具：`audit.ts`、`objects.ts`、`labels.ts`、`format.ts`、`json.ts`、`notice.ts`、`theme.ts`、`viewStack.ts` |
-| `public/` `index.html` `vite.config.ts` `eslint.config.js` `tsconfig.json` | 静态资源、构建与开发代理（`JUMCP_DEV_ADMIN_TOKEN` 注入、生产构建期拦截 `VITE_ADMIN_TOKEN`） |
+| `public/` `index.html` `vite.config.ts` `eslint.config.js` `tsconfig.json` | 静态资源、构建与开发代理（纯转发：`/admin`→管理面、`/mcp` `/health`→MCP 面；生产构建期拦截 `VITE_ADMIN_TOKEN`） |
 
 页面职责与路由表见 `admin-web/README.md`；管理台不持有管理面凭证，浏览器不发 `Authorization`。
 

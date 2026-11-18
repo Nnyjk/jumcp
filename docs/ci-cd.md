@@ -293,7 +293,7 @@ printf '%s' "$payload" \
 
 ## 管理台鉴权边界
 
-- 管理台是薄前端，浏览器**不发** `Authorization`：管理面 API 的 Bearer 由网关/BFF 在同源路径注入（或改用会话 Cookie）。镜像只负责「同源静态资源 + API」一起可用，不提供任何 token 注入后门
-- 开发期凭证注入只存在 Node 进程环境：`JUMCP_DEV_ADMIN_TOKEN`（Vite 代理注入），不是 `VITE_*`，不进 bundle；`vite.config.ts` 在 production 构建期检测 `VITE_ADMIN_TOKEN`/`VITE_ADMIN_ACTOR` 就直接终止构建
+- 管理台是薄前端，浏览器**不发** `Authorization`：管理面自带登录页，`POST /admin/login` 交一次 token 换 HttpOnly 会话 cookie，此后 `/admin/*` 靠 cookie 认身份（脚本仍可用 Bearer）。镜像只负责「同源静态资源 + API」一起可用，不提供任何 token 注入后门，也没有网关
+- 开发期不注入任何凭证：Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` 指管理面、`JUMCP_DEV_API_TARGET` 指 MCP 面），两个变量都只存在于 Node 进程环境；`vite.config.ts` 在 production 构建期检测 `VITE_ADMIN_TOKEN`/`VITE_ADMIN_ACTOR` 就直接终止构建
 - `scripts/smoke-image.sh` 直接带 Bearer 打 `/admin/review-queue`，验证的是**后端鉴权边界**（匿名 401、带 token 200），不是浏览器行为
 - 发布流水线不写任何 token 到仓库：GHCR 登录用 `GITHUB_TOKEN`，镜像构建不需要管理面凭证

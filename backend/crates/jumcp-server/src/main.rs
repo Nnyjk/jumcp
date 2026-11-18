@@ -218,6 +218,15 @@ async fn run_http(
             "HTTP 模式下 JUMCP_MCP_AUDIT_PATH 未配置：维护通道不允许无审计运行（审计不可静默失效）"
         );
     }
+    // 两个面必须不同端口：同一端口下"分面"只剩一层路径判断，任何回退（SPA、兜底）都会
+    // 把管理台页面或管理 API 暴露给 MCP 面。Settings::validate 已拦，这里再拦一次是为了
+    // 把"直接构造 Settings 起服务"的路径也堵死。
+    if settings.admin_port == settings.port {
+        anyhow::bail!(
+            "JUMCP_ADMIN_PORT 与 JUMCP_MCP_PORT 相同（{}）：管理面与 MCP 面必须使用不同端口",
+            settings.port
+        );
+    }
     let token_total = store
         .access_token_total()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -226,37 +235,69 @@ async fn run_http(
             "access_tokens 为空：/mcp 将拒绝所有请求，请先在管理面 POST /admin/tokens 生成令牌"
         );
     }
+    let mcp_app = jumcp_server::app::mcp_surface(
+        server,
+        service.clone(),
+        store.clone(),
+        settings.secret_key.clone(),
+        builtin_endpoint.as_ref(),
+    );
+    let admin_app = jumcp_server::app::admin_surface(
+        jumcp_server::admin::AdminState {
+            service,
+            store: store.clone(),
+            tokens: settings.admin_tokens.clone(),
+            transport_key: settings.transport_key.clone(),
+        },
+        &settings.web_dir,
+    )
+    .map_err(|e| anyhow::anyhow!("启动配置非法: {e}"))?;
+    if settings.web_dir.is_empty() {
+        tracing::warn!(
+            "JUMCP_MCP_WEB_DIR 为空：管理面只提供 /admin/* API，不托管管理台静态站（浏览器访问会 404）"
+        );
+    }
+    if !settings.admin_cookie_secure {
+        tracing::warn!(
+            "管理台会话 cookie 未启用 Secure：请仅在内网使用或启用 TLS（JUMCP_ADMIN_COOKIE_SECURE=1 要求 HTTPS，否则浏览器不回传 cookie）"
+        );
+    }
+    // 先都绑定成功再 serve：端口占用要在启动期就失败，而不是演进成"管理面起来了、MCP 面没起"。
+    let mcp_listener =
+        bind_listener(&settings.host, settings.port, "JUMCP_MCP_PORT", "MCP 面").await?;
+    let admin_listener = bind_listener(
+        &settings.host,
+        settings.admin_port,
+        "JUMCP_ADMIN_PORT",
+        "管理面",
+    )
+    .await?;
     tracing::info!(
         host = %settings.host,
-        port = settings.port,
+        mcp_port = settings.port,
+        admin_port = settings.admin_port,
         tokens = token_total,
-        "HTTP /mcp 身份来自数据库 access_tokens（Bearer token → Actor；不再读取 JUMCP_AGENT_TOKENS）"
+        "HTTP 双监听已启动：MCP 面只挂 /mcp、/internal/mcp/*、/health；管理面只挂 /admin/*、/health 与静态站"
     );
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", settings.host, settings.port)).await?;
-    let admin = jumcp_server::admin::AdminState {
-        service,
-        store: store.clone(),
-        tokens: settings.admin_tokens.clone(),
-        transport_key: settings.transport_key.clone(),
-    };
-    let admin_app = jumcp_server::admin::router(admin);
-    let mut app = admin_app.merge(jumcp_server::mcp::http_router(server));
-    if let Some(endpoint) = &builtin_endpoint {
-        let key = Arc::new(
-            settings
-                .secret_key
-                .clone()
-                .expect("HTTP 模式的 JUMCP_SECRET_KEY 已在 Settings::validate 校验"),
-        );
-        app = app.merge(jumcp_server::builtin::router(
-            jumcp_server::builtin::BuiltinState::new(store.clone(), key, endpoint),
-        ));
-    }
-    // 管理台静态托管：`JUMCP_MCP_WEB_DIR` 为空即不挂；
-    // 非空时目录/产物不合法直接拒绝启动，绝不静默降级成 404。
-    let app = jumcp_server::web::attach(app, &settings.web_dir)
-        .map_err(|e| anyhow::anyhow!("启动配置非法: {e}"))?;
-    axum::serve(listener, app).await?;
+    // 任一监听退出即整体退出：只有一个面活着的进程比死了更危险（探针打到哪半都可能误判健康）。
+    tokio::try_join!(
+        axum::serve(mcp_listener, mcp_app).into_future(),
+        axum::serve(admin_listener, admin_app).into_future()
+    )?;
     Ok(())
+}
+
+/// 绑定一个监听端口，失败时给出含变量名与地址的中文错误。
+async fn bind_listener(
+    host: &str,
+    port: u16,
+    var: &str,
+    surface: &str,
+) -> anyhow::Result<tokio::net::TcpListener> {
+    let addr = format!("{host}:{port}");
+    tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+        anyhow::anyhow!(
+            "{surface}监听失败：无法绑定 {addr}（{var}={port}）：{e}。端口可能已被占用、权限不足，或 JUMCP_MCP_HOST 指向了本机不存在的地址"
+        )
+    })
 }

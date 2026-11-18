@@ -2,19 +2,24 @@
 .SYNOPSIS
   一键启动本地开发环境：后端（streamable-http）+ 前端（Vite dev）。
 .DESCRIPTION
-  用法：pwsh scripts/dev.ps1 [-BackendPort 8000] [-WebPort 5173] [-ClickHouseDsn <dsn>] [-ResetData] [-NoWeb]
-    -BackendPort  后端 HTTP 端口（默认 8000）
+  用法：pwsh scripts/dev.ps1 [-BackendPort 8000] [-AdminPort 8080] [-WebPort 5173] [-ClickHouseDsn <dsn>] [-ResetData] [-NoWeb]
+    -BackendPort  后端 MCP 面端口（默认 8000）
+    -AdminPort    后端管理面端口（默认 8080，必须与 MCP 面不同）
     -WebPort      前端 Vite 端口（默认 5173，被占用时自动 +1 顺延）
     -ClickHouseDsn 可选。给了就生成 .dev-data/policy.toml（追加 dev-clickhouse 数据源）并注入 JUMCP_DEV_CLICKHOUSE_DSN；
                   形如 http://<user>:<password>@<host>:<port>，凭证只经环境变量传递
     -ResetData    启动前清空 .dev-data/（默认保留，便于连续试用）
     -NoWeb        只起后端
+  两个监听面（不能相同）：MCP 面挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面挂 `/admin/*` 与管理台静态站。
+  管理台自带登录页：浏览器打开前端地址，在登录页里输入管理面 token（本脚本的 alice/bob）即可，前端不读任何 token 环境变量。
+  前端代理目标：管理面走 JUMCP_DEV_ADMIN_TARGET（默认 http://127.0.0.1:8080），MCP 面走 JUMCP_DEV_API_TARGET（默认 http://127.0.0.1:8000），
+  两者都只存在于 Node 进程环境。
   Ctrl+C（或关窗）会同时停掉前后端子进程；日志在 .dev-data/logs/。
-  前端代理目标用 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 JUMCP_DEV_ADMIN_TOKEN 一样只存在于 Node 进程环境。
 #>
 [CmdletBinding()]
 param(
   [int]$BackendPort = 8000,
+  [int]$AdminPort = 8080,
   [int]$WebPort = 5173,
   [string]$ClickHouseDsn = '',
   [switch]$ResetData,
@@ -194,18 +199,23 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   # 后端
   # 1) 端口守卫：端口已有监听者说明多半是上一次遗留的旧后端；它会让新进程 bind 失败，
   #    而 /health 又会命中旧进程，从而被误判为“就绪”。这里直接失败，不自动杀进程。
-  if (Test-PortListening $BackendPort $BackendHost) {
-    Write-Host ("错误：后端端口 {0} 已被占用，疑似上一次遗留的旧后端仍在运行（继续启动会被误判为就绪）。" -f $BackendPort) -ForegroundColor Red
-    $owners = @(Get-PortOwnerPids $BackendPort)
+  if ($AdminPort -eq $BackendPort) {
+    Write-Host ("错误：-AdminPort 与 -BackendPort 相同（{0}）：管理面与 MCP 面必须使用不同端口（后端会拒绝启动）。" -f $AdminPort) -ForegroundColor Red
+    exit 1
+  }
+  foreach ($guardPort in @($BackendPort, $AdminPort)) {
+    if (-not (Test-PortListening $guardPort $BackendHost)) { continue }
+    Write-Host ("错误：后端端口 {0} 已被占用，疑似上一次遗留的旧后端仍在运行（继续启动会被误判为就绪）。" -f $guardPort) -ForegroundColor Red
+    $owners = @(Get-PortOwnerPids $guardPort)
     if ($owners.Count -gt 0) {
       Write-Host ("监听该端口的 pid：{0}（Get-Process -Id <pid> 查看详情）" -f ($owners -join ', '))
     }
     if ($env:OS -eq 'Windows_NT') {
-      Write-Host ("排查：netstat -ano | findstr :{0}    然后  Get-Process -Id <pid>" -f $BackendPort)
+      Write-Host ("排查：netstat -ano | findstr :{0}    然后  Get-Process -Id <pid>" -f $guardPort)
     } else {
-      Write-Host ("排查：lsof -i :{0}   或   ss -lptn（再 kill <pid>）" -f $BackendPort)
+      Write-Host ("排查：lsof -i :{0}   或   ss -lptn（再 kill <pid>）" -f $guardPort)
     }
-    Write-Host ("请先停止旧后端，或改用 -BackendPort <其他端口>（例如 -BackendPort {0}）。脚本不会自动杀进程。" -f ($BackendPort + 1))
+    Write-Host '请先停止旧后端，或改用 -BackendPort / -AdminPort <其他端口>。脚本不会自动杀进程。'
     exit 1
   }
 
@@ -231,6 +241,7 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   $backendEnv['JUMCP_MCP_TRANSPORT'] = 'streamable-http'
   $backendEnv['JUMCP_MCP_HOST'] = $BackendHost
   $backendEnv['JUMCP_MCP_PORT'] = "$BackendPort"
+  $backendEnv['JUMCP_ADMIN_PORT'] = "$AdminPort"
   $backendEnv['JUMCP_MCP_CONFIG_FILE'] = $policyFile
   $backendEnv['JUMCP_MCP_REGISTRY_PATH'] = (Join-Path $DataDir 'registry.sqlite3')
   $backendEnv['JUMCP_MCP_AUDIT_PATH'] = (Join-Path $DataDir 'audit.sqlite3')
@@ -256,10 +267,15 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   [void]$script:Children.Add([pscustomobject]@{ Name = 'backend'; Id = $backendProc.Id })
   Write-Host ("==> 后端已启动（pid {0}）：http://127.0.0.1:{1}" -f $backendProc.Id, $BackendPort)
 
-  # 等 /health（最多 30s）；进程一退出立即判失败，避免把别人的 /health 当成就绪
+  # 等两个面的 /health（各最多 30s）；进程一退出立即判失败，避免把别人的 /health 当成就绪。
+  # 只探一个面时"另一面没监听"会被当成启动成功。
   $healthBody = Wait-Http "http://127.0.0.1:$BackendPort/health" 30 $curl -Proc $backendProc
+  $adminHealthBody = $null
+  if ($null -ne $healthBody -and -not $backendProc.HasExited) {
+    $adminHealthBody = Wait-Http "http://127.0.0.1:$AdminPort/health" 30 $curl -Proc $backendProc
+  }
   if ($backendProc.HasExited) {
-    Write-Host ("后端进程已退出（exit code {0}），多半是端口 {1} 在启动瞬间被抢占或配置非法。" -f $backendProc.ExitCode, $BackendPort) -ForegroundColor Red
+    Write-Host ("后端进程已退出（exit code {0}），多半是端口 {1}/{2} 在启动瞬间被抢占或配置非法。" -f $backendProc.ExitCode, $BackendPort, $AdminPort) -ForegroundColor Red
     Write-Host '---- backend.err.log 尾部 ----'
     Show-LogTail $backendErr
     Write-Host '---- backend.log 尾部 ----'
@@ -268,8 +284,8 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     Stop-Children
     exit 1
   }
-  if ($null -eq $healthBody) {
-    Write-Host "后端未在 30s 内就绪（端口 $BackendPort 是否被占用？）" -ForegroundColor Red
+  if ($null -eq $adminHealthBody) {
+    Write-Host ("后端未在 30s 内就绪（MCP 面 $BackendPort / 管理面 $AdminPort 是否被占用？）") -ForegroundColor Red
     Write-Host '---- backend.log 尾部 ----'
     Show-LogTail $backendLog
     Write-Host '---- backend.err.log 尾部 ----'
@@ -299,18 +315,19 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
     }
     $webPortUsed = $candidate
 
-    # 前端代理目标由 JUMCP_DEV_API_TARGET 指定（默认 http://127.0.0.1:8000），与 token 一样只存在于 Node 进程环境
+    # 前端代理目标：管理面 / MCP 面分开（双端口），只存在于 Node 进程环境
     # 监听 0.0.0.0（本机访问用 127.0.0.1，容器/WSL/局域网用宿主 IP）
     $viteArgs = @('run', 'dev', '--', '--host', $WebHost, '--port', "$webPortUsed")
     $apiTarget = "http://127.0.0.1:$BackendPort"
-    Write-Host ("==> 前端代理目标：{0}" -f $apiTarget)
+    $adminTarget = "http://127.0.0.1:$AdminPort"
+    Write-Host ("==> 前端代理目标：管理面 {0} ，MCP 面 {1}" -f $adminTarget, $apiTarget)
 
     $webLog = Join-Path $LogDir 'web.log'
     $webErr = Join-Path $LogDir 'web.err.log'
-    $savedToken = [Environment]::GetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', 'Process')
     $savedTarget = [Environment]::GetEnvironmentVariable('JUMCP_DEV_API_TARGET', 'Process')
-    [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', $AliceToken, 'Process')
+    $savedAdminTarget = [Environment]::GetEnvironmentVariable('JUMCP_DEV_ADMIN_TARGET', 'Process')
     [Environment]::SetEnvironmentVariable('JUMCP_DEV_API_TARGET', $apiTarget, 'Process')
+    [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TARGET', $adminTarget, 'Process')
     try {
       if ($env:OS -eq 'Windows_NT') {
         $webProc = Start-Process -FilePath 'cmd.exe' -ArgumentList (@('/c', 'npm') + $viteArgs) `
@@ -320,8 +337,8 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
           -WorkingDirectory $WebDir -RedirectStandardOutput $webLog -RedirectStandardError $webErr -PassThru -NoNewWindow
       }
     } finally {
-      [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TOKEN', $savedToken, 'Process')
       [Environment]::SetEnvironmentVariable('JUMCP_DEV_API_TARGET', $savedTarget, 'Process')
+      [Environment]::SetEnvironmentVariable('JUMCP_DEV_ADMIN_TARGET', $savedAdminTarget, 'Process')
     }
     [void]$script:Children.Add([pscustomobject]@{ Name = 'web'; Id = $webProc.Id })
     Write-Host ("==> 前端已启动（pid {0}）：监听 0.0.0.0:{1}，本机访问 http://127.0.0.1:{1}" -f $webProc.Id, $webPortUsed)
@@ -343,8 +360,10 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   Write-Host ''
   Write-Host '================ 开发环境已就绪 ================'
   Write-Host $webLine
+  Write-Host '登录     打开上面的管理台地址 → 在登录页输入管理面 token（alice 或 bob）'
   Write-Host "MCP      http://127.0.0.1:$BackendPort/mcp"
-  Write-Host "健康     http://127.0.0.1:$BackendPort/health"
+  Write-Host "管理面   http://127.0.0.1:$AdminPort/ （登录页；脚本直连 /admin/* 需 Bearer）"
+  Write-Host "健康     http://127.0.0.1:$BackendPort/health （MCP 面） / http://127.0.0.1:$AdminPort/health （管理面）"
   Write-Host "令牌     alice=$AliceToken （普通）  bob=$BobToken （审批）"
   Write-Host "数据     .dev-data/{registry,audit}.sqlite3   日志  .dev-data/logs/"
   Write-Host '停止     Ctrl+C（会同时停掉前后端）'

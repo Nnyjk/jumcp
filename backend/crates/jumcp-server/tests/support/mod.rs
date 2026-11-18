@@ -17,10 +17,9 @@ use jumcp_core::secret::SecretKey;
 use jumcp_core::template::TemplateRegistry;
 use jumcp_server::UpstreamManager;
 use jumcp_server::admin::{AdminState, router};
-use jumcp_server::builtin::router as builtin_router;
-use jumcp_server::builtin::{BuiltinEndpoint, BuiltinState};
+use jumcp_server::app::mcp_surface;
+use jumcp_server::builtin::BuiltinEndpoint;
 use jumcp_server::mcp::McpServer;
-use jumcp_server::mcp::http_router;
 use jumcp_server::service::Service;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -73,10 +72,16 @@ pub struct Harness {
 }
 
 pub fn harness_with_audit(audit: Arc<AuditLog>) -> Harness {
+    harness_custom(audit, settings())
+}
+
+/// 与 [`harness_with_audit`] 同一装配，但起点是自定义 `Settings`：
+/// 会话 TTL、cookie `Secure` 这类开关只能通过配置改，测试必须能改配置。
+pub fn harness_custom(audit: Arc<AuditLog>, settings: Settings) -> Harness {
     let store = Arc::new(CapabilityStore::open(":memory:", Some(audit.clone())).expect("store"));
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
     let service = Arc::new(
-        Service::new(settings())
+        Service::new(settings.clone())
             .with_audit(audit.clone())
             // 模板注册表与 store 同源：人工登记走 `TemplateRegistry::register`。
             .with_templates(registry)
@@ -92,7 +97,7 @@ pub fn harness_with_audit(audit: Arc<AuditLog>) -> Harness {
     let state = AdminState {
         service: service.clone(),
         store: store.clone(),
-        tokens: settings().admin_tokens,
+        tokens: settings.admin_tokens,
         transport_key: Some(transport_key()),
     };
     Harness {
@@ -400,14 +405,15 @@ impl BuiltinHarness {
             tokens: admin_tokens,
             transport_key: Some(transport_key()),
         });
-        let app = admin
-            .clone()
-            .merge(http_router(Arc::new(McpServer::from_arc(service.clone()))))
-            .merge(builtin_router(BuiltinState::new(
-                store.clone(),
-                Arc::new(settings_key()),
-                &endpoint,
-            )));
+        // 只把 MCP 面挂到 listener 上：生产里 `/internal/mcp/*` 属于 MCP 面，
+        // 管理面（含静态站）在另一个端口。合并成一个 app 会掩盖分面回归。
+        let app = mcp_surface(
+            Arc::new(McpServer::from_arc(service.clone())),
+            service.clone(),
+            store.clone(),
+            Some(settings_key()),
+            Some(&endpoint),
+        );
         let server = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });

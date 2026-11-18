@@ -6,32 +6,7 @@ pub(super) async fn me(Extension(auth): Extension<AuthenticatedAdmin>) -> Json<V
 }
 
 pub(super) async fn health(State(state): State<AdminState>) -> Json<Value> {
-    let settings = &state.service.settings;
-    let datasources: Vec<Value> = settings
-        .datasources
-        .iter()
-        .map(|d| json!({"name": d.name, "engine": d.engine, "readonly": d.readonly}))
-        .collect();
-    // 链被篡改时 status 仍 200（服务在跑），但 audit_chain 显式报警，供看板直接着色。
-    let (chain, tampered_at) = match &state.service.audit {
-        Some(log) => match log.verify_chain() {
-            Ok(ChainVerdict::Valid) => ("valid", Value::Null),
-            Ok(ChainVerdict::Tampered { event_id }) => ("tampered", json!(event_id)),
-            Ok(ChainVerdict::Broken { reason }) => ("error", json!(reason)),
-            Err(e) => ("error", json!(e.message)),
-        },
-        None => ("error", json!("audit log not configured")),
-    };
-    let mut body = json!({
-        "status": "ok",
-        "version": env!("CARGO_PKG_VERSION"),
-        "datasources": datasources,
-        "audit_chain": chain
-    });
-    if !tampered_at.is_null() {
-        body["audit_chain_detail"] = tampered_at;
-    }
-    Json(body)
+    Json(crate::service::health_report(&state.service))
 }
 
 pub(super) async fn audit_events(

@@ -447,3 +447,48 @@ fn web_dir_with_index_html_is_accepted() {
     };
     s.validate().unwrap();
 }
+
+/// HTTP 模式的双面端口：默认值、Env 接线之外，最关键的互斥校验。
+fn http_settings(port: u16, admin_port: u16) -> Settings {
+    Settings {
+        transport: "streamable-http".into(),
+        secret_key: Some(SecretKey::parse(&"11".repeat(32)).expect("secret key")),
+        transport_key: Some(SecretKey::parse(&"22".repeat(32)).expect("transport key")),
+        port,
+        admin_port,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn admin_surface_defaults_are_login_ready() {
+    let s = Settings::default();
+    assert_eq!(s.admin_port, 8080, "管理面独立端口，默认 8080");
+    assert_eq!(s.admin_session_ttl_secs, 43_200, "默认 12 小时");
+    assert!(
+        !s.admin_cookie_secure,
+        "默认允许内网 HTTP：Secure 会让浏览器不回传 cookie（登录后立刻 401）"
+    );
+}
+
+#[test]
+fn admin_port_must_differ_from_mcp_port() {
+    let err = http_settings(8080, 8080)
+        .validate()
+        .expect_err("端口相同必须拒绝启动");
+    assert!(
+        err.contains("JUMCP_ADMIN_PORT") && err.contains("JUMCP_MCP_PORT"),
+        "错误必须点名两个变量: {err}"
+    );
+    http_settings(8000, 8080)
+        .validate()
+        .expect("不同端口应当通过");
+}
+
+#[test]
+fn admin_session_ttl_must_be_positive() {
+    let mut s = http_settings(8000, 8080);
+    s.admin_session_ttl_secs = 0;
+    let err = s.validate().expect_err("TTL 必须为正数");
+    assert!(err.contains("JUMCP_ADMIN_SESSION_TTL_SECS"), "{err}");
+}

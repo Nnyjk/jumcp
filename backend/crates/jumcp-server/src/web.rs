@@ -5,7 +5,7 @@
 //! - 路径空间隔离：`/admin`、`/mcp`、`/health` 永远归后端，未知的这类路径返回 JSON 404，
 //!   **不**回退成 `index.html`——否则管理 API 拼错路径会被前端当成页面，调用方拿到 200 HTML。
 //! - 静态文件的路径解析交给 `tower-http` 的 `ServeDir`/`ServeFile`：不手写路径拼接，穿越由上游拒绝。
-//! - 不注入任何 `Authorization`：管理台前端不持有凭证，鉴权由网关/BFF 在同源路径上完成。
+//! - 不注入任何 `Authorization`：管理台前端不持有凭证，登录靠 `POST /admin/login` 下发的 HttpOnly 会话 cookie。
 
 use axum::body::Body;
 use axum::extract::State;
@@ -18,7 +18,12 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
-/// 后端既有路由前缀：这些路径空间永不回退到 SPA。
+/// 后端路径空间：这两个面上的 `/admin`、`/mcp`、`/health`、`/internal` 都**归后端**，
+/// 未命中也只回 JSON 404，绝不回退 SPA。
+///
+/// 管理面的清单**故意包含** `/mcp` 与 `/internal`：那不是它提供的路由，而是它必须拒绝的
+/// 另一个面的命名空间。少写这条，浏览器访问 `/mcp/typo` 会拿到一张管理台 HTML（200），
+/// 排查时看到的是"页面正常"，而真正的问题是端点在另一个端口。
 const API_PREFIXES: &[&str] = &["/admin", "/mcp", "/health", "/internal"];
 
 /// 带内容哈希的构建产物（Vite 写进 `assets/`）：内容变了文件名就变，可以长期缓存。
@@ -46,23 +51,17 @@ impl WebAssets {
     async fn respond(&self, req: axum::extract::Request) -> Response {
         let path = req.uri().path().to_string();
         let method = req.method().clone();
+        // 后端路径空间优先：未命中的管理/MCP 路径必须是 404，而不是 SPA 页面。
+        // 顺序也很重要：分面之后 `/mcp`、`/admin/*` 在"另一面"上属于"这个面没有该端点"，
+        // 先判 405 会让 `POST /mcp` 在管理面回 405（"方法不对"），误导客户端以为换个方法就能用。
+        if is_api_path(&path) {
+            return not_found_response(&path);
+        }
         if !matches!(method, Method::GET | Method::HEAD) {
             return (
                 StatusCode::METHOD_NOT_ALLOWED,
                 [(header::ALLOW, "GET, HEAD")],
                 "method not allowed\n",
-            )
-                .into_response();
-        }
-        // 后端路径空间优先：未命中的管理/MCP 路径必须是 404，而不是 SPA 页面。
-        if is_api_path(&path) {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": {
-                    "code": "MCP_NOT_FOUND",
-                    "message": "未找到该路径",
-                    "data": {"path": path}
-                }})),
             )
                 .into_response();
         }
@@ -105,6 +104,27 @@ impl WebAssets {
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error\n").into_response(),
         }
     }
+}
+
+/// 统一的"路径不存在"响应：JSON 而不是 HTML，并带上路径便于对着日志分辨落在哪个面。
+pub(crate) fn not_found_response(path: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": {
+            "code": "MCP_NOT_FOUND",
+            "message": "未找到该路径",
+            "data": {"path": path}
+        }})),
+    )
+        .into_response()
+}
+
+/// 不托管静态站的面（MCP 面）的兜底：未知路径一律 JSON 404。
+///
+/// MCP 面上没有页面可言，`/`、`/admin/*`、拼错的路径都必须 404；用兜底而不是逐条 deny，
+/// 是因为新增路由时忘记补 deny 的代价是"悄悄多暴露一条路径"，兜底则是"悄悄少暴露"，方向相反。
+pub fn strict_fallback(app: Router) -> Router {
+    app.fallback(|req: axum::extract::Request| async move { not_found_response(req.uri().path()) })
 }
 
 /// 在 HTTP 应用上挂载静态托管：`web_dir` 为空时原样返回（不挂静态，行为不变）。

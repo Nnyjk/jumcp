@@ -99,6 +99,35 @@ pub(crate) fn tool_call(
     );
 }
 
+/// 平台面事件（`actor_type == "admin"` → 审计 `surface == "admin"`）。
+///
+/// 存在的理由：统计口径必须能把"管理台自己产生的调用"排除掉，而这条路径在测试里
+/// 只有直接写审计才能构造（MCP 面永远派生不出 admin 主体）。
+pub(crate) fn append_admin_event(
+    log: &AuditLog,
+    event_type: &str,
+    minutes: i64,
+    session: &str,
+    payload: Value,
+) {
+    log.append(AuditEvent {
+        tenant: "default".into(),
+        actor: ActorRef {
+            actor_type: "admin".into(),
+            id: "alice".into(),
+            role: "admin".into(),
+            token_id: None,
+            source: Some("admin-api".into()),
+        },
+        event_type: event_type.into(),
+        payload,
+        session_id: session.into(),
+        ts: minutes_ago(minutes),
+        event_id: String::new(),
+    })
+    .expect("append");
+}
+
 pub(crate) fn seed_template_capability(store: &CapabilityStore, id: &str) {
     store
         .register(
