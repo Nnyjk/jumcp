@@ -254,7 +254,7 @@ pub(crate) async fn tool_names_with_groups(app: &Router, token: &str, groups: &s
 }
 
 pub(crate) fn err_code(resp: &Value) -> String {
-    resp["result"]["content"]["error"]["code"]
+    resp["result"]["structuredContent"]["error"]["code"]
         .as_str()
         .unwrap_or_default()
         .to_string()

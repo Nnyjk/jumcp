@@ -353,7 +353,7 @@ async fn basic_precheck_matches_sanitized_exposed_name() {
     let denied = call_tool(&h.app, &token, "dots__orders-lookup", json!({})).await;
     assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
     assert_eq!(
-        denied["result"]["content"]["error"]["code"],
+        denied["result"]["structuredContent"]["error"]["code"],
         json!("MCP_CAPABILITY_NOT_FOUND"),
         "{denied}"
     );
@@ -489,7 +489,7 @@ async fn basic_members_bypass_group_scope_but_not_the_allowlist() {
     let denied = call_tool(&h.app, &without, "mixed__echo", json!({})).await;
     assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
     assert_eq!(
-        denied["result"]["content"]["error"]["code"],
+        denied["result"]["structuredContent"]["error"]["code"],
         json!("MCP_CAPABILITY_NOT_FOUND"),
         "{denied}"
     );
@@ -532,7 +532,7 @@ async fn basic_members_appear_in_group_index_only_when_overridden() {
     .await;
 
     let groups = call_tool(&h.app, &token, "list_groups", json!({})).await;
-    let rows = groups["result"]["content"]
+    let rows = groups["result"]["structuredContent"]["groups"]
         .as_array()
         .expect("groups")
         .clone();
@@ -544,7 +544,9 @@ async fn basic_members_appear_in_group_index_only_when_overridden() {
     let (status, body) = put_basic_tools(&h, "mixed", json!({"echo": true})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let groups = call_tool(&h.app, &token, "list_groups", json!({})).await;
-    let rows = groups["result"]["content"].as_array().expect("groups");
+    let rows = groups["result"]["structuredContent"]["groups"]
+        .as_array()
+        .expect("groups");
     let basic = rows
         .iter()
         .find(|g| g["group"] == json!("basic"))

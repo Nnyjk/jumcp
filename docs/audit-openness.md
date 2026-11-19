@@ -402,7 +402,7 @@ DELETE /admin/groups/{code}
 
 ### 11.1 鉴权边界
 
-- `/mcp` **只**接受 `Authorization: Bearer <平台生成的 access token>`；token 必须命中 `access_tokens` 且状态为 `active`（未撤销、未过期）。缺 token / 未知 / 撤销 / 过期一律 `MCP_UNAUTHORIZED`（HTTP 200 + JSON-RPC 错误，与既有入口一致），不存在静态 token 兜底。
+- `/mcp` 接受 `Authorization: Bearer <平台生成的 access token>`；没有该头时回落到 `?access_token=<token>`（仅此一个参数名，仅 MCP 面；两者同时给以头为准）。token 必须命中 `access_tokens` 且状态为 `active`（未撤销、未过期）。缺 token / 未知 / 撤销 / 过期一律 `MCP_UNAUTHORIZED`（HTTP 200 + JSON-RPC 错误，与既有入口一致），不存在静态 token 兜底。
 - 成功鉴权后刷新 `last_used_at`；刷新失败只记日志，不让已认证请求失败。
 - 管理面 `/admin/*` 仍只认 `JUMCP_ADMIN_TOKENS`（静态，必需），数据库 token 不能访问管理面。
 - HTTP 启动只要求管理面 token（`JUMCP_ADMIN_TOKENS`），不要求 `JUMCP_AGENT_TOKENS`。

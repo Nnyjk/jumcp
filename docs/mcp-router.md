@@ -285,6 +285,21 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 
 旧版 HTTP+SSE 传输不实现。
 
+### 5.1 `/mcp` 鉴权
+
+凭证取自 `Authorization: Bearer <平台 token>`；**没有该头**时回落到查询参数 `access_token`
+（`POST /mcp?access_token=<token>`）。只认 `access_token` 这一个参数名，空值等于没带。
+
+- 回落仅限 MCP 面：`/admin/*` 与 `/internal/mcp/*` 一律只认头，URL 上的 token 不被接受。
+- 头与 query 同时给以头为准（不会因为 query 里带了无效 token 而拒绝带合法头的请求）。
+- 两种来源走同一条校验（`access_tokens` 查表 + 常量时间比较），未知/撤销/过期一律
+  `MCP_UNAUTHORIZED`（HTTP 200 + JSON-RPC 错误），不因"没头"放行 `initialize`；
+  审计里的 `actor.token_id` / `source` / 组同样由该 token 派生。
+- 为什么存在这条通道：不支持自定义请求头的 MCP 客户端（例如只在 `tools/call` 上带
+  `Authorization` 的 mcp-go 系客户端）会在 `initialize` 阶段被拒。**不支持自定义头的
+  MCP 客户端可用 `?access_token=`（仅 /mcp；token 会出现在 URL 中，故仅限内网、且应可轮换）**。
+
+
 ## 6. 可见性、预算与调用解析
 
 - 上游工具默认只对 `group ∈ scope.groups` 的请求可见/可调；组不在 scope 内时与"不存在"同构。

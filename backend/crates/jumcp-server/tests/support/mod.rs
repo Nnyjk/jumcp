@@ -274,7 +274,7 @@ pub fn rpc(method: &str, params: Value) -> Value {
 }
 
 pub fn err_code(resp: &Value) -> String {
-    resp["result"]["content"]["error"]["code"]
+    resp["result"]["structuredContent"]["error"]["code"]
         .as_str()
         .unwrap_or_default()
         .to_string()

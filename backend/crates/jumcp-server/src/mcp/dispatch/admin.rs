@@ -70,11 +70,14 @@ impl McpServer {
         result: Value,
         actor: &Actor,
     ) -> Value {
-        let content = result
+        // 结构化结果在 `structuredContent`：`content` 已是 content block 数组，不能再当
+        // 对象取 `error`/估算 tokens。错误路径也带 `structuredContent`，所以这里两种
+        // outcome 读同一处，台账口径不变。
+        let structured = result
             .get("result")
-            .and_then(|r| r.get("content"))
+            .and_then(|r| r.get("structuredContent"))
             .unwrap_or(&result);
-        let payload = match content.get("error") {
+        let payload = match structured.get("error") {
             Some(error) => {
                 let mut base = audit_base("tool", tool, "invoke", "error");
                 base.insert(
@@ -95,7 +98,7 @@ impl McpServer {
             }
             None => audit_data(
                 audit_base("tool", tool, "invoke", "ok"),
-                json!({"arguments": args, "tokens": estimate_tokens(content)}),
+                json!({"arguments": args, "tokens": estimate_tokens(structured)}),
             ),
         };
         // 审计写失败必须上抛（与其它入口同一约定），不吞成"调用成功"。
@@ -179,17 +182,15 @@ impl McpServer {
         {
             return err_tool(id, &e);
         }
-        ok(
+        tool_result(
             id,
             json!({
-                "content": {
-                    "id": record.capability_id,
-                    "status": record.status,
-                    "version": record.version,
-                    "definition_hash": record.definition_hash
-                },
-                "isError": false
+                "id": record.capability_id,
+                "status": record.status,
+                "version": record.version,
+                "definition_hash": record.definition_hash
             }),
+            false,
         )
     }
 
@@ -205,13 +206,7 @@ impl McpServer {
             Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
         };
         let items: Vec<Value> = records.iter().map(crate::admin::queue_item).collect();
-        ok(
-            id,
-            json!({
-                "content": {"items": items, "total": items.len()},
-                "isError": false
-            }),
-        )
+        tool_result(id, json!({"items": items, "total": items.len()}), false)
     }
 
     /// `admin_audit_queries`：只读审计查询，limit 夹紧在 1..=200（与 HTTP 管理面同一上限）。
@@ -257,12 +252,16 @@ impl McpServer {
             // 非法过滤键属于"请求被拒"，按契约写 policy_decision。
             Err(e) => return self.reject(id, actor, &e, json!({"tool": TOOL})),
         };
-        ok(
+        tool_result(
             id,
             json!({
-                "content": {"events": events, "total": total, "limit": limit, "offset": offset, "order": if order == jumcp_core::audit::Order::Asc { "asc" } else { "desc" }},
-                "isError": false
+                "events": events,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "order": if order == jumcp_core::audit::Order::Asc { "asc" } else { "desc" }
             }),
+            false,
         )
     }
 
@@ -314,18 +313,16 @@ impl McpServer {
                 );
             }
         };
-        ok(
+        tool_result(
             id,
             json!({
-                "content": {
-                    "id": record.capability_id,
-                    "discoverable": record.discoverable,
-                    "callable": record.callable,
-                    "version": record.version,
-                    "last_changed_at": record.updated_at
-                },
-                "isError": false
+                "id": record.capability_id,
+                "discoverable": record.discoverable,
+                "callable": record.callable,
+                "version": record.version,
+                "last_changed_at": record.updated_at
             }),
+            false,
         )
     }
 }

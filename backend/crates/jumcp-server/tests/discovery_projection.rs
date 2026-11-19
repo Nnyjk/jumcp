@@ -140,7 +140,7 @@ async fn search(server: &McpServer, query: &str) -> Vec<String> {
             "params":{"name":"search_capabilities","arguments":{"query":query,"limit":50}}
         }))
         .await;
-    resp["result"]["content"]
+    resp["result"]["structuredContent"]["results"]
         .as_array()
         .map(|hits| {
             hits.iter()
@@ -166,7 +166,7 @@ async fn list_groups(server: &McpServer) -> Vec<String> {
             "params":{"name":"list_groups","arguments":{}}
         }))
         .await;
-    resp["result"]["content"]
+    resp["result"]["structuredContent"]["groups"]
         .as_array()
         .map(|groups| {
             groups
@@ -193,7 +193,7 @@ async fn tool_names(server: &McpServer) -> Vec<String> {
 }
 
 fn err_code(resp: &Value) -> String {
-    resp["result"]["content"]["error"]["code"]
+    resp["result"]["structuredContent"]["error"]["code"]
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -244,7 +244,7 @@ async fn published_template_becomes_visible_without_restart() {
 
     let described = describe(&h.server, "order.daily_summary").await;
     assert_eq!(described["result"]["isError"], json!(false));
-    let content = &described["result"]["content"];
+    let content = &described["result"]["structuredContent"];
     assert_eq!(content["kind"], json!("template"));
     assert_eq!(content["source"], json!("managed"));
     assert_eq!(content["group"], json!("db.read.analytics"));
@@ -285,7 +285,7 @@ async fn published_template_becomes_visible_without_restart() {
     );
     let republished = describe(&h.server, "order.daily_summary").await;
     assert_eq!(
-        republished["result"]["content"]["one_line"],
+        republished["result"]["structuredContent"]["one_line"],
         json!("按日汇总订单（v2）"),
         "发布新版本后下一个请求必须看到新定义"
     );
@@ -434,7 +434,10 @@ async fn builtin_ids_reject_every_maintenance_write() {
 
     // 内置能力仍然可被检索/描述：拒绝写不等于拒绝读。
     let described = describe(&h.server, "search_capabilities").await;
-    assert_eq!(described["result"]["content"]["source"], json!("builtin"));
+    assert_eq!(
+        described["result"]["structuredContent"]["source"],
+        json!("builtin")
+    );
 }
 
 #[tokio::test]
@@ -457,7 +460,7 @@ async fn tools_list_keeps_one_copy_of_each_builtin() {
     // describe 内置工具：schema 与 tools/list 同源（tool_definitions），且标记 builtin。
     let described = describe(&h.server, "search_capabilities").await;
     assert_eq!(described["result"]["isError"], json!(false));
-    let content = &described["result"]["content"];
+    let content = &described["result"]["structuredContent"];
     assert_eq!(content["source"], json!("builtin"));
     assert_eq!(content["kind"], json!("tool"));
     assert_eq!(
@@ -499,15 +502,18 @@ async fn endpoint_capability_projection_never_panics_on_missing_schema() {
     let bare = describe(&h.server, "cap.endpoint_bare").await;
     assert_eq!(bare["result"]["isError"], json!(false));
     assert_eq!(
-        bare["result"]["content"]["params_schema"],
+        bare["result"]["structuredContent"]["params_schema"],
         json!({"type": "object", "properties": {}}),
         "无 schema 的 endpoint 退化为空对象 schema（不 panic）"
     );
-    assert_eq!(bare["result"]["content"]["one_line"], json!("裸端点"));
+    assert_eq!(
+        bare["result"]["structuredContent"]["one_line"],
+        json!("裸端点")
+    );
 
     let declared = describe(&h.server, "cap.endpoint_declared").await;
     assert_eq!(
-        declared["result"]["content"]["params_schema"]["properties"]["day"]["type"],
+        declared["result"]["structuredContent"]["params_schema"]["properties"]["day"]["type"],
         json!("string"),
         "定义自带的 inputSchema 必须原样使用"
     );
