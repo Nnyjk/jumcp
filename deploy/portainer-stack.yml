@@ -3,7 +3,7 @@ version: "3.8"
 # jumcp 的 Swarm / Portainer Stack 定义。
 #
 # 用法：
-#   JUMCP_ADMIN_TOKENS="admin:<token>" docker stack deploy -c deploy/portainer-stack.yml jumcp
+#   JUMCP_ADMIN_USERNAME=admin JUMCP_ADMIN_PASSWORD=<至少 12 位> docker stack deploy -c deploy/portainer-stack.yml jumcp
 #   Portainer：Stacks → Add stack → 粘贴本文件或连 Git，在 Environment variables 里填必需变量。
 #
 # 约束（与运行时设计一致，不要在生产改）：
@@ -29,9 +29,11 @@ services:
     image: ${JUMCP_IMAGE:-ghcr.io/nnyjk/jumcp:latest}
 
     environment:
-      # 必填：`id:token` 逗号分隔，token 至少 16 位。未设置/为空时 interpolation 直接失败（fail-fast），
-      # 与镜像内「HTTP 模式缺 JUMCP_ADMIN_TOKENS 拒绝启动」的行为一致。
-      JUMCP_ADMIN_TOKENS: ${JUMCP_ADMIN_TOKENS:?必须设置 JUMCP_ADMIN_TOKENS（格式 id:token,id:token，token 至少 16 位）}
+      # 必填：空库首次启动播种的管理员账号（用户名 3–32 位 [a-z0-9._-]，口令至少 12 位）。
+      # 未设置时 interpolation 直接失败（fail-fast），与镜像内「空库缺初始管理员拒绝启动」一致。
+      # 库里已有账号后这两个变量不再生效：改口令走管理台 PATCH /admin/admins/{id}。
+      JUMCP_ADMIN_USERNAME: ${JUMCP_ADMIN_USERNAME:?必须设置 JUMCP_ADMIN_USERNAME（3–32 位 [a-z0-9._-]）}
+      JUMCP_ADMIN_PASSWORD: ${JUMCP_ADMIN_PASSWORD:?必须设置 JUMCP_ADMIN_PASSWORD（至少 12 位）}
       # 可选：`agent_id:role:token`，只在 access_tokens 表为空时一次性导入（引导用），表非空后不再生效。
       JUMCP_AGENT_TOKENS: ${JUMCP_AGENT_TOKENS:-}
       # 两个面必须用不同端口，相同即拒绝启动（配置校验，不是运行时事故）。

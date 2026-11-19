@@ -13,7 +13,7 @@
 |---|---|
 | `event_id` | 32 位无连字符 UUID，追加时生成 |
 | `ts` | RFC3339，UTC，纳秒或微秒小数位；管理台按本地时区显示到毫秒并标注 UTC 偏移，同一秒内的事件可据此排序 |
-| `actor` | `type`∈{`admin`,`agent`}，`id` 为凭证派生主体（admin 由 `JUMCP_ADMIN_TOKENS` 派生，agent 由数据库 access token 的 `caller` 派生），`role` 为角色名。可选键 `token_id`（数据库 token id）与 `source`（MCP token 配置的 `source` / 管理面固定 `admin-api`）只在有值时出现；stdio 与管理面静态 token 不写 `token_id`。未认证失败会留下 `id` 为空串的记录 |
+| `actor` | `type`∈{`admin`,`agent`}，`id` 为凭证派生主体（admin 由管理员账号的 `username` 派生，agent 由数据库 access token 的 `caller` 派生），`role` 为角色名。可选键 `token_id`（数据库 token id）与 `source`（MCP token 配置的 `source` / 管理面固定 `admin-api`）只在有值时出现；stdio 与管理员账号都不写 `token_id`。未认证失败会留下 `id` 为空串的记录 |
 | `event_type` | 闭集：`tools_list_served`、`capability_search`、`capability_describe`、`tool_call`、`template_run`、`policy_decision`、`admin_change` |
 | `prev_hash` / `hash` | 哈希链；`hash = sha256(canonical(envelope 去 hash) + prev_hash)`，SHA-256 64 位小写 hex。首条 `prev_hash` 为空串 |
 | `surface` | 事件来自哪个面：`admin` / `mcp`（旧行为空串）。**由 `actor.type` 派生**（`admin` → `admin`，其余 → `mcp`），不是调用点传参；**不参与哈希**，因此加列/改口径都不会让历史链失效 |
@@ -137,7 +137,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 ```
 响应: { events[], total, limit, offset, order }
 参数: tenant, event_type, event_id, object_type, object_id,
-      actor_id, actor_role, token_id, ts_after, ts_before, surface,
+      actor_id, actor_role, token_id, surface, ts_after, ts_before,
       limit, offset, order
 ```
 
@@ -145,7 +145,7 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 - `limit` 默认 50、上限 200（越界夹紧）；`offset` 最小 0。
 - `object_type` / `object_id` 由 `json_extract(payload, …)` 匹配，因此**只命中新格式事件**（旧行没有这些键）。
 - `token_id` 由 `json_extract(actor_json, '$.token_id')` 匹配，同样只命中带 token 来源的新事件；旧事件与管理面静态 token 事件不被命中。
-- `surface` 按列匹配（`admin` / `mcp`，也接受多值）。旧行为的空串只有显式传 `surface=` 空值时才命中——它是历史遗留，不是第三个面。
+- `surface`∈{`admin`,`mcp`,`all`}，**默认 `all`**（不插面过滤，历史行 `surface=''` 也可见）：agent 发起的治理写 `admin_change`（注册模板 / 改可见性）落在 `mcp` 面，缺省全量才能从审计里提取高频查询 → 定制化；MCP 鉴权噪音用 `event_type` / `actor_id` 收窄，不由面隐藏。其它取值返回 `MCP_BAD_REQUEST`，`data` 为 `{"field":"surface","value":<原值>,"supported":["admin","mcp","all"]}`。
 - `event_type` 不做闭集校验，未知类型返回空集。
 - 非法过滤键或非法 `order` 返回 `MCP_FILTER_UNSUPPORTED` / `MCP_BAD_REQUEST`，并写一条 `policy_decision`。
 
@@ -158,15 +158,16 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 |---|---|
 | `GET /admin/tools/stats`（工作台/工具排行/失败榜） | 只统计 `surface="mcp"` 的 `tool_call` 与 `template_run`；内置工具的台账行仍在（`calls=0`） |
 | `GET /admin/tools/{id}/calls`（调用明细） | 同上，排除平台面 |
-| `GET /admin/audit-events`（审计查询） | **不排除**：管理面事件照常返回，用 `surface` 参数区分 |
+| `GET /admin/audit-events`（审计查询） | 缺省全量（`surface=all`）；需要单面时用 `surface=admin` / `surface=mcp` 收窄 |
 
-被排除的事件在审计里仍可查——"不计入统计"不等于"不可见"，这是可复核的前提。
-`surface_not` 是内部过滤键（统计用它排除平台面），未列入对外支持的过滤键。
+统计排除平台面，是为了让工作台不被自己的刷新刷量；审计查询缺省全量，是为了让 MCP 面的
+`tool_call` 与 agent 发起的 `admin_change` 都对平台可见——两处口径独立。`surface_not` 仍是内部过滤键
+（统计侧使用），不在 `/admin/audit-events` 的对外过滤契约里。
 
 ## 7. 管理面接口
 
-`/health` 与 `/admin/login` 免鉴权；其余 `/admin/*` 接受管理台会话 cookie（`POST /admin/login` 下发，
-cookie 优先）或 `Authorization: Bearer <JUMCP_ADMIN_TOKENS 中的 token>`，两者都没有/无效返回 401 `MCP_UNAUTHORIZED`；
+`/health` 与 `/admin/login` 免鉴权；其余 `/admin/*` **只认管理台会话 cookie**（`POST /admin/login` 用账号口令换取），
+没有 cookie 或会话无效一律 401 `MCP_UNAUTHORIZED`（不带 Bearer 回落，管理面没有静态令牌）。
 cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `MCP_FORBIDDEN`（契约见 `docs/mcp-router.md` §9.0–9.1）。
 
 ### 7.1 `GET /admin/me`
@@ -175,7 +176,25 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
 { id, role, type }
 ```
 
-即当前 token 派生主体，与审计信封 `actor` 同义，用于前端确认当前操作主体，并把主体写进审批记录与审计。
+即当前账号的 `username`，与审计信封 `actor` 同义，用于前端确认当前操作主体，并把主体写进审批记录与审计。
+
+### 7.1.1 管理员账号
+
+首个管理员由环境变量 `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD`（≥12 位）在空库首次启动时播种，
+口令以 Argon2id 哈希落库（`admin_users.password_hash`），不存明文、不回显。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/admin/admins` | `{items:[{id,username,state,created_at,updated_at,last_login_at}],total}` |
+| `POST` | `/admin/admins` | body `{username,password}` → 201 `{admin:{…}}` |
+| `PATCH` | `/admin/admins/{id}` | `username`/`password`/`state`（`active`/`disabled`）任意子集 → 200 `{admin:{…}}`；改口令或禁用会吊销该账号全部会话 |
+| `DELETE` | `/admin/admins/{id}` | 204，同时吊销其会话 |
+
+- `username` 3–32 位 `[a-z0-9._-]`，一律转小写存储；口令 ≥12 位。违规 → 400 `MCP_VALIDATION_ERROR`。
+- 重名（大小写不敏感）→ 409 `MCP_ADMIN_USER_EXISTS`；未知 id → 404 `MCP_ADMIN_USER_NOT_FOUND`。
+- 会让「没有任何 `active` 管理员」的操作 → 409 `MCP_ADMIN_LAST_ACTIVE`；删除自己 → 409 `MCP_ADMIN_SELF_DELETE`。
+- 每次增删改写一条 `admin_change`，`payload.action` ∈{`admin.create`,`admin.update`,`admin.delete`}，
+  `payload.changes` 只记字段名，**不写口令与哈希**。
 
 ### 7.2 `GET /admin/capabilities/{id}`
 
@@ -404,8 +423,8 @@ DELETE /admin/groups/{code}
 
 - `/mcp` 接受 `Authorization: Bearer <平台生成的 access token>`；没有该头时回落到 `?access_token=<token>`（仅此一个参数名，仅 MCP 面；两者同时给以头为准）。token 必须命中 `access_tokens` 且状态为 `active`（未撤销、未过期）。缺 token / 未知 / 撤销 / 过期一律 `MCP_UNAUTHORIZED`（HTTP 200 + JSON-RPC 错误，与既有入口一致），不存在静态 token 兜底。
 - 成功鉴权后刷新 `last_used_at`；刷新失败只记日志，不让已认证请求失败。
-- 管理面 `/admin/*` 仍只认 `JUMCP_ADMIN_TOKENS`（静态，必需），数据库 token 不能访问管理面。
-- HTTP 启动只要求管理面 token（`JUMCP_ADMIN_TOKENS`），不要求 `JUMCP_AGENT_TOKENS`。
+- 管理面 `/admin/*` 只认管理员会话 cookie（账号口令登录），数据库 access token 不能访问管理面。
+- HTTP 启动不要求 `JUMCP_AGENT_TOKENS`；空库里还没有管理员时要求 `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD`。
 
 ### 11.2 Actor 与来源
 

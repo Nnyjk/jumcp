@@ -9,7 +9,7 @@
 
 | category | 职责 | 工具 | 可见性判定 |
 |---|---|---|---|
-| `basic` | 基础元工具：走查工具目录/取 schema | `search_capabilities`、`describe_capability`、`list_groups` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
+| `basic` | 基础查询与计算：走查工具目录 / 取 schema / 按已发布模板取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
 | `analysis` | 工具列表分析、变更提交审计 | `admin_review_queue`、`admin_register_template`、`admin_set_visibility` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
 | `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
 
@@ -22,12 +22,12 @@
 
 ### `basic` 是代码内置组，不是授权组
 
-`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻三件内置元工具的 `group`
+`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻四件内置工具的 `group`
 就是 `basic`，上游可以把**个别**只读工具逐工具加入 `basic`（见 §2.1）。它不是配置组
 （`config/policy.toml` 不得定义）、不是管理组、也不是可授权组：
 
 - `GET /admin/groups` 固定返回一条合成条目：`{code:"basic", name:"基础工具", source:"builtin",
-  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 3 + 上游 basic 覆盖数,
+  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 4 + 上游 basic 覆盖数,
   token_count:0}`；`source` 过滤接受 `policy|managed|builtin`。
 - 创建/改名/删除组一律 409 `MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在
   `RESERVED_GROUP_NAMES`）；`basic` 不能出现在令牌的 `groups` 里（`token_options.groups`
@@ -36,7 +36,7 @@
 
 分类**不是授权组**，不改变权限判定：`analysis`/`admin` 这两类不是 `scope.groups` 的取值，
 `X-MCP-Tool-Groups` 收窄也不会改变常驻工具的可见性。常驻性由代码常量
-`RESIDENT_TOOL_NAMES` 判定（`basic` 的三件全是常驻工具）；`analysis` 与 `admin` 里的
+`RESIDENT_TOOL_NAMES` 判定（`basic` 的四件全是常驻工具）；`analysis` 与 `admin` 里的
 `admin_*` 一律要求组 `admin` 在 scope 内 **且** token allowlist 命中（`discovery::admin_enabled`
 与 allowlist 双重判定），分类标签既不放宽也不收紧这条规则。
 
@@ -68,6 +68,44 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 `describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（托管能力归 `analysis`）。
 组索引（`list_groups` 与 `tools/list` 的 `groups`）只统计上游等非内置来源：没有上游工具
 加入 `basic` 时索引里没有 `basic`，有覆盖时按生效组计数（常驻内置工具不计入）。
+
+### `db_run_template`：模板执行臂
+
+内置工具里**只有**这一条会碰数据源，也是"从审计提取高频查询 → 注册成模板 → agent 调用"
+闭环的执行端。agent 不能自由拼 SQL，只能调注册期已过 sqlguard 的固定查询路径。
+
+`inputSchema`：`{"template_id": string(必填), "params": object, "version": integer}`。
+`params` 按模板定义里的具名参数取值（缺失/类型/枚举/column_ref 白名单在渲染期判定）。
+
+调用顺序是契约（`backend/crates/jumcp-server/src/mcp/dispatch/template.rs`）：
+
+1. **调用面判定**：`published ∧ callable ∧ group ∈ scope`（`Service::callable_capabilities`
+   + `catalog::find`）。可见性（`discoverable`）不决定可调用性，组不在 scope 内与"不存在"同构，
+   一律 `MCP_CAPABILITY_NOT_FOUND`。
+2. **版本钉住**：`TemplateRegistry::pin(session_key(actor), template_id, version, current)`，
+   键是 `<tenant>:<actor_id>`。同一会话显式换版本 → `MCP_VERSION_CONFLICT`
+   （`data.pinned`/`data.requested`）。钉住只在进程内存里，重启或换 agent 身份即失效。
+3. **渲染**：`CompiledTemplate::render(&params)` → `PreparedQuery{sql, values, params_hash}`，
+   命名占位符在注册期已改写为 `?`。
+4. **结果缓存**：键 `(template_id, version, params_hash)`，TTL 取模板的 `result_cache_ttl_s`
+   （≤0 不缓存，上限 300 秒）。命中即不执行、不再计预算。
+5. **执行**：schema 只能收窄连接白名单（模板 `constraints.allowed_schemas` 为空则用连接的
+   白名单，越界 → `MCP_SCHEMA_OUT_OF_SCOPE`）；`QueryParams` 取模板的 `auto_limit` /
+   `statement_timeout_ms`，单元格 `cell_char_limit=200`、`cell_char_offset=0`。
+6. **结果预算**：结果 token 数超过模板 `constraints.max_result_tokens` → `MCP_BUDGET_EXCEEDED`
+   （`data.scope="max_result_tokens"`）；否则记入会话预算，预算溢出按服务端策略
+   `OverflowPolicy::Fail`（回错误）或 `Truncate`（回摘要）。
+
+返回：`structuredContent` 为 `{content, cache: "hit"|"miss", version}`；`content` 里带上
+`template_id`/`version`/`cache`/`variant` 与预算 `summary`。预算摘要模式下只回
+`{row_count, summary:true, template_id, version}`。
+
+**升级注意**：`db_run_template` 是恢复后的内置 id，已存在的访问令牌如果 `builtin_tools`
+是显式白名单（既不含它、也不含 `*` 或其它通配），调用会被 allowlist 门禁拒绝——
+`MCP_CAPABILITY_NOT_FOUND`（`data.tool="db_run_template"`，拒绝判定记
+`policy_decision.detail.surface="mcp/builtin-allowlist"`），与此同时该工具也不会出现在它的
+`tools/list` 里。处理方式：重签发令牌并勾选该工具，或把白名单改成含 `*`。
+`tools/list` 与 `tools/call` 用同一处判定，所以"列表里没有"就"调不了"，不会出现半可见。
 
 ## 2. 上游配置模型
 
@@ -279,7 +317,7 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 注册与连接；命令用
 `tokio::process::Command` 直接 spawn（不经过 shell；`command` 按 §3.2 解析，随包分发的
 连接器不必写绝对路径），显式 `.env_remove` 掉
-`JUMCP_ADMIN_TOKENS` 与 `JUMCP_AGENT_TOKENS`，stdin/stdout 走行分隔 JSON-RPC，stderr 丢弃
+`JUMCP_AGENT_TOKENS`，stdin/stdout 走行分隔 JSON-RPC，stderr 丢弃
 （上游可能把 env 里的凭据打到 stderr，而 `status_message` 会出现在 GET 响应里）。
 进程随连接池回收（`kill_on_drop`）。
 
@@ -351,6 +389,25 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   `data` 含 `upstream_id`、`upstream_tool`、`exposed_tool`、`duration_ms`、`outcome`、
   `definition_hash` 与 `arguments`。`arguments` 按 key 递归脱敏（`authorization` /
   `token` / `password` / `secret` / `api_key` / `apikey` / `cookie` → `***`）。
+- 模板执行写 `template_run`（MCP 面唯一会碰数据源的内置工具，也是 `/admin/tools/stats`
+  与 `/admin/tools/{id}/calls` 里模板行的唯一数据来源）：`object_type="template"`、
+  `object_id=<template_id>`、`action="invoke"`、`outcome="ok"|"summary"|"unknown"|"error"`，
+  `data` 字段固定为：
+  | 键 | 含义 |
+  |---|---|
+  | `arguments` | agent 的原始入参（`template_id`/`params`/`version`，不脱敏） |
+  | `executed_script` | 渲染后的 SQL（命名占位符已改写为 `?`） |
+  | `bound_params` | 渲染后的位置参数数组 |
+  | `tokens` | 结果 token 数（i64） |
+  | `cache` | `"hit"` / `"miss"` |
+  | `elapsed_ms` | i64；缓存命中固定 0 |
+  | `version` | 实际执行的模板版本（i64） |
+  | `row_count` / `truncated` | 成功路径才有 |
+
+  失败（含执行前被拒：模板不存在/未发布/组不在 scope/版本冲突/渲染失败）写同一条
+  `template_run`，`outcome="error"`（执行结果未知时 `"unknown"`），`payload` 顶层带
+  `error_code`/`error_message`。模板调用**不再**同时写 `tool_call`，两类事件不会对同一次
+  失败各计一遍。
 - 管理面写操作写 `admin_change`：`object_type="upstream"`，`action` ∈
   `create|update|delete|refresh|update_tool_groups`；`changes` 只含真实变化的字段（env/headers 只输出键与
   脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`group`/`category`/
@@ -361,6 +418,9 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   无真实变化不写审计。
 - `definition_hash` 是对完整配置（含 env/headers 值）的 sha256，用于连接池失效与审计回溯；
   只输出哈希。
+- `/admin/audit-events` 的 `surface` 过滤为 `admin|mcp|all`，**缺省 `all`**：MCP 面的
+  `tool_call` 与 agent 发起的 `admin_change` 因此对平台可见；鉴权噪音用 `event_type` /
+  `actor_id` 收窄，不由面隐藏。
 - 审计、日志、GET 响应都不出现上游密钥明文。
 
 ## 9. 管理面 API
@@ -383,26 +443,33 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   （绑错端口时症状是 404 而不是鉴权失败，很难查）。
 - 管理面不托管 `/mcp`，MCP 面不托管任何页面：根路径在 MCP 面是 JSON 404。
 
-### 9.1 登录与会话（管理台不再需要 Bearer）
+### 9.1 登录与会话（管理面只认账号密码 + cookie）
 
-浏览器不发 `Authorization`，因此管理面提供登录面，身份落 HttpOnly cookie：
+管理面没有共享令牌：身份来自管理员账号登录换来的 HttpOnly cookie。
 
 | 方法与路径 | 鉴权 | 结果 |
 |---|---|---|
-| `POST /admin/login` | 不需要 | body `{"token":"<admin token>"}` → `204` + `Set-Cookie: jumcp_session=<opaque>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<ttl>`（`Secure` 仅在 `JUMCP_ADMIN_COOKIE_SECURE=1` 时加）；错误 token `401 MCP_UNAUTHORIZED` |
+| `POST /admin/login` | 不需要 | body `{"username":"<账号>","password":"<口令>"}` → `204` + `Set-Cookie: jumcp_session=<opaque>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<ttl>`（`Secure` 仅在 `JUMCP_ADMIN_COOKIE_SECURE=1` 时加）；失败一律 `401 MCP_UNAUTHORIZED`，message 固定 `用户名或密码错误`（账号不存在 / 口令错 / 已停用不区分）。带 `Origin`/`Referer` 且跨站 → `403 MCP_FORBIDDEN`（不带的客户端照常放行）；body 非 JSON 或超 8KB → `400 MCP_BAD_REQUEST`，`data={"field":"body"}`，**不计入限流** |
 | `POST /admin/logout` | 可选 cookie | `204`（幂等）+ 立即吊销会话、下发 `Max-Age=0` 的同名 cookie |
-| `GET /admin/session` | cookie 或 Bearer | `200 {"actor":{"id":"<token id>","role":"admin","type":"admin"}}`；未登录 `401` |
+| `GET /admin/session` | cookie | `200 {"actor":{"id":"<username>","user_id":"<32 位 hex 账号主键>","role":"admin","type":"admin"}}`；未登录 `401` |
+| `GET /admin/me` | cookie | `200 {"id":"<username>","user_id":"<32 位 hex>","role":"admin","type":"admin"}`（平铺，与 session 的 `actor` 字段集合一致）；未登录 `401` |
+| `GET/POST /admin/admins`、`PATCH/DELETE /admin/admins/{id}` | cookie | 管理员账号管理，契约见 `docs/audit-openness.md` §7.1.1 |
 
-- 会话存在 `registry.sqlite3` 的 `admin_sessions(id, token_id, created_at, expires_at, last_seen_at)`：
+- 账号存在 `registry.sqlite3` 的 `admin_users(id, username, password_hash, state, created_at, updated_at, last_login_at)`：
+  口令是 Argon2id 哈希（`$argon2id$` 前缀），登录时用 password-hash 的常量时间比较。
+  空库首次启动由 `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD`（≥12 位）播种；缺变量或口令不合规即拒绝启动。
+- 会话存在 `admin_sessions(id, admin_user_id, created_at, expires_at, last_seen_at)`：
   `id` 是 32 字节 CSPRNG 的 hex（不可预测、与服务端记录常量时间比较）；
   TTL 由 `JUMCP_ADMIN_SESSION_TTL_SECS`（默认 43200 = 12 小时）控制，登录时顺手清理过期行。
-- `/admin/*` 鉴权：**cookie 优先，其次 Bearer**。cookie 无效/过期一律 `401 MCP_UNAUTHORIZED`，
-  **不回落**到 Bearer（避免"带着废 cookie 的脚本被另一套身份悄悄放行"）。脚本仍可只用 Bearer。
-- CSRF：身份来自 cookie 且方法非 `GET`/`HEAD` 时，要求 `Origin`（或 `Referer`）与 `Host` 同源，
-  否则 `403 MCP_FORBIDDEN`（缺头同样拒绝，fail-closed）。Bearer 身份不受此限。
-  `SameSite=Strict` 保留作为第二道防线。
-- 登录限流：同一来源 IP 60 秒内连续失败 5 次后 `429 MCP_RATE_LIMITED`。
+  改口令或停用账号会吊销该账号的全部会话。
+- `/admin/*` 鉴权：**只认 cookie**。没有 cookie 或会话无效（含账号已停用/已删除）一律 `401 MCP_UNAUTHORIZED`，
+  不回落到任何 Bearer。脚本也走 `POST /admin/login` 拿 cookie。
+- CSRF：方法非 `GET`/`HEAD` 时要求 `Origin`（或 `Referer`）与 `Host` 同源，
+  否则 `403 MCP_FORBIDDEN`（缺头同样拒绝，fail-closed）。`SameSite=Strict` 保留作为第二道防线。
+- 登录限流：按 `username` 计，60 秒内连续失败 5 次后 `429 MCP_RATE_LIMITED`。
   计数在**进程内存**里，因此前提是单副本部署（与 SQLite 单写者约束一致），滚动重启会清零。
+  写入前按当前时刻清除过期项，且总量封顶 1024 条（超限淘汰窗口起点最旧的一条）——
+  否则随机用户名轰炸就是一条可控的内存增长路径。
 - cookie 未启用 `Secure` 时启动日志会 warn 一次（"请仅在内网使用或启用 TLS"）：TLS 终止后
   仍需显式置 `JUMCP_ADMIN_COOKIE_SECURE=1`，否则 cookie 会以明文经 HTTP 传输。
 
