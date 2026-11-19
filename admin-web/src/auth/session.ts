@@ -11,7 +11,7 @@ export interface AuthValue {
   session: SessionState
   /** 探测失败（非 401，如后端不可达）时重试探测。 */
   retry: () => void
-  signIn: (token: string) => Promise<void>
+  signIn: (username: string, password: string) => Promise<void>
   signOut: () => Promise<void>
 }
 

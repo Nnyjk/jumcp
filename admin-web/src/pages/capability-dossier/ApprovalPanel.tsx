@@ -378,7 +378,7 @@ export function ApprovalPanel({
                   className="inline-link"
                   onClick={() => openAudit({ objectId: detail.id })}
                 >
-                  在审计查询查看
+                  在审计中查看
                 </button>
               </>
             ) : (
@@ -389,7 +389,7 @@ export function ApprovalPanel({
                   className="inline-link"
                   onClick={() => openAudit({ objectId: detail.id })}
                 >
-                  在审计查询查看
+                  在审计中查看
                 </button>
               </>
             )}

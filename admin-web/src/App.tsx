@@ -12,12 +12,12 @@ import LoginPage, { SessionSplash, SessionUnavailable } from './pages/login'
 import { AdminViewContext, VIEW_TITLE, useAdminViewStack } from './viewStack'
 
 // 路由级分包：工作台是入口页面保持静态，其余页面按需加载，避免单包超过 500 kB。
-const ReviewQueuePage = lazy(() => import('./pages/review-queue'))
-const AuditQueryPage = lazy(() => import('./pages/audit-query'))
+const AuditPage = lazy(() => import('./pages/audit'))
+const AuditView = lazy(() => import('./pages/audit').then((module) => ({ default: module.AuditView })))
+const AdminsPage = lazy(() => import('./pages/admins'))
 const ExceptionPage = lazy(() => import('./pages/ExceptionPage'))
 const GroupsPage = lazy(() => import('./pages/groups'))
 const TokensPage = lazy(() => import('./pages/tokens'))
-const HealthPage = lazy(() => import('./pages/HealthPage'))
 const ToolsPage = lazy(() => import('./pages/tools'))
 const UpstreamsPage = lazy(() => import('./pages/upstreams'))
 const CapabilityDossierPage = lazy(() => import('./pages/capability-dossier'))
@@ -39,14 +39,14 @@ const DASHBOARD: PageMeta = {
 
 const NAV_ITEMS: PageMeta[] = [
   DASHBOARD,
-  { to: '/review', label: '审核队列', icon: 'review', title: '审核队列' },
   { to: '/tools', label: '工具', icon: 'tools', title: '工具台账' },
   { to: '/upstreams', label: 'MCP 接入', icon: 'link', title: 'MCP 接入' },
   { to: '/groups', label: '组维护', icon: 'groups', title: '组维护' },
   { to: '/tokens', label: '访问令牌', icon: 'key', title: '访问令牌' },
-  { to: '/audit', label: '审计查询', icon: 'audit', title: '审计查询' },
+  // 审核队列已并入审计页签：侧栏只保留一个入口，避免两个导航项指向同一路由。
+  { to: '/audit', label: '审计', icon: 'audit', title: '审计' },
   { to: '/exceptions', label: '例外与可见性', icon: 'exception', title: '例外与可见性' },
-  { to: '/health', label: '健康', icon: 'health', title: '健康检查' },
+  { to: '/admins', label: '账户管理', icon: 'account', title: '账户管理' },
 ]
 
 const COLLAPSED_KEY = 'jumcp-admin-nav-collapsed'
@@ -91,7 +91,9 @@ function AppGate() {
 }
 
 function AdminShell() {
-  const { signOut } = useAuth()
+  const { session, signOut } = useAuth()
+  // AppGate 已保证此处是已登录态；用户名只用于侧栏展示，不参与任何鉴权判断。
+  const username = session.state === 'authenticated' ? session.actor.id : ''
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -149,6 +151,7 @@ function AdminShell() {
         <Sidebar
           items={NAV_ITEMS}
           collapsed={collapsed}
+          username={username}
           onToggleCollapsed={() => setCollapsed((value) => !value)}
           onNavigate={clear}
           onSignOut={() => {
@@ -169,7 +172,8 @@ function AdminShell() {
               {view === null ? (
                 <Routes>
                   <Route path="/" element={<DashboardPage />} />
-                  <Route path="/review" element={<ReviewQueuePage />} />
+                  {/* 审核队列已合并进审计页签：保留旧深链，落到对应页签。 */}
+                  <Route path="/review" element={<Navigate to="/audit?view=review" replace />} />
                   <Route path="/tools" element={<ToolsPage />} />
                   <Route path="/upstreams" element={<UpstreamsPage />} />
                   {/* 旧深链兼容：安装目录已并入「MCP 接入」页签。 */}
@@ -177,9 +181,9 @@ function AdminShell() {
                   <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
                   <Route path="/groups" element={<GroupsPage />} />
                   <Route path="/tokens" element={<TokensPage />} />
-                  <Route path="/audit" element={<AuditQueryPage />} />
+                  <Route path="/audit" element={<AuditPage />} />
                   <Route path="/exceptions" element={<ExceptionPage />} />
-                  <Route path="/health" element={<HealthPage />} />
+                  <Route path="/admins" element={<AdminsPage />} />
                   <Route path="*" element={<DashboardPage />} />
                 </Routes>
               ) : view.kind === 'tools' ? (
@@ -199,7 +203,7 @@ function AdminShell() {
                   backLabel={`返回${backLabel}`}
                 />
               ) : (
-                <AuditQueryPage
+                <AuditView
                   key={`audit:${view.tokenId ?? ''}:${view.objectId ?? ''}:${view.eventId ?? ''}`}
                   initial={{
                     tokenId: view.tokenId,

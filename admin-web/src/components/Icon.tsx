@@ -4,10 +4,9 @@ import type { ReactNode } from 'react'
 export type IconName =
   | 'logo'
   | 'dashboard'
-  | 'review'
   | 'audit'
   | 'exception'
-  | 'health'
+  | 'account'
   | 'tools'
   | 'groups'
   | 'key'
@@ -39,13 +38,6 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="13.4" y="13.4" width="7.2" height="7.2" rx="1.6" />
     </>
   ),
-  review: (
-    <>
-      <path d="M9 4.2h6v2.3H9z" />
-      <path d="M8.6 4.2H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-13a2 2 0 0 0-2-2h-1.6" />
-      <path d="m9 13.2 2.1 2.1 4-4" />
-    </>
-  ),
   audit: (
     <>
       <circle cx="12" cy="12" r="8.2" />
@@ -59,9 +51,10 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="10.2" cy="16" r="2.2" />
     </>
   ),
-  health: (
+  account: (
     <>
-      <path d="M3.2 12.4h3.4l2.1-5.1 3.1 9.6 2.4-6.2 1.5 3.1h5.1" />
+      <circle cx="12" cy="8.4" r="3.4" />
+      <path d="M4.8 20.2a7.2 7.2 0 0 1 14.4 0" />
     </>
   ),
   tools: (

@@ -16,12 +16,15 @@ export interface NavEntry {
 export function Sidebar({
   items,
   collapsed,
+  username,
   onToggleCollapsed,
   onNavigate,
   onSignOut,
 }: {
   items: NavEntry[]
   collapsed: boolean
+  /** 当前登录账户名（来自会话 actor.id）：只读展示，不代表可切换身份。 */
+  username: string
   onToggleCollapsed: () => void
   /** 点击导航即离开操作视图，回到该路由的页面。 */
   onNavigate: () => void
@@ -84,6 +87,18 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-foot">
+        <div className="nav-account" title={collapsed ? `当前账户 ${username}` : undefined}>
+          <span className="nav-account-mark" aria-hidden="true">
+            {username.slice(0, 1).toUpperCase()}
+          </span>
+          {!collapsed && (
+            <span className="nav-account-text">
+              <small>当前账户</small>
+              <strong className="mono">{username}</strong>
+            </span>
+          )}
+          {collapsed && <span className="sr-only">当前账户 {username}</span>}
+        </div>
         <button
           type="button"
           className="nav-collapse"

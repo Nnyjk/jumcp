@@ -1,26 +1,13 @@
-type QueueTab = 'review' | 'draft'
-
-type Dialog =
-  | { kind: 'submit'; row: ReviewQueueItem }
-  | { kind: 'publish'; row: ReviewQueueItem }
-  | { kind: 'reject'; row: ReviewQueueItem }
-  | null
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  fetchAdminMe,
-  fetchReviewQueue,
-  rejectCapability,
-  submitCapability,
-} from '../../api/admin'
+import { fetchAdminMe, fetchReviewQueue, rejectCapability, submitCapability } from '../../api/admin'
 import { groupLabel, useGroupIndex } from '../../api/queries'
 import type { ReviewQueueItem } from '../../api/types'
 import { LifecycleBadge, RiskBadge } from '../../components/Badge'
 import { Card } from '../../components/Card'
 import { DataTable, type DataTableColumn } from '../../components/DataTable'
 import { InfoBar } from '../../components/InfoBar'
-import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
+import { EmptyState, ErrorState, LoadingState } from '../../components/PageShell'
 import { SubmitConfirmDialog } from '../../components/SubmitConfirmDialog'
 import { DASH, formatDateTime, formatWaitSince } from '../../format'
 import { TOOL_KIND_LABEL } from '../../labels'
@@ -29,7 +16,16 @@ import { useAdminView } from '../../viewStack'
 import { PublishDialog } from './PublishDialog'
 import { RejectDialog } from './RejectDialog'
 
-export default function ReviewQueuePage() {
+type QueueTab = 'review' | 'draft'
+
+type Dialog =
+  | { kind: 'submit'; row: ReviewQueueItem }
+  | { kind: 'publish'; row: ReviewQueueItem }
+  | { kind: 'reject'; row: ReviewQueueItem }
+  | null
+
+/** 审核队列视图：待审批与未提交草稿两个队列共用一次 GET /admin/review-queue 的快照。 */
+export function ReviewQueuePanel() {
   const queryClient = useQueryClient()
   const { openDossier } = useAdminView()
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -229,7 +225,7 @@ export default function ReviewQueuePage() {
   ]
 
   return (
-    <PageShell>
+    <>
       {notice !== null && (
         <InfoBar
           severity={notice.severity}
@@ -341,6 +337,6 @@ export default function ReviewQueuePage() {
           onSubmit={(reason) => rejectMutation.mutate({ row: dialog.row, reason })}
         />
       )}
-    </PageShell>
+    </>
   )
 }

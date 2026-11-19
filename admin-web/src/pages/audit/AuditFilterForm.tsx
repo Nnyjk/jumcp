@@ -25,7 +25,7 @@ const OBJECT_TYPES: AuditObjectType[] = [
   'upstream',
 ]
 
-/** 审计查询表单：草稿状态由页面持有，提交时才转成实际查询条件。 */
+/** 审计事件表单：草稿状态由面板持有，提交时才转成实际查询条件。 */
 export function AuditFilterForm({
   draft,
   onChange,
@@ -91,6 +91,19 @@ export function AuditFilterForm({
           >
             <option value="desc">最新优先</option>
             <option value="asc">最旧优先</option>
+          </select>
+        </Field>
+        <Field label="来源面" title="surface">
+          <select
+            className="select"
+            value={draft.surface}
+            onChange={(event) =>
+              onChange({ ...draft, surface: event.target.value as FilterState['surface'] })
+            }
+          >
+            <option value="">全部来源</option>
+            <option value="admin">平台面（admin）</option>
+            <option value="mcp">MCP 面（mcp）</option>
           </select>
         </Field>
         <Field label="事件 ID" title="event_id">

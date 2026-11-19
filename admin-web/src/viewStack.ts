@@ -22,7 +22,7 @@ export type AdminView =
 export const VIEW_TITLE: Record<AdminView['kind'], string> = {
   tools: '工具台账',
   dossier: '能力档案',
-  audit: '审计查询',
+  audit: '审计',
 }
 
 export interface AdminViewApi {

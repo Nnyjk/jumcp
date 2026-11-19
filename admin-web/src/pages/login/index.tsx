@@ -1,7 +1,7 @@
 /**
  * 登录页：独立于管理台外壳（无侧栏/标题栏），单卡片居中。
  *
- * 令牌只作为 POST /admin/login 的请求体瞬时值存在：不写 localStorage/sessionStorage，
+ * 凭据只作为 POST /admin/login 的请求体瞬时值存在：不写 localStorage/sessionStorage，
  * 也不放进 URL；登录成功后身份由后端下发的 HttpOnly 会话 cookie 维持。
  */
 import { useState } from 'react'
@@ -14,7 +14,7 @@ import '../../styles/login.css'
 /** 把 ApiError 翻成登录页文案：401/429/网络错误各自固定措辞，其余沿用后端消息。 */
 function loginError(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 401) return '令牌无效。'
+    if (error.status === 401) return '用户名或密码错误。'
     if (error.status === 429) return '尝试过于频繁，请稍后再试。'
     if (error.status === 0) return '无法连接后端。'
     return error.message
@@ -24,26 +24,32 @@ function loginError(error: unknown): string {
 
 export default function LoginPage() {
   const { signIn } = useAuth()
-  const [token, setToken] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState<string | undefined>(undefined)
   const [pending, setPending] = useState(false)
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (pending) return
-    if (token === '') {
-      setError('请输入访问令牌。')
+    if (username.trim() === '') {
+      setError('请输入用户名。')
+      return
+    }
+    if (password === '') {
+      setError('请输入密码。')
       return
     }
     setPending(true)
     setError(undefined)
     try {
-      await signIn(token)
-      setToken('')
-      // 登录成功后 App 的会话闸门会带着原始路径回跳，这里不需要导航。
+      await signIn(username.trim(), password)
+      // 密码不留在内存里：登录成功后 App 的会话闸门会带着原始路径回跳。
+      setPassword('')
     } catch (cause) {
       setError(loginError(cause))
-      if (cause instanceof ApiError && cause.status === 401) setToken('')
+      // 401 时清掉密码但保留用户名：绝大多数情况是密码打错，重填用户名反而更费事。
+      if (cause instanceof ApiError && cause.status === 401) setPassword('')
     } finally {
       setPending(false)
     }
@@ -59,22 +65,39 @@ export default function LoginPage() {
           <span className="login-wordmark">jumcp</span>
         </div>
         <h1 id="login-title">jumcp 管理台</h1>
-        <p className="login-lede">用管理员访问令牌登录。令牌只用于换取会话，不会保存在浏览器里。</p>
+        <p className="login-lede">用管理账户登录。密码只用于换取会话，不会保存在浏览器里。</p>
         <form className="login-form" onSubmit={submit} noValidate>
           <label className="field">
-            <span>访问令牌</span>
+            <span>用户名</span>
             <input
               className="input"
-              type="password"
-              name="token"
-              value={token}
-              autoComplete="current-password"
+              type="text"
+              name="username"
+              value={username}
+              autoComplete="username"
               autoFocus
               required
               disabled={pending}
               spellCheck={false}
+              autoCapitalize="none"
               onChange={(event) => {
-                setToken(event.target.value)
+                setUsername(event.target.value)
+                if (error !== undefined) setError(undefined)
+              }}
+            />
+          </label>
+          <label className="field">
+            <span>密码</span>
+            <input
+              className="input"
+              type="password"
+              name="password"
+              value={password}
+              autoComplete="current-password"
+              required
+              disabled={pending}
+              onChange={(event) => {
+                setPassword(event.target.value)
                 if (error !== undefined) setError(undefined)
               }}
             />

@@ -50,8 +50,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(undefined)
   }, [])
 
-  const signIn = useCallback(async (token: string) => {
-    await login(token)
+  const signIn = useCallback(async (username: string, password: string) => {
+    await login(username, password)
     // 登录响应只下发 cookie：主体身份以 /admin/session 为准，避免前端自行编造。
     const actor = await fetchSession()
     setResult({ state: 'authenticated', actor })

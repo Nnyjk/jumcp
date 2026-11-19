@@ -98,11 +98,15 @@ export interface AuditPayload {
   data?: Record<string, unknown> | undefined
 }
 
-/** 审计 envelope。hash/prev_hash 仅保留原始值，不作为一等展示字段。 */
+/**
+ * 审计 envelope。hash/prev_hash 仅保留原始值，不作为一等展示字段。
+ * `surface` 是来源面：`admin`（管理台）或 `mcp`（MCP 面），旧库历史行可能是空串。
+ */
 export interface AuditEnvelope {
   event_id: string
   ts: string
   tenant: string
+  surface?: string | undefined
   actor: AuditActor
   event_type: AuditEventType
   payload: AuditPayload & Record<string, unknown>
@@ -126,7 +130,7 @@ export interface ItemPage<T> {
 
 export type AuditOrder = 'asc' | 'desc'
 
-/** 审计查询响应：事件数组键名是 events，不是 items。 */
+/** 审计事件响应：事件数组键名是 events，不是 items。 */
 export interface AuditPage {
   events: AuditEnvelope[]
   total: number
@@ -148,11 +152,19 @@ export interface AuditQuery {
   ts_after?: string | undefined
   ts_before?: string | undefined
   order?: AuditOrder | undefined
+  /** 来源面：不传即后端缺省返回全部（等价 all）。 */
+  surface?: 'admin' | 'mcp' | undefined
 }
 
 /** GET /admin/session：会话（HttpOnly cookie）与 GET /admin/me 共用的当前主体形态。 */
 export interface AdminActor {
+  /** 审计身份：账号 username（可被改名，改名后此处随之变化）。 */
   id: string
+  /**
+   * 账号主键（32 位随机串），由会话响应带回。
+   * 判断「删除/停用的是不是自己」只能靠它；旧后端不返回该字段时为空。
+   */
+  user_id?: string | undefined
   role: string
   type: string
 }
@@ -441,6 +453,45 @@ export interface RoleItem {
 /** GET /admin/roles：角色清单不分页。 */
 export interface RolePage {
   items: RoleItem[]
+}
+
+/** 管理账户状态：disabled 不能再登录，但历史审计记录保留。 */
+export type AdminAccountState = 'active' | 'disabled'
+
+/**
+ * GET /admin/admins 的单条账户。
+ * `id` 是账号主键（创建时生成的随机 32 位串），不是用户名；`username` 才是登录名。
+ * 两者独立：username 可以改，改完 `id` 不变，因此所有写操作路径都用 `id`。
+ * `last_login_at` 从未登录时为 null。
+ */
+export interface AdminAccount {
+  /** 账号主键：所有写操作（PATCH/DELETE）的路径参数，改名不影响。 */
+  id: string
+  /** 登录名：3–32 位，可被改名；展示与排序用它。 */
+  username: string
+  state: AdminAccountState
+  created_at: string
+  updated_at: string
+  last_login_at: string | null
+}
+
+/** GET /admin/admins：账户清单不分页。 */
+export interface AdminAccountPage {
+  items: AdminAccount[]
+  total: number
+}
+
+/** POST /admin/admins 的 body：用户名 3–32 位 [a-z0-9._-]，密码 ≥12 位（后端校验）。 */
+export interface AdminAccountCreateInput {
+  username: string
+  password: string
+}
+
+/** PATCH /admin/admins/{id} 的 body：任意子集，未出现的字段不改。 */
+export interface AdminAccountUpdateInput {
+  username?: string
+  password?: string
+  state?: AdminAccountState
 }
 
 /** MCP 接入令牌状态：expired 由后端按 expires_at 派生，revoked 为手工撤销。 */

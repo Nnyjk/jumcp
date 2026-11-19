@@ -227,6 +227,59 @@
   color: var(--text-primary);
 }
 
+/* 当前账户：只读展示，视觉上是列表项而不是可点控件（没有切身份入口）。 */
+.nav-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3) 0 10px;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-account-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.nav-account-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 14px;
+}
+
+.nav-account-text small {
+  color: var(--text-tertiary);
+  font-size: var(--fs-12);
+}
+
+.nav-account-text strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.sidebar[data-collapsed='true'] .nav-account {
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+}
+
 .sidebar[data-collapsed='true'] .nav-collapse {
   justify-content: center;
   padding: 0;
