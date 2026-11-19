@@ -22,6 +22,7 @@ export const PRESET_MINUTES: Record<Exclude<TimePreset, 'all' | 'custom'>, numbe
 export interface FilterState {
   tenant: string
   event_type: string
+  surface: '' | 'admin' | 'mcp'
   actor_role: string
   actor_id: string
   token_id: string
@@ -37,6 +38,7 @@ export interface FilterState {
 export const EMPTY_FILTER: FilterState = {
   tenant: '',
   event_type: '',
+  surface: '',
   actor_role: '',
   actor_id: '',
   token_id: '',
@@ -56,7 +58,13 @@ export interface AuditInitialFilter {
   eventId?: string | undefined
 }
 
-/** URL query（event_id / object_id / token_id）用于从调用详情、令牌与能力档案深链进入时预填筛选。 */
+/** URL 里的 surface 只认 admin/mcp，其它值（含缺省）按「全部」处理。 */
+function surfaceFromUrl(params: URLSearchParams): FilterState['surface'] {
+  const value = params.get('surface')
+  return value === 'admin' || value === 'mcp' ? value : ''
+}
+
+/** URL query（event_id / object_id / token_id / surface）用于深链进入时预填筛选。 */
 export function filterFromUrl(params: URLSearchParams): FilterState {
   return {
     ...EMPTY_FILTER,
@@ -64,6 +72,7 @@ export function filterFromUrl(params: URLSearchParams): FilterState {
     object_id: params.get('object_id') ?? '',
     object_type: params.get('object_type') ?? '',
     token_id: params.get('token_id') ?? '',
+    surface: surfaceFromUrl(params),
   }
 }
 
@@ -78,6 +87,7 @@ export function initialFilter(
     token_id: initial.tokenId ?? '',
     object_id: initial.objectId ?? '',
     event_id: initial.eventId ?? '',
+    surface: surfaceFromUrl(params),
   }
 }
 
@@ -86,6 +96,7 @@ export function queryFromFilter(filter: FilterState): AuditQuery {
   const query: AuditQuery = {
     tenant: filter.tenant.trim() || undefined,
     event_type: filter.event_type || undefined,
+    surface: filter.surface === '' ? undefined : filter.surface,
     actor_role: filter.actor_role.trim() || undefined,
     actor_id: filter.actor_id.trim() || undefined,
     token_id: filter.token_id.trim() || undefined,

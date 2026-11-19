@@ -1,15 +1,15 @@
 /**
- * 管理台会话契约（admin auth）：登录换取 HttpOnly cookie，登出吊销会话，探测当前会话。
- * token 只作为登录请求体的瞬时值出现，不落任何存储；身份读取一律经 /admin/session。
+ * 管理台会话契约（admin auth）：用户名+密码登录换取 HttpOnly cookie，登出吊销会话，探测当前会话。
+ * 密码只作为登录请求体的瞬时值出现，不落任何存储；身份读取一律经 /admin/session。
  */
 import { request } from './client'
 import type { AdminActor, AdminSession } from './types'
 
 /** POST /admin/login：204 + Set-Cookie `jumcp_session`（HttpOnly、SameSite=Strict）。 */
-export async function login(token: string): Promise<void> {
+export async function login(username: string, password: string): Promise<void> {
   await request<void>('/admin/login', {
     method: 'POST',
-    body: { token },
+    body: { username, password },
     // 登录页自己展示 401/429，不触发全局登出跳转。
     skipUnauthorized: true,
   })

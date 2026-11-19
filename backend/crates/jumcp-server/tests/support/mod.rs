@@ -10,7 +10,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::{ActorRef, AuditEvent, AuditLog};
-use jumcp_core::config::{AdminTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::secret::SecretKey;
@@ -25,8 +25,56 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-pub const ALICE_TOKEN: &str = "tok_alice_000000000";
-pub const BOB_TOKEN: &str = "tok_bob_00000000000";
+/// 管理员会话 id：管理面只认 `jumcp_session` cookie，测试把它当作"管理员身份"传给 helper，
+/// 由 [`attach_identity`] 翻译成 cookie（真实登录链路另见 `tests/admin/session.rs`）。
+pub const ALICE_TOKEN: &str = "sess_alice_000000000";
+pub const BOB_TOKEN: &str = "sess_bob_000000000000";
+pub const ALICE_PASSWORD: &str = "alice-correct-horse";
+pub const BOB_PASSWORD: &str = "bob-correct-horse1";
+
+/// 是否为管理员会话 id（其余身份字符串都是 MCP agent 的 Bearer 令牌）。
+pub fn is_admin_session(id: &str) -> bool {
+    id == ALICE_TOKEN || id == BOB_TOKEN
+}
+
+/// 把测试身份写到请求上：管理员身份走 `Cookie` + 同源头，agent 身份走 `Authorization`。
+///
+/// 同源三件套（Host/Origin）在这里补齐，是因为管理面的非 GET 请求必须通过 CSRF 检查，
+/// 而真实浏览器一定会带这两个头。
+pub fn attach_identity(
+    builder: axum::http::request::Builder,
+    token: Option<&str>,
+) -> axum::http::request::Builder {
+    match token {
+        Some(id) if is_admin_session(id) => builder
+            .header(header::COOKIE, format!("jumcp_session={id}"))
+            .header(header::HOST, "localhost")
+            .header(header::ORIGIN, "http://localhost"),
+        Some(token) => builder.header(header::AUTHORIZATION, format!("Bearer {token}")),
+        None => builder,
+    }
+}
+
+/// 播种两名管理员并用固定 id 建活跃会话：绝大多数测试只关心"已登录的管理员"，
+/// 没必要每个用例都走一遍口令握手。
+pub fn seed_admin_accounts(store: &CapabilityStore, ttl_secs: i64) {
+    for (username, password, session) in [
+        ("alice", ALICE_PASSWORD, ALICE_TOKEN),
+        ("bob", BOB_PASSWORD, BOB_TOKEN),
+    ] {
+        let user = store
+            .admin_user_by_username(username)
+            .expect("lookup admin")
+            .unwrap_or_else(|| {
+                store
+                    .create_admin_user(username, password)
+                    .expect("create admin")
+            });
+        store
+            .create_admin_session(session, &user.id, ttl_secs)
+            .expect("admin session");
+    }
+}
 
 pub fn settings() -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -39,8 +87,6 @@ pub fn settings() -> Settings {
         },
     );
     Settings {
-        admin_tokens: AdminTokens::parse(&format!("alice:{ALICE_TOKEN},bob:{BOB_TOKEN}"))
-            .expect("admin tokens"),
         policy: TenantPolicy {
             groups: vec![GroupDef {
                 code: "db.read.core".into(),
@@ -94,10 +140,10 @@ pub fn harness_custom(audit: Arc<AuditLog>, settings: Settings) -> Harness {
                 allowed_builtin_tools: None,
             }),
     );
+    seed_admin_accounts(&store, settings.admin_session_ttl_secs);
     let state = AdminState {
         service: service.clone(),
         store: store.clone(),
-        tokens: settings.admin_tokens,
         transport_key: Some(transport_key()),
     };
     Harness {
@@ -110,6 +156,18 @@ pub fn harness_custom(audit: Arc<AuditLog>, settings: Settings) -> Harness {
 
 pub fn harness() -> Harness {
     harness_with_audit(Arc::new(AuditLog::open(":memory:").expect("audit")))
+}
+
+/// 非 HTTP 模式可达的状态：`transport_key` 为空，用于断言密钥端点 503 而不是 500。
+pub fn harness_without_transport_key() -> Harness {
+    let mut harness = harness();
+    let state = AdminState {
+        service: harness.service.clone(),
+        store: harness.store.clone(),
+        transport_key: None,
+    };
+    harness.app = router(state);
+    harness
 }
 
 pub struct Req {
@@ -215,10 +273,7 @@ pub async fn send_raw(
     headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> axum::response::Response {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(token) = token {
-        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
+    let mut builder = attach_identity(Request::builder().method(method).uri(uri), token);
     for (key, value) in headers {
         builder = builder.header(*key, *value);
     }
@@ -337,6 +392,18 @@ pub fn audit_event(event_type: &str) -> AuditEvent {
     }
 }
 
+/// 平台面（`surface=admin`）的审计样例：`/admin/audit-events?surface=admin` 只返回这些。
+///
+/// 业务面事件（[`audit_event`]，agent 身份）落在 `surface=mcp`；缺省查询两个面都返回。
+pub fn admin_audit_event(event_type: &str) -> AuditEvent {
+    let mut event = audit_event(event_type);
+    event.actor.actor_type = "admin".into();
+    event.actor.id = "alice".into();
+    event.actor.role = "admin".into();
+    event.actor.source = Some("admin-api".into());
+    event
+}
+
 /// 内置 MCP 集成测试的密钥（固定值：密文断言要可复现）。
 pub const TEST_SECRET_KEY: &str =
     "1111111111111111111111111111111111111111111111111111111111111111";
@@ -374,7 +441,7 @@ impl BuiltinHarness {
         let mut settings = settings();
         settings.transport = "streamable-http".into();
         settings.secret_key = Some(SecretKey::parse(TEST_SECRET_KEY).expect("secret key"));
-        let admin_tokens = settings.admin_tokens.clone();
+        seed_admin_accounts(&store, settings.admin_session_ttl_secs);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -402,7 +469,6 @@ impl BuiltinHarness {
         let admin = router(AdminState {
             service: service.clone(),
             store: store.clone(),
-            tokens: admin_tokens,
             transport_key: Some(transport_key()),
         });
         // 只把 MCP 面挂到 listener 上：生产里 `/internal/mcp/*` 属于 MCP 面，

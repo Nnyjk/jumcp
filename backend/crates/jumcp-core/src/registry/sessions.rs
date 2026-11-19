@@ -1,24 +1,24 @@
-//! 管理台会话：cookie 里只放不透明随机 id，身份仍由 admin token 表派生。
+//! 管理台会话：cookie 里只放不透明随机 id，身份由 `admin_user_id` 指回管理员账号。
 //!
 //! 为什么落 registry 库而不是进程内存：会话要跨重启存活（重启就把运维踢下线没有安全收益），
-//! 过期与吊销也必须能被同一份审计看见。id 用 32 字节 CSPRNG 的 hex，库里只存 id 本身——
-//! 不像 token 那样存可验证的派生值，是因为 id 本身就是唯一的凭据，登录时已经用 token 换过。
+//! 过期与吊销也必须能被同一份审计看见。id 是 32 字节 CSPRNG 的 hex，由登录面生成后交给存储层——
+//! 存储层不持有"凭据该多随机"的策略，调用方（含测试）才能固定/复现具体 cookie 值。
+//! 按账号批量吊销（改密、禁用、删除账号）走 `admins` 的同一事务，不再经由本模块。
 
 use super::CapabilityStore;
 use crate::config::constant_time_eq;
 use crate::errors::McpError;
-use crate::secret::random_hex;
 use rusqlite::{OptionalExtension, params};
 
-/// 会话 id 的随机字节数（hex 后 64 个字符）。
-pub const ADMIN_SESSION_ID_BYTES: usize = 32;
-/// TTL 上限：防止误配成超大值把会话变成永久凭据（30 天）。
 pub const ADMIN_SESSION_MAX_TTL_SECS: i64 = 30 * 24 * 3600;
+
+/// 会话 id 的随机字节数（hex 后 64 字符）；登录面据此生成 cookie 值。
+pub const ADMIN_SESSION_ID_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminSession {
     pub id: String,
-    pub token_id: String,
+    pub admin_user_id: String,
     pub created_at: i64,
     pub expires_at: i64,
 }
@@ -31,20 +31,20 @@ impl CapabilityStore {
     /// 建立会话并顺手清理过期行：登录是低频写点，适合做会话表 GC。
     pub fn create_admin_session(
         &self,
-        token_id: &str,
+        id: &str,
+        admin_user_id: &str,
         ttl_secs: i64,
     ) -> Result<AdminSession, McpError> {
-        if token_id.trim().is_empty() {
+        if id.is_empty() || admin_user_id.trim().is_empty() {
             return Err(McpError::store(
-                "会话缺少 token id（管理面身份派生失败）".to_string(),
+                "会话缺少 id 或账号 id（管理面身份派生失败）".to_string(),
             ));
         }
         let ttl = ttl_secs.clamp(1, ADMIN_SESSION_MAX_TTL_SECS);
         let now = now_unix();
-        let id = random_hex(ADMIN_SESSION_ID_BYTES).map_err(|e| McpError::store(e.to_string()))?;
         let session = AdminSession {
-            id,
-            token_id: token_id.to_string(),
+            id: id.to_string(),
+            admin_user_id: admin_user_id.to_string(),
             created_at: now,
             expires_at: now + ttl,
         };
@@ -55,8 +55,8 @@ impl CapabilityStore {
         )
         .map_err(|e| McpError::store(e.to_string()))?;
         conn.execute(
-            "INSERT INTO admin_sessions (id, token_id, created_at, expires_at, last_seen_at) VALUES (?1,?2,?3,?4,?5)",
-            params![session.id, session.token_id, session.created_at, session.expires_at, now],
+            "INSERT INTO admin_sessions (id, admin_user_id, created_at, expires_at, last_seen_at) VALUES (?1,?2,?3,?4,?5)",
+            params![session.id, session.admin_user_id, session.created_at, session.expires_at, now],
         )
         .map_err(|e| McpError::store(e.to_string()))?;
         Ok(session)
@@ -72,12 +72,12 @@ impl CapabilityStore {
         let conn = self.db().lock().map_err(|_| McpError::lock())?;
         let row = conn
             .query_row(
-                "SELECT id, token_id, created_at, expires_at FROM admin_sessions WHERE id = ?1",
+                "SELECT id, admin_user_id, created_at, expires_at FROM admin_sessions WHERE id = ?1",
                 params![presented],
                 |r| {
                     Ok(AdminSession {
                         id: r.get(0)?,
-                        token_id: r.get(1)?,
+                        admin_user_id: r.get(1)?,
                         created_at: r.get(2)?,
                         expires_at: r.get(3)?,
                     })
@@ -129,11 +129,12 @@ mod tests {
     #[test]
     fn create_lookup_and_delete_roundtrip() {
         let store = store();
-        let session = store.create_admin_session("alice", 60).expect("create");
-        assert_eq!(session.id.len(), ADMIN_SESSION_ID_BYTES * 2);
+        let session = store
+            .create_admin_session("sess-1", "user-1", 60)
+            .expect("create");
         assert_eq!(store.admin_session_count().unwrap(), 1);
         let found = store.admin_session(&session.id).unwrap().expect("命中");
-        assert_eq!(found.token_id, "alice");
+        assert_eq!(found.admin_user_id, "user-1");
         store.touch_admin_session(&session.id).unwrap();
         store.delete_admin_session(&session.id).unwrap();
         assert!(store.admin_session(&session.id).unwrap().is_none());
@@ -145,7 +146,9 @@ mod tests {
     #[test]
     fn expired_session_is_not_returned() {
         let store = store();
-        let session = store.create_admin_session("alice", 1).expect("create");
+        let session = store
+            .create_admin_session("sess-1", "user-1", 1)
+            .expect("create");
         {
             let conn = store.db().lock().unwrap();
             conn.execute(
@@ -160,7 +163,9 @@ mod tests {
     #[test]
     fn unknown_or_tampered_id_is_rejected() {
         let store = store();
-        let session = store.create_admin_session("alice", 60).expect("create");
+        let session = store
+            .create_admin_session("sess-1", "user-1", 60)
+            .expect("create");
         assert!(store.admin_session("").unwrap().is_none());
         assert!(store.admin_session("deadbeef").unwrap().is_none());
         let mut tampered = session.id.clone();
@@ -171,7 +176,9 @@ mod tests {
     #[test]
     fn login_purges_expired_rows() {
         let store = store();
-        let stale = store.create_admin_session("bob", 1).expect("create");
+        let stale = store
+            .create_admin_session("sess-old", "user-1", 1)
+            .expect("create");
         {
             let conn = store.db().lock().unwrap();
             conn.execute(
@@ -180,7 +187,9 @@ mod tests {
             )
             .unwrap();
         }
-        store.create_admin_session("alice", 60).expect("create");
+        store
+            .create_admin_session("sess-new", "user-2", 60)
+            .expect("create");
         assert_eq!(store.admin_session_count().unwrap(), 1);
         assert!(store.admin_session(&stale.id).unwrap().is_none());
     }
@@ -188,8 +197,11 @@ mod tests {
     #[test]
     fn ttl_is_clamped_and_empty_token_rejected() {
         let store = store();
-        assert!(store.create_admin_session(" ", 60).is_err());
-        let session = store.create_admin_session("alice", 0).expect("create");
+        assert!(store.create_admin_session("", "user-1", 60).is_err());
+        assert!(store.create_admin_session("sess-1", " ", 60).is_err());
+        let session = store
+            .create_admin_session("sess-1", "user-1", 0)
+            .expect("create");
         assert!(session.expires_at > session.created_at);
     }
 }

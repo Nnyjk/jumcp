@@ -1,4 +1,4 @@
-//! 手写 JSON-RPC MCP 服务：tools/list（按 EffectiveScope 过滤 + 常驻预算）+ 元工具三件套
+//! 手写 JSON-RPC MCP 服务：tools/list（按 EffectiveScope 过滤 + 常驻预算）+ 元工具与模板执行臂
 //! + 维护通道工具 + 上游工具转发。数据取数只走模板与上游链路，内置 basic 组不直连数据源。
 //!
 //! 为什么手写：rmcp 的 API 随版本漂移，手写 JSON-RPC 让 stdio 与 HTTP 共用同一套判定与审计。
@@ -72,6 +72,11 @@ pub fn tool_definitions() -> Vec<Value> {
             "组索引：只含组名与计数，不含定义",
             json!({"type":"object","properties":{}}),
         ),
+        tool(
+            "db_run_template",
+            "模板入口：注册期已校验的固定查询路径（版本钉住 + 结果缓存）",
+            json!({"type":"object","properties":{"template_id":{"type":"string"},"params":{"type":"object"},"version":{"type":"integer"}},"required":["template_id"]}),
+        ),
     ]
 }
 
@@ -87,8 +92,9 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 /// 内置工具的分类标签（唯一映射），按**职责**三组：
 ///
 /// - `basic`（基础查询、计算）：走查目录的工具——`search_capabilities` /
-///   `describe_capability` / `list_groups` 回答"有什么、怎么调"。取数本身不在内置工具里：
-///   模板与上游工具各自按 `group_code` 归组，不占 `basic`。
+///   `describe_capability` / `list_groups` 回答"有什么、怎么调"；`db_run_template` 是唯一的
+///   模板取数入口（版本钉住 + 结果缓存，SQL 注册期已过 sqlguard）。上游工具按 `group_code`
+///   归组，不占 `basic`。
 /// - `analysis`（工具列表分析、变更提交审计）：面向工具目录与变更流的观察/提交动作——
 ///   `admin_review_queue` 看队列、`admin_register_template` 提交草案、
 ///   `admin_set_visibility` 提交可见性变更；它们只读或写本项目自有元数据。
@@ -101,7 +107,9 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 pub fn builtin_category(id: &str) -> &'static str {
     use crate::catalog::{CATEGORY_ADMIN, CATEGORY_ANALYSIS, CATEGORY_BASIC, CATEGORY_CUSTOM};
     match id {
-        "search_capabilities" | "describe_capability" | "list_groups" => CATEGORY_BASIC,
+        "search_capabilities" | "describe_capability" | "list_groups" | "db_run_template" => {
+            CATEGORY_BASIC
+        }
         "admin_review_queue" | "admin_register_template" | "admin_set_visibility" => {
             CATEGORY_ANALYSIS
         }

@@ -1,4 +1,4 @@
-//! 管理台登录契约：cookie 会话、Bearer 并存、CSRF 同源、限流与过期/吊销。
+//! 管理台登录契约：账号口令换 cookie 会话、CSRF 同源、限流与过期/吊销。
 //!
 //! 断言口径与 `docs/mcp-router.md` 的「登录契约」一节逐条对应；任何一条改动都必须同时改文档，
 //! 因为 `admin-web` 是照这份契约实现的（它不在本仓库的测试覆盖范围内）。
@@ -15,14 +15,14 @@ use std::time::Duration;
 const SESSION_COOKIE: &str = "jumcp_session";
 
 /// 登录并返回 (状态, `Set-Cookie` 原值)。
-async fn login(app: &Router, token: &str) -> (StatusCode, String) {
+async fn login(app: &Router, username: &str, password: &str) -> (StatusCode, String) {
     let resp = send_raw(
         app,
         "POST",
         "/admin/login",
         None,
         &[],
-        Some(json!({"token": token})),
+        Some(json!({"username": username, "password": password})),
     )
     .await;
     let status = resp.status();
@@ -48,7 +48,7 @@ fn cookie_pair(set_cookie: &str) -> String {
 #[tokio::test]
 async fn login_issues_session_cookie_and_reports_actor() {
     let h = harness();
-    let (status, set_cookie) = login(&h.app, ALICE_TOKEN).await;
+    let (status, set_cookie) = login(&h.app, "alice", ALICE_PASSWORD).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(
         set_cookie.starts_with(&format!("{SESSION_COOKIE}=")),
@@ -63,10 +63,11 @@ async fn login_issues_session_cookie_and_reports_actor() {
         "纯 HTTP 部署默认不加 Secure"
     );
     let value = cookie_pair(&set_cookie);
-    assert!(
-        value.len() > SESSION_COOKIE.len() + 1 + 32,
-        "会话 id 必须是不可预测的长随机串"
-    );
+    let session_id = value
+        .split_once('=')
+        .map(|(_, id)| id)
+        .expect("cookie pair");
+    assert!(session_id.len() >= 32, "会话 id 必须是不可预测的长随机串");
 
     let (status, body) = send(
         &h.app,
@@ -78,9 +79,44 @@ async fn login_issues_session_cookie_and_reports_actor() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // 账号主键不硬编码：播种每次都会变，只要求与 /admin/admins 里同 username 行的 id 一致。
+    let (status, admins) = send(
+        &h.app,
+        "GET",
+        "/admin/admins",
+        None,
+        &[("cookie", value.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let alice_id = admins["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|row| row["username"] == json!("alice"))
+        .and_then(|row| row["id"].as_str())
+        .expect("alice 的账号主键");
+    assert_eq!(alice_id.len(), 32, "账号主键是 32 位十六进制");
     assert_eq!(
         body["actor"],
-        json!({"id": "alice", "role": "admin", "type": "admin"})
+        json!({"id": "alice", "user_id": alice_id, "role": "admin", "type": "admin"})
+    );
+    // `/admin/me` 与 session 的 actor 字段集合必须完全一致（前者平铺，不套 actor）。
+    let (status, me) = send(
+        &h.app,
+        "GET",
+        "/admin/me",
+        None,
+        &[("cookie", value.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        me,
+        json!({"id": "alice", "user_id": alice_id, "role": "admin", "type": "admin"}),
+        "/admin/me 与 /admin/session 的 actor 必须同形"
     );
 
     // 登录本身要留痕，且属于平台面（surface=admin），否则统计口径会把登录算进工具调用。
@@ -93,12 +129,20 @@ async fn login_issues_session_cookie_and_reports_actor() {
     assert_eq!(events[0].actor["id"], json!("alice"));
     assert_eq!(events[0].surface, "admin");
     assert!(
-        !events[0]
-            .payload
-            .to_string()
-            .contains(&value[SESSION_COOKIE.len() + 1..]),
+        !events[0].payload.to_string().contains(session_id),
         "会话 id 是凭据，绝不能写进审计"
     );
+    assert!(
+        !events[0].payload.to_string().contains(ALICE_PASSWORD),
+        "口令绝不能写进审计"
+    );
+    // 登录成功必须回写 last_login_at：账号列表靠它显示"最近登录"。
+    let user = h
+        .store
+        .admin_user_by_username("alice")
+        .expect("lookup")
+        .expect("alice");
+    assert!(user.last_login_at.is_some(), "{user:?}");
 }
 
 #[tokio::test]
@@ -109,24 +153,132 @@ async fn secure_flag_is_opt_in() {
         Arc::new(AuditLog::open(":memory:").expect("audit")),
         settings,
     );
-    let (status, set_cookie) = login(&h.app, ALICE_TOKEN).await;
+    let (status, set_cookie) = login(&h.app, "alice", ALICE_PASSWORD).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(set_cookie.contains("; Secure"), "显式开启时必须有 Secure");
 }
 
 #[tokio::test]
-async fn wrong_token_is_401_and_sets_no_cookie() {
+async fn wrong_password_is_401_and_sets_no_cookie() {
     let h = harness();
-    let (status, set_cookie) = login(&h.app, "not-an-admin-token").await;
+    let (status, set_cookie) = login(&h.app, "alice", "not-the-password").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(set_cookie.is_empty());
 }
 
+/// 超限 body 是客户端错误，不是"口令错误"：必须 400 且不消耗尝试次数。
 #[tokio::test]
-async fn five_failures_then_429_even_for_valid_token() {
+async fn oversized_login_body_is_400_and_does_not_count_against_limiter() {
+    let h = harness();
+    let huge = json!({"username": "alice", "password": "x".repeat(9 * 1024)});
+    for _ in 0..10 {
+        let (status, body) = send(
+            &h.app,
+            "POST",
+            "/admin/login",
+            None,
+            &[],
+            Some(huge.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], json!("MCP_BAD_REQUEST"));
+        assert_eq!(body["error"]["data"]["field"], json!("body"));
+    }
+    // 重放 10 次都没有计入限流，因此正确口令仍然能登录（而不是先撞 429）。
+    let (status, _) = login(&h.app, "alice", ALICE_PASSWORD).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+/// 浏览器跨站登录直接拒绝；不带 Origin（curl/冒烟脚本）照旧走口令校验。
+#[tokio::test]
+async fn cross_site_login_is_forbidden() {
+    let h = harness();
+    let body = json!({"username": "alice", "password": ALICE_PASSWORD});
+    let (status, resp) = send(
+        &h.app,
+        "POST",
+        "/admin/login",
+        None,
+        &[
+            ("host", "localhost"),
+            ("origin", "https://evil.example.com"),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(resp["error"]["code"], json!("MCP_FORBIDDEN"));
+    assert!(
+        resp["error"]["data"]["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("跨站"),
+        "hint 必须说清是跨站登录: {resp}"
+    );
+    let (status, _) = send(
+        &h.app,
+        "POST",
+        "/admin/login",
+        None,
+        &[("host", "localhost"), ("origin", "http://localhost")],
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "同源登录照常放行");
+}
+
+/// 失败提示对"账号不存在 / 口令错误 / 已禁用"必须逐字相同，否则登录口就是账号枚举器。
+#[tokio::test]
+async fn login_failure_message_is_uniform() {
+    let h = harness();
+    let mut messages = Vec::new();
+    for (username, password) in [("nobody", "whatever-pass"), ("alice", "wrong-password-1")] {
+        let (status, body) = send(
+            &h.app,
+            "POST",
+            "/admin/login",
+            None,
+            &[],
+            Some(json!({"username": username, "password": password})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{username}");
+        assert_eq!(body["error"]["code"], json!("MCP_UNAUTHORIZED"));
+        messages.push(body["error"]["message"].clone());
+    }
+    // 第 3 条：已禁用账号用对口令也登不进来，且提示相同。
+    let bob = h
+        .store
+        .admin_user_by_username("bob")
+        .expect("lookup")
+        .expect("bob");
+    h.store
+        .update_admin_user(&bob.id, None, None, Some("disabled"))
+        .expect("disable bob");
+    let (status, body) = send(
+        &h.app,
+        "POST",
+        "/admin/login",
+        None,
+        &[],
+        Some(json!({"username": "bob", "password": BOB_PASSWORD})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    messages.push(body["error"]["message"].clone());
+    assert_eq!(
+        messages,
+        vec![json!("用户名或密码错误"); 3],
+        "三种失败必须同一条文案"
+    );
+}
+
+#[tokio::test]
+async fn five_failures_then_429_even_for_valid_password() {
     let h = harness();
     for _ in 0..5 {
-        let (status, _) = login(&h.app, "wrong").await;
+        let (status, _) = login(&h.app, "alice", "wrong-password").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
     let resp = send_raw(
@@ -135,7 +287,7 @@ async fn five_failures_then_429_even_for_valid_token() {
         "/admin/login",
         None,
         &[],
-        Some(json!({"token": ALICE_TOKEN})),
+        Some(json!({"username": "alice", "password": ALICE_PASSWORD})),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -154,7 +306,7 @@ async fn expired_session_is_401() {
         Arc::new(AuditLog::open(":memory:").expect("audit")),
         settings,
     );
-    let (status, set_cookie) = login(&h.app, ALICE_TOKEN).await;
+    let (status, set_cookie) = login(&h.app, "alice", ALICE_PASSWORD).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let value = cookie_pair(&set_cookie);
     let (status, _) = send(
@@ -185,7 +337,7 @@ async fn expired_session_is_401() {
 #[tokio::test]
 async fn logout_revokes_session_and_is_idempotent() {
     let h = harness();
-    let (_, set_cookie) = login(&h.app, ALICE_TOKEN).await;
+    let (_, set_cookie) = login(&h.app, "alice", ALICE_PASSWORD).await;
     let value = cookie_pair(&set_cookie);
     let headers = [
         ("cookie", value.as_str()),
@@ -208,7 +360,7 @@ async fn logout_revokes_session_and_is_idempotent() {
     // 幂等：重复注销仍然 204（否则前端重试会看到 401 并误判为"未登录"）。
     let (status, _) = send(&h.app, "POST", "/admin/logout", None, &headers, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    // 审计里注销事件带 token 身份，但同样不含会话 id。
+    // 审计里注销事件带账号身份，但同样不含会话 id。
     let events = h
         .audit
         .query(Some(&json!({"event_type": "admin_change"})))
@@ -221,9 +373,9 @@ async fn logout_revokes_session_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn cookie_writes_require_same_origin_but_bearer_does_not() {
+async fn cookie_writes_require_same_origin_and_bearer_is_not_admin_auth() {
     let h = harness();
-    let (_, set_cookie) = login(&h.app, ALICE_TOKEN).await;
+    let (_, set_cookie) = login(&h.app, "alice", ALICE_PASSWORD).await;
     let value = cookie_pair(&set_cookie);
     let body = json!({"code": "ops", "name": "运维组"});
 
@@ -272,20 +424,18 @@ async fn cookie_writes_require_same_origin_but_bearer_does_not() {
     .await;
     assert!(status.is_success(), "同源 cookie 写请求必须放行：{status}");
 
-    // 4) Bearer 不受同源限制（脚本/CI 没有浏览器，也不存在可被借用的 cookie）。
+    // 4) Bearer 不是管理面凭据：管理面只认会话 cookie，脚本也不能绕过同源检查。
     let (status, error) = send(
         &h.app,
         "POST",
         "/admin/groups",
-        Some(ALICE_TOKEN),
-        &[],
+        Some("tok_whatever_00000000"),
+        &[("host", "localhost"), ("origin", "http://localhost")],
         Some(json!({"code": "ops2", "name": "运维二组"})),
     )
     .await;
-    assert!(
-        status.is_success(),
-        "Bearer 不应被 CSRF 拦截：{status} {error}"
-    );
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
+    assert_eq!(error["error"]["code"], json!("MCP_UNAUTHORIZED"));
 }
 
 #[tokio::test]
@@ -295,7 +445,7 @@ async fn invalid_cookie_does_not_fall_back_to_bearer() {
         &h.app,
         "GET",
         "/admin/session",
-        Some(ALICE_TOKEN),
+        Some("tok_whatever_00000000"),
         &[("cookie", "jumcp_session=deadbeef")],
         None,
     )

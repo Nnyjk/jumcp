@@ -1,8 +1,8 @@
 //! 模板注册表契约测试：注册门禁 + 审批发布 + 渲染契约。不依赖真实 PG。
 //!
-//! 模板执行面不经过 MCP 工具；这里只锁模板层本身：
-//! 注册/提审/发布/可见性生命周期、预检回执、命名→位置改写、变体路由、column_ref 引用与白名单、
-//! 会话版本钉住与 deprecated 的 successor 语义。
+//! 这里只锁模板层本身：注册/提审/发布/可见性生命周期、预检回执、命名→位置改写、变体路由、
+//! column_ref 引用与白名单、会话版本钉住与 deprecated 的 successor 语义。
+//! 经 MCP `db_run_template` 的端到端执行面（含审计与台账读回）在 `tests/mcp/template_exec.rs`。
 
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::{PreparedQuery, TemplateDef, TemplateRegistry, compile};

@@ -10,6 +10,10 @@ import type {
   AccessTokenCreated,
   AccessTokenItem,
   AccessTokenPage,
+  AdminAccount,
+  AdminAccountCreateInput,
+  AdminAccountPage,
+  AdminAccountUpdateInput,
   AdminIdentity,
   AuditPage,
   AuditQuery,
@@ -89,6 +93,7 @@ export async function fetchAuditEvents(
       token_id: query.token_id,
       ts_after: query.ts_after,
       ts_before: query.ts_before,
+      surface: query.surface,
       order: query.order ?? 'desc',
       limit,
       offset,
@@ -443,4 +448,37 @@ export async function uninstallMcpCatalogEntry(
  */
 export async function fetchTransportKey(signal?: AbortSignal): Promise<TransportKey> {
   return request<TransportKey>('/admin/transport-key', { signal })
+}
+
+/* ---------------------------- 管理账户 ------------------------------ */
+
+/** 账户清单：不分页；前端按用户名排序展示。 */
+export async function fetchAdminAccounts(signal?: AbortSignal): Promise<AdminAccountPage> {
+  return request<AdminAccountPage>('/admin/admins', { signal })
+}
+
+/** 新建账户：201 返回创建后的账户（不含密码）。 */
+export async function createAdminAccount(input: AdminAccountCreateInput): Promise<AdminAccount> {
+  const body = await request<{ admin: AdminAccount }>('/admin/admins', {
+    method: 'POST',
+    body: input,
+  })
+  return body.admin
+}
+
+/** 改用户名 / 重置密码 / 启用停用：只发送有变化的字段。 */
+export async function updateAdminAccount(
+  id: string,
+  input: AdminAccountUpdateInput,
+): Promise<AdminAccount> {
+  const body = await request<{ admin: AdminAccount }>(`/admin/admins/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: input,
+  })
+  return body.admin
+}
+
+/** 删除账户：204。最后一个可用账户与自己会被后端以 409 拒绝。 */
+export async function deleteAdminAccount(id: string): Promise<void> {
+  await request<void>(`/admin/admins/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

@@ -22,8 +22,8 @@ async fn groups_crud_takes_effect_in_effective_policy() {
     assert_eq!(body["items"][0]["token_count"], json!(0));
     assert_eq!(
         body["items"][0]["capability_count"],
-        json!(3),
-        "没有上游覆盖时 basic 只含 3 个常驻内置工具"
+        json!(4),
+        "没有上游覆盖时 basic 含 4 个常驻内置工具"
     );
     let policy_item = body["items"]
         .as_array()

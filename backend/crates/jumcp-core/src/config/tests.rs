@@ -188,52 +188,6 @@ fn clickhouse_engine_is_accepted_and_primary_is_first_readonly() {
     );
 }
 #[test]
-fn admin_tokens_parse_and_authenticate() {
-    let tokens = AdminTokens::parse("alice:tok_alice_000000000,bob:tok_bob_00000000000").unwrap();
-    assert_eq!(tokens.len(), 2);
-    assert_eq!(tokens.authenticate("tok_bob_00000000000"), Some("bob"));
-    assert_eq!(tokens.authenticate("tok_bob_00000000001"), None);
-    assert_eq!(tokens.authenticate(""), None);
-    assert!(AdminTokens::parse("").unwrap().is_empty());
-}
-
-#[test]
-fn admin_tokens_reject_bad_inputs() {
-    assert!(AdminTokens::parse("alice").is_err(), "缺少冒号");
-    assert!(
-        AdminTokens::parse("ALICE:tok_alice_000000000").is_err(),
-        "id 大写"
-    );
-    assert!(
-        AdminTokens::parse("a:tok_alice_000000000").is_err(),
-        "id 过短"
-    );
-    assert!(
-        AdminTokens::parse("alice:short,bob:tok_bob_00000000000").is_err(),
-        "token 过短"
-    );
-    assert!(
-        AdminTokens::parse("alice:tok_x_0000000000,alice:tok_y_0000000000").is_err(),
-        "id 重复"
-    );
-    assert!(
-        AdminTokens::parse("alice:tok_same_00000000,bob:tok_same_00000000").is_err(),
-        "token 重复"
-    );
-}
-
-#[test]
-fn token_debug_output_never_contains_secret() {
-    let admin = AdminTokens::parse("alice:tok_alice_000000000").unwrap();
-    let agent = AgentTokens::parse("analyst-1:analyst:tok_a_000000000000").unwrap();
-    // Settings 派生 Debug 会直接打出这两个容器，因此容器自身的 Debug 必须脱敏。
-    let dumped = format!("{admin:?} {agent:?}");
-    assert!(!dumped.contains("tok_alice_000000000"), "{dumped}");
-    assert!(!dumped.contains("tok_a_000000000000"), "{dumped}");
-    assert!(dumped.contains("alice"), "主体 id 仍需可用于排障");
-}
-
-#[test]
 fn agent_tokens_parse_and_authenticate() {
     let tokens = AgentTokens::parse(
         "analyst-1:analyst:tok_a_000000000000, bot-admin:admin:tok_b_000000000000",
@@ -491,4 +445,21 @@ fn admin_session_ttl_must_be_positive() {
     s.admin_session_ttl_secs = 0;
     let err = s.validate().expect_err("TTL 必须为正数");
     assert!(err.contains("JUMCP_ADMIN_SESSION_TTL_SECS"), "{err}");
+}
+
+/// 两把密钥用途分离：相等等于共用一把，泄露一把连带失去两层保护。
+#[test]
+fn secret_and_transport_keys_must_differ() {
+    let mut s = http_settings(8000, 8080);
+    s.transport_key = s.secret_key.clone();
+    let err = s.validate().expect_err("两把密钥相同必须拒绝启动");
+    assert!(
+        err.contains("JUMCP_SECRET_KEY")
+            && err.contains("JUMCP_TRANSPORT_KEY")
+            && err.contains("用途分离"),
+        "错误必须点名两个变量并说明用途分离: {err}"
+    );
+    http_settings(8000, 8080)
+        .validate()
+        .expect("两把不同密钥应当通过");
 }

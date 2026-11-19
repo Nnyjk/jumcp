@@ -653,7 +653,7 @@ async fn install_rejects_overlong_secret_ciphertext() {
 }
 
 #[tokio::test]
-async fn transport_key_requires_admin_token() {
+async fn transport_key_requires_admin_session() {
     let harness = BuiltinHarness::start().await;
     let (status, body) = call(
         &harness.admin,
@@ -670,7 +670,6 @@ async fn transport_key_missing_is_503() {
     let admin = jumcp_server::admin::router(jumcp_server::admin::AdminState {
         service: harness.service.clone(),
         store: harness.store.clone(),
-        tokens: harness.service.settings.admin_tokens.clone(),
         transport_key: None,
     });
     let (status, body) = call(&admin, Req::get("/admin/transport-key")).await;

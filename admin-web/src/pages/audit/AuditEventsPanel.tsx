@@ -6,17 +6,10 @@ import { groupLabel, roleLabel, useGroupIndex, useRoleIndex, useRolesQuery } fro
 import type { AuditEnvelope, AuditQuery, GroupItem } from '../../api/types'
 import { auditSummary, approvalText, isStructuredEvent } from '../../audit'
 import { AuditDetail } from '../../components/AuditDetail'
-import { BackButton } from '../../components/BackButton'
 import { Card } from '../../components/Card'
 import { DataTable, type DataTableColumn } from '../../components/DataTable'
 import { Modal } from '../../components/Modal'
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  PageShell,
-  Pagination,
-} from '../../components/PageShell'
+import { EmptyState, ErrorState, LoadingState, Pagination } from '../../components/PageShell'
 import { formatDateTime } from '../../format'
 import { ACTION_LABEL, EVENT_TYPE_LABEL, OBJECT_TYPE_LABEL } from '../../labels'
 import {
@@ -47,19 +40,13 @@ function objectCell(row: AuditEnvelope, groupIndex: Map<string, GroupItem>): str
   return `${type} ${label}`
 }
 
-
-
-export default function AuditQueryPage({
-  initial,
-  onBack,
-  backLabel,
-}: {
-  /** 视图栈入口（令牌 / 能力档案）带来的预设筛选。 */
-  initial?: AuditInitialFilter | undefined
-  /** 视图内的返回入口；直接路由访问时缺省。 */
-  onBack?: (() => void) | undefined
-  backLabel?: string | undefined
-}) {
+/**
+ * 审计事件视图：条件筛选 + 事件表 + 分页 + 详情弹层。
+ *
+ * 后端缺省返回全部来源面的事件（平台面与 MCP 面），可用「来源面」筛选收窄；
+ * 请求参数只由 `queryFromFilter` 生成，URL 里只保留可深链的对象/令牌/事件 ID 与来源面。
+ */
+export function AuditEventsPanel({ initial }: { initial?: AuditInitialFilter | undefined }) {
   const [searchParams] = useSearchParams()
   const [draft, setDraft] = useState<FilterState>(() => initialFilter(initial, searchParams))
   const [filter, setFilter] = useState<AuditQuery>(() =>
@@ -104,8 +91,7 @@ export default function AuditQueryPage({
       header: '摘要',
       width: '300px',
       wrap: true,
-      cell: (row) =>
-        auditSummary(row, { group: (code) => groupIndex.get(code)?.name }),
+      cell: (row) => auditSummary(row, { group: (code) => groupIndex.get(code)?.name }),
       title: (row) => {
         const approval = row.payload.approval
         const base = auditSummary(row, { group: (code) => groupIndex.get(code)?.name })
@@ -129,7 +115,8 @@ export default function AuditQueryPage({
             <span className="mono">{row.actor.id.trim() === '' ? '未认证调用方' : row.actor.id}</span>
             <span className="actor-meta">
               来源 {source} · 令牌 {tokenShort} · 角色{' '}
-              <span title={row.actor.role}>{roleLabel(roleIndex, row.actor.role)}</span>
+              <span title={row.actor.role}>{roleLabel(roleIndex, row.actor.role)}</span> · 面{' '}
+              {row.surface?.trim() ? row.surface : '—'}
             </span>
           </span>
         )
@@ -178,8 +165,7 @@ export default function AuditQueryPage({
   }
 
   return (
-    <PageShell>
-      {onBack !== undefined && <BackButton label={backLabel ?? '返回'} onClick={onBack} />}
+    <>
       <AuditFilterForm
         draft={draft}
         onChange={setDraft}
@@ -245,6 +231,6 @@ export default function AuditQueryPage({
           <AuditDetail event={selected} />
         </Modal>
       )}
-    </PageShell>
+    </>
   )
 }

@@ -1,6 +1,6 @@
 # 当前工具面盘点（改造成 MCP router / 三组切分前的基线）
 
-> **当前事实（覆盖下文历史盘点）**：ClickHouse 内置只读查询 `db_query_readonly` 与模板执行 `db_run_template` 已移除，`basic` 组不再有数据源查询/执行入口。现在常驻内置工具只有三个元工具：`search_capabilities`、`describe_capability`、`list_groups`；`basic` 作为代码内置组与契约继续存在（不可配置、不可授权），上游 MCP 只读工具可按工具逐项加入 `basic`（`<server_id>__<tool>`）。ClickHouse 等数据源查询改由上游 MCP server 提供工具接入。下文是改造前的工具面基线，仅作历史参考。
+> **当前事实（覆盖下文历史盘点）**：ClickHouse 内置只读查询 `db_query_readonly` 已移除；模板执行 `db_run_template` **已恢复**（`b32e1bb` 删除，本次按 `b32e1bb^` 的语义重写接入），它是"从审计提取高频查询 → 注册成模板 → agent 调用"闭环的执行臂。现在常驻内置工具是四个：`search_capabilities`、`describe_capability`、`list_groups`、`db_run_template`；`basic` 作为代码内置组与契约继续存在（不可配置、不可授权），上游 MCP 只读工具可按工具逐项加入 `basic`（`<server_id>__<tool>`）。自由拼 SQL 仍无内置入口，需要上游 MCP server 提供工具。下文是改造前的工具面基线，除 `db_run_template` 的执行链外仅作历史参考。
 
 结论先行：内置工具共 **9 个**（常驻 5 + 维护 4），全部硬编码在 `mcp.rs`，**没有 group 字段**、**没有上游转发**、**没有动态注册**。
 组语义只有两档：`builtin`（常驻、恒可见）与 `admin`（组内可见），`basic/analysis/admin` 三分不存在；
@@ -130,12 +130,12 @@
 
 - 入口二选一：`settings.transport ∈ {stdio, streamable-http}`（`config.rs:521,574`）；`main.rs:121-125` 分派。
   - stdio：逐行 JSON-RPC，`stdin/stdout`，无 per-request 身份（`main.rs:128-164`），身份=`Service::process_actor`（`service.rs:122-125`），scope 来自 `default_scope`（`service.rs:414-423`）。
-  - streamable-http：`POST /mcp`（`mcp.rs:1664-1667`），身份只认 `Authorization: Bearer` → `access_tokens` 表（`post_mcp`，`mcp.rs:1697-1773`）；`/admin/*` 与 `/mcp` 合并在同一 listener（`main.rs:199-208`）。HTTP 模式强制要求 `JUMCP_ADMIN_TOKENS` 与审计路径，否则拒绝启动（`main.rs:172-184`）。
+  - streamable-http：`POST /mcp`（`mcp.rs:1664-1667`），身份只认 `Authorization: Bearer` → `access_tokens` 表（`post_mcp`，`mcp.rs:1697-1773`）；管理面独立监听 `JUMCP_ADMIN_PORT`。HTTP 模式强制要求审计路径，否则拒绝启动（`main.rs`）；`JUMCP_ADMIN_TOKENS` **已移除**——管理面身份来自 admin 账号会话（`POST /admin/login` 换 HttpOnly cookie），管理面不接受任何 Bearer。
 - JSON-RPC 方法集合（`mcp.rs:207-230`）：`initialize`、`tools/list`、`tools/call`、`ping`；`notifications/*` 一律返回 null；其余 `-32601`。**没有** `resources/*`、`prompts/*`、`logging/setLevel`、`completion/*`，也没有 `Mcp-Session-Id` 头/SSE 流（每条请求独立 HTTP POST，响应即 JSON）。
 - `initialize` 回执硬编码 `protocolVersion:"2025-03-26"`、`serverInfo.name="jumcp"`、`version:"0.1.0"`（`mcp.rs:214-217`），不从 `CARGO_PKG_VERSION` 取。
 - 子进程 connector（可复用的 stdio 上游骨架，`jumcp-server/src/connector.rs`）：
   - 协议：行分隔 JSON-RPC 2.0，`initialize`/`query`/`shutdown`，版本常量 `PROTOCOL_VERSION=1`（`jumcp-connector-protocol/src/lib.rs:10-14`）。
-  - 启动：`ConnectorAgent::spawn`（`connector.rs:104-157`），`stdin/stdout/stderr` 全 piped、`kill_on_drop(true)`、剔除 `JUMCP_ADMIN_TOKENS`/`JUMCP_AGENT_TOKENS` 环境变量；stderr 异步收集 32 行尾部并脱敏（`connector.rs:134-152`）。
+  - 启动：`ConnectorAgent::spawn`（`connector.rs:104-157`），`stdin/stdout/stderr` 全 piped、`kill_on_drop(true)`、剔除管理面与 agent 凭据环境变量（`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD`/`JUMCP_AGENT_TOKENS`；`JUMCP_ADMIN_TOKENS` 已移除）；stderr 异步收集 32 行尾部并脱敏（`connector.rs:134-152`）。
   - 握手：`initialize` deadline 10s，协议版本不符即杀进程（`connector.rs:315-361`）。
   - 请求：每请求自增 id、写一行读一行，`timeout(deadline)`；超时/EOF 标 `fatal` 并杀进程，下一次调用重新拉起，**不重试**（`connector.rs:159-215`、`363-430`）。
   - 查询 deadline = `statement_timeout_ms + 5s`，上限 310s（`connector.rs:438-444`）。

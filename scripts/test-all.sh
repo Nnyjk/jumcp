@@ -21,8 +21,9 @@ BACKEND_DIR="$REPO_ROOT/backend"
 WEB_DIR="$REPO_ROOT/admin-web"
 POLICY_FILE="$REPO_ROOT/config/policy.toml"
 
-ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"
-ALICE_TOKEN="tok_alice_000000000"
+# 管理面只认账号密码换来的会话 cookie：e2e 与浏览器走同一条登录链路。
+ADMIN_USERNAME="alice"
+ADMIN_PASSWORD="alice-correct-horse"
 # /mcp 的 per-request 身份（agent_id:role:token）；E2E 用 analyst 主体取工具清单
 AGENT_TOKENS="agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001"
 ANALYST_AGENT_TOKEN="tok_agent_analyst_0001"
@@ -274,7 +275,8 @@ CHECK_LOG="$TMP_DIR/checks.log"
   export JUMCP_MCP_CONFIG_FILE="$POLICY_FILE"
   export JUMCP_MCP_REGISTRY_PATH="$TMP_DIR/registry.sqlite3"
   export JUMCP_MCP_AUDIT_PATH="$TMP_DIR/audit.sqlite3"
-  export JUMCP_ADMIN_TOKENS="$ADMIN_TOKENS"
+  export JUMCP_ADMIN_USERNAME="$ADMIN_USERNAME"
+  export JUMCP_ADMIN_PASSWORD="$ADMIN_PASSWORD"
   export JUMCP_AGENT_TOKENS="$AGENT_TOKENS"
   # 测试固定密钥：HTTP 模式缺它会拒绝启动。
   export JUMCP_SECRET_KEY="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -312,7 +314,7 @@ if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf
 fi
 record "e2e: health /health" "PASS" "$(( $(now_ms) - HEALTH_START ))" "$SERVER_LOG"
 
-# 4b. 管理面鉴权：匿名 401 / alice 200 且含 items
+# 4b. 管理面鉴权：匿名 401 → 用户名口令登录换 cookie → 会话身份可读且含 items
 echo "==> e2e: admin auth /admin/review-queue"
 AUTH_FILE="$TMP_DIR/review_queue.json"
 AUTH_START="$(now_ms)"
@@ -322,10 +324,27 @@ if [ "$code" != "401" ]; then
   echo "匿名访问 /admin/review-queue 期望 401，实际 $code"
   fail_step "e2e: admin auth /admin/review-queue" ""
 fi
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$AUTH_FILE" -w "%{http_code}" -H "Authorization: Bearer $ALICE_TOKEN" "$BASE_URL/admin/review-queue" 2>/dev/null || echo 000)"
+# 登录是唯一的身份来源；POST 必须带同源 Origin（CSRF）。
+ADMIN_JAR="$TMP_DIR/admin-cookies.txt"
+LOGIN_FILE="$TMP_DIR/admin_login.json"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -c "$ADMIN_JAR" -o "$LOGIN_FILE" -w "%{http_code}" \
+  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE_URL" \
+  --data "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "$BASE_URL/admin/login" 2>/dev/null || echo 000)"
+if [ "$code" != "204" ]; then
+  record "e2e: admin auth /admin/review-queue" "FAIL" "$(( $(now_ms) - AUTH_START ))" "$LOGIN_FILE"
+  echo "POST /admin/login 期望 204，实际 $code"
+  fail_step "e2e: admin auth /admin/review-queue（登录失败）" "$LOGIN_FILE" "$SERVER_LOG"
+fi
+if ! grep -qi 'jumcp_session' "$ADMIN_JAR"; then
+  record "e2e: admin auth /admin/review-queue" "FAIL" "$(( $(now_ms) - AUTH_START ))" ""
+  echo "POST /admin/login 未下发 jumcp_session cookie"
+  fail_step "e2e: admin auth /admin/review-queue" ""
+fi
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$AUTH_FILE" -w "%{http_code}" -b "$ADMIN_JAR" "$BASE_URL/admin/review-queue" 2>/dev/null || echo 000)"
 if [ "$code" != "200" ]; then
   record "e2e: admin auth /admin/review-queue" "FAIL" "$(( $(now_ms) - AUTH_START ))" ""
-  echo "带 alice token 访问 /admin/review-queue 期望 200，实际 $code"
+  echo "带会话 cookie 访问 /admin/review-queue 期望 200，实际 $code"
   fail_step "e2e: admin auth /admin/review-queue" ""
 fi
 if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(!Array.isArray(d.items)){console.error("响应缺少 items 字段");process.exit(1)}' "$AUTH_FILE" >>"$CHECK_LOG" 2>&1; then
@@ -367,7 +386,7 @@ record "e2e: mcp initialize + tools/list" "PASS" "$(( $(now_ms) - MCP_START ))" 
 echo "==> e2e: admin /admin/audit-events"
 AUDIT_FILE="$TMP_DIR/audit_events.json"
 AUDIT_START="$(now_ms)"
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$AUDIT_FILE" -w "%{http_code}" -H "Authorization: Bearer $ALICE_TOKEN" "$BASE_URL/admin/audit-events?limit=5" 2>/dev/null || echo 000)"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$AUDIT_FILE" -w "%{http_code}" -b "$ADMIN_JAR" "$BASE_URL/admin/audit-events?limit=5" 2>/dev/null || echo 000)"
 if [ "$code" != "200" ]; then
   record "e2e: admin /admin/audit-events" "FAIL" "$(( $(now_ms) - AUDIT_START ))" ""
   echo "GET /admin/audit-events 期望 200，实际 $code"
@@ -388,7 +407,7 @@ TOKEN_BODY='{"name":"e2e-只读组","role":"analyst","groups":["db.read.core"],"
 # 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TMP_DIR 内随脚本清理。
 TOKEN_BODY_FILE="$TMP_DIR/token_create_body.json"
 printf '%s' "$TOKEN_BODY" >"$TOKEN_BODY_FILE"
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $ALICE_TOKEN" --data-binary "@$TOKEN_BODY_FILE" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$TOKEN_FILE" -w "%{http_code}" -X POST -H 'Content-Type: application/json' -H "Origin: $BASE_URL" -b "$ADMIN_JAR" --data-binary "@$TOKEN_BODY_FILE" "$BASE_URL/admin/tokens" 2>/dev/null || echo 000)"
 if [ "$code" != "201" ]; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
   echo "POST /admin/tokens 期望 201，实际 $code"
@@ -407,7 +426,7 @@ if ! node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf
   fail_step "e2e: admin token create + mcp tools/list filter（allowlist 过滤失败）" "$CHECK_LOG" "$SERVER_LOG"
 fi
 REVOKE_FILE="$TMP_DIR/token_revoke.json"
-code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$REVOKE_FILE" -w "%{http_code}" -X POST -H "Authorization: Bearer $ALICE_TOKEN" "$BASE_URL/admin/tokens/$PLATFORM_TOKEN_ID/revoke" 2>/dev/null || echo 000)"
+code="$(curl -sS --connect-timeout 2 --max-time 5 -o "$REVOKE_FILE" -w "%{http_code}" -X POST -H "Origin: $BASE_URL" -b "$ADMIN_JAR" "$BASE_URL/admin/tokens/$PLATFORM_TOKEN_ID/revoke" 2>/dev/null || echo 000)"
 if [ "$code" != "200" ]; then
   record "e2e: admin token create + mcp tools/list filter" "FAIL" "$(( $(now_ms) - TOKEN_START ))" ""
   echo "POST /admin/tokens/{id}/revoke 期望 200，实际 $code"

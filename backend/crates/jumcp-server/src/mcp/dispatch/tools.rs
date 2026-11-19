@@ -279,6 +279,8 @@ impl McpServer {
                 // 结构化结果必须是对象：组索引挂在 `groups` 下，条目字段不变。
                 tool_result(id, json!({"groups": counts}), false)
             }
+            // 模板执行臂：唯一的内置取数通道（SQL 来自注册表，不是 agent 拼的）。
+            "db_run_template" => self.tool_db_run_template(id, &args, scope, actor).await,
             // 维护通道：可见性与调用权都由服务端 scope 判定（客户端是否看过清单不影响结果）。
             "admin_register_template"
             | "admin_review_queue"

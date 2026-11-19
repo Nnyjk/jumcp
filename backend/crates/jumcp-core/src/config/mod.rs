@@ -13,9 +13,7 @@ mod tenant;
 
 use datasource::DatasourceFile;
 pub use datasource::DatasourceRef;
-pub use principals::{
-    AdminPrincipal, AdminTokens, AgentPrincipal, AgentTokens, constant_time_eq, is_principal_id,
-};
+pub use principals::{AgentPrincipal, AgentTokens, constant_time_eq, is_principal_id};
 pub use tenant::{GroupDef, RoleDef, TenantPolicy};
 
 #[cfg(test)]
@@ -99,9 +97,6 @@ pub struct Settings {
     /// 管理台静态构建产物目录（`JUMCP_MCP_WEB_DIR`）：空表示不托管静态资源。
     /// 非空时启动期必须存在且含 `index.html`（fail-closed，见 [`validate_web_dir`]）。
     pub web_dir: String,
-    /// 管理面 token→actor 映射（JUMCP_ADMIN_TOKENS="alice:tok,bob:tok"）。
-    /// HTTP 模式为空即拒绝启动（fail-closed）；不接受任何“匿名管理员”降级。
-    pub admin_tokens: AdminTokens,
     /// MCP 面 per-request 身份（JUMCP_AGENT_TOKENS="agent_id:role:token,..."）。
     /// HTTP `/mcp` 只认这里派生的身份；为空时 /mcp 一律 `MCP_UNAUTHORIZED`（无兜底角色）。
     pub agent_tokens: AgentTokens,
@@ -139,7 +134,6 @@ impl Default for Settings {
             registry_path: "data/registry.sqlite3".to_string(),
             templates_file: String::new(),
             web_dir: String::new(),
-            admin_tokens: AdminTokens::default(),
             agent_tokens: AgentTokens::default(),
             flatten_threshold: 40,
             groups_mode: "strict".to_string(),
@@ -195,7 +189,6 @@ impl Settings {
         s.registry_path = env_or("JUMCP_MCP_REGISTRY_PATH", &s.registry_path);
         s.templates_file = env_or("JUMCP_MCP_TEMPLATES_FILE", &s.templates_file);
         s.web_dir = env_or("JUMCP_MCP_WEB_DIR", &s.web_dir);
-        s.admin_tokens = AdminTokens::parse(&env_or("JUMCP_ADMIN_TOKENS", ""))?;
         s.agent_tokens = AgentTokens::parse(&env_or("JUMCP_AGENT_TOKENS", ""))?;
         s.flatten_threshold = env_or("JUMCP_MCP_FLATTEN_THRESHOLD", "40")
             .parse::<i64>()
@@ -235,6 +228,17 @@ impl Settings {
         if self.transport == "streamable-http" && self.transport_key.is_none() {
             return Err(
                 "JUMCP_TRANSPORT_KEY 未设置：HTTP 模式必须注入 64 位十六进制密钥（生成方式：openssl rand -hex 32）"
+                    .to_string(),
+            );
+        }
+        // 两把密钥用途分离（落库加密 vs 浏览器传输）：相等等于共用一把，泄露一把就同时
+        // 失去"落库密文"与"传输密文"两层，配置期直接拒绝。用常量时间比较避免把
+        // "前几位相同"这种信息留在启动耗时的侧信道里。
+        if let (Some(secret), Some(transport)) = (&self.secret_key, &self.transport_key)
+            && constant_time_eq(&secret.to_hex(), &transport.to_hex())
+        {
+            return Err(
+                "JUMCP_SECRET_KEY 与 JUMCP_TRANSPORT_KEY 不能相同：两把密钥必须用途分离（落库加密 vs 浏览器传输加密），泄露一把不得连带另一把"
                     .to_string(),
             );
         }

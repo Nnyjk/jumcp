@@ -81,7 +81,7 @@ CI 只订阅 `dev` 的 push 与 PR：`main` 上的改动只能经 `dev → main`
 `needs: [backend, web]`：上游失败时不再排队一次 90 分钟的镜像构建；镜像仍从源码各自重编，不消费上游 artifact。镜像冒烟同时覆盖内置 MCP 包的安装链路（起容器时注入固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`，见 `scripts/smoke-image.sh` 第 8 步）。
 
 1. `docker/setup-buildx-action`
-2. `JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=<64 个 0> JUMCP_TRANSPORT_KEY=<64 个 0> docker stack config -c deploy/portainer-stack.yml >/dev/null`（步骤名 `Validate stack file`）：只做配置解析，校验 `deploy/portainer-stack.yml` 落在 **Swarm** 接受的 compose 子集内（见 [portainer-swarm.md](portainer-swarm.md)）；不部署、不登录 registry。dummy token/密钥只为满足 `${JUMCP_ADMIN_TOKENS:?…}`、`${JUMCP_SECRET_KEY:?…}` 与 `${JUMCP_TRANSPORT_KEY:?…}` 的 fail-fast——`platform` 这类 Swarm 会拒绝的键在这里就直接失败，不用等真部署
+2. `JUMCP_ADMIN_USERNAME=ci-placeholder JUMCP_ADMIN_PASSWORD=ci-placeholder-password JUMCP_SECRET_KEY=<64 个 0> JUMCP_TRANSPORT_KEY=<64 个 0> docker stack config -c deploy/portainer-stack.yml >/dev/null`（步骤名 `Validate stack file`）：只做配置解析，校验 `deploy/portainer-stack.yml` 落在 **Swarm** 接受的 compose 子集内（见 [portainer-swarm.md](portainer-swarm.md)）；不部署、不登录 registry。dummy 账号/密钥只为满足 `${JUMCP_ADMIN_USERNAME:?…}`、`${JUMCP_ADMIN_PASSWORD:?…}`、`${JUMCP_SECRET_KEY:?…}` 与 `${JUMCP_TRANSPORT_KEY:?…}` 的 fail-fast——`platform` 这类 Swarm 会拒绝的键在这里就直接失败，不用等真部署
    本地可另跑 `docker compose -f deploy/portainer-stack.yml config -q` 作 YAML/插值旁证：它按 compose 语义求值，会为 `version` 键给废弃警告，也不会像 `docker stack config` 那样拒收 `platform` 这类 Swarm 非法键。部署门禁以 `docker stack config` 为准，CI 只跑后者。
 3. `docker/build-push-action`：`context: .`、`platforms: linux/amd64`、`tags: jumcp:ci`、`load: true`、`provenance: false`、`sbom: false`（load 模式不支持这两项），GHA 缓存 `type=gha,scope=jumcp-image`
 4. `bash scripts/smoke-image.sh jumcp:ci`（见下文）
@@ -137,7 +137,7 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
   - `JUMCP_MCP_TRANSPORT=streamable-http`、`JUMCP_MCP_HOST=0.0.0.0`、`JUMCP_MCP_PORT=8000`
   - `JUMCP_MCP_CONFIG_FILE=/app/config/policy.toml`
   - `JUMCP_MCP_REGISTRY_PATH=/data/registry.sqlite3`、`JUMCP_MCP_AUDIT_PATH=/data/audit.sqlite3`
-- `JUMCP_ADMIN_TOKENS` **没有任何默认值**：HTTP 模式下不配就拒绝启动（fail-closed）。镜像里不含任何 token/secret
+- `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD` **没有任何默认值**：HTTP 模式下空库首启就必须提供（口令至少 12 位），否则拒绝启动（fail-closed）。首个账号落库为 Argon2id 哈希，之后这两个变量不再生效，改口令走 `PATCH /admin/admins/{id}`。镜像里不含任何账号/口令/secret
 - 部署形态：单容器 `docker run` 见下文「运行命令」；Portainer / Docker Swarm 用 `deploy/portainer-stack.yml`（单副本、`stop-first`、命名卷），前置条件与边界见 [portainer-swarm.md](portainer-swarm.md)
 
 ## 无头 Web 包（`web-cd.yml`）
@@ -174,7 +174,8 @@ docker buildx build --platform linux/amd64 -t jumcp:local --load .
 
 ```bash
 docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
-  -e JUMCP_ADMIN_TOKENS="admin:$(openssl rand -hex 24)" \
+  -e JUMCP_ADMIN_USERNAME=admin \
+  -e JUMCP_ADMIN_PASSWORD="$(openssl rand -hex 12)" \
   -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
   -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
   -v jumcp-data:/data \
@@ -218,15 +219,15 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 
 - 需要：`docker`、`curl`、`jq`
 - 容器参数：`/data` 用 `--tmpfs /data:rw,mode=1777,size=64m`（非 root 可写 + 每次干净空库），端口默认随机（`-p 127.0.0.1::8000`，也可 `--port` 指定）
-- 注入凭证：`JUMCP_ADMIN_TOKENS=smoke:<token>`、`JUMCP_AGENT_TOKENS=agent-analyst:analyst:<token>`；可用 `JUMCP_SMOKE_ADMIN_TOKEN`、`JUMCP_SMOKE_AGENT_TOKEN` 覆盖
+- 注入凭证：`JUMCP_ADMIN_USERNAME=smoke` + `JUMCP_ADMIN_PASSWORD=<至少 12 位>`（首次启动在空库里播种管理员）、`JUMCP_AGENT_TOKENS=agent-analyst:analyst:<token>`；可用 `JUMCP_SMOKE_ADMIN_USERNAME`、`JUMCP_SMOKE_ADMIN_PASSWORD`、`JUMCP_SMOKE_AGENT_TOKEN` 覆盖
 - 容器注入固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（内置包安装链路的前提，见断言第 8 条）
 - 断言：
   1. `/health` 探针分支（无 `Accept` / `Accept: application/json`）200 + `application/json` 且 `audit_chain == "valid"`——监控与容器探针不会被前端劫持
-  2. `GET /health` 且 `Accept: text/html` → 200 `text/html` 且含 `id="root"`（浏览器导航落管理台健康页）
+  2. `GET /health` 且 `Accept: text/html` → 200 `text/html` 且含 `id="root"`（浏览器直接导航 `/health` 时落同源 SPA 外壳，不是 JSON 探针）
   3. `/` 200 `text/html` 且含 `id="root"`
   4. `/review` 200 SPA 回退
   5. `/assets/*.js` 200 且非空
-  6. 匿名 `/admin/review-queue` → 401；带管理 token → 200 且 `items` 是数组
+  6. 管理面鉴权链路：匿名 `/admin/review-queue` → 401 `MCP_UNAUTHORIZED`；`POST /admin/login` 用户名口令 → 204 + `HttpOnly` 会话 cookie；错误口令 → 401 且 message 为 `用户名或密码错误`；带 cookie 的 `/admin/session` 返回 `actor.id == smoke`；带 cookie 的 `/admin/admins` → 200、`items` 是数组、`total >= 1`、不含 `$argon2id$` 与口令原文；带 cookie 的 `/admin/review-queue` → 200 且 `items` 是数组；`POST /admin/logout` 后旧 cookie → 401
   7. `/mcp` 用 agent token `initialize` 200、`tools/list` 200 且含 `search_capabilities`
   8. 内置包链路：容器注入 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`；断言 `/admin/mcp/catalog` 里 `clickhouse-basic` 的 `transport` 为 `http` 且没有二进制/stdio 开关字段；安装（`url=http://127.0.0.1:1`，密码提交预先算好的 `enc:v1:` 传输密文，只验证 HTTP 端点与工具缓存，不验证真库；响应里的密码是 `***`）→ 同一端点再提交明文密码必须 400 `MCP_TRANSPORT_CIPHERTEXT_REQUIRED` → `POST /admin/upstreams/{id}/refresh` 后 `status=ok`、`tool_count=3`；`PATCH .../config` 改 `url` 且 `secrets_set.password=true`、响应不含明文/密文；agent token 的 `tools/list` 含 `clickhouse__query`；最后 `DELETE` 卸载且 `deleted=true`
   9. `id -u` = `10001`
@@ -293,7 +294,7 @@ printf '%s' "$payload" \
 
 ## 管理台鉴权边界
 
-- 管理台是薄前端，浏览器**不发** `Authorization`：管理面自带登录页，`POST /admin/login` 交一次 token 换 HttpOnly 会话 cookie，此后 `/admin/*` 靠 cookie 认身份（脚本仍可用 Bearer）。镜像只负责「同源静态资源 + API」一起可用，不提供任何 token 注入后门，也没有网关
-- 开发期不注入任何凭证：Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` 指管理面、`JUMCP_DEV_API_TARGET` 指 MCP 面），两个变量都只存在于 Node 进程环境；`vite.config.ts` 在 production 构建期检测 `VITE_ADMIN_TOKEN`/`VITE_ADMIN_ACTOR` 就直接终止构建
-- `scripts/smoke-image.sh` 直接带 Bearer 打 `/admin/review-queue`，验证的是**后端鉴权边界**（匿名 401、带 token 200），不是浏览器行为
+- 管理台是薄前端，浏览器**不发** `Authorization`：管理面自带登录页，`POST /admin/login` 提交用户名口令换 HttpOnly 会话 cookie，此后 `/admin/*` 只认 cookie（没有 Bearer 回落，脚本也用同一条登录链路）。镜像只负责「同源静态资源 + API」一起可用，不提供任何凭证注入后门，也没有网关
+- 开发期不注入任何凭证：Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` 指管理面、`JUMCP_DEV_API_TARGET` 指 MCP 面），两个变量都只存在于 Node 进程环境
+- `scripts/smoke-image.sh` 走真实登录链路（口令换 cookie 后打 `/admin/review-queue` 与 `/admin/admins`），验证的是**后端鉴权边界**（匿名 401、错口令 401、有效会话 200），不是浏览器行为
 - 发布流水线不写任何 token 到仓库：GHCR 登录用 `GITHUB_TOKEN`，镜像构建不需要管理面凭证

@@ -86,7 +86,8 @@ impl StdioTransport {
             .args(&def.args)
             .envs(&env)
             // 上游进程不得继承本服务的治理凭据：谁拉起进程，谁负责收窄环境。
-            .env_remove("JUMCP_ADMIN_TOKENS")
+            .env_remove("JUMCP_ADMIN_USERNAME")
+            .env_remove("JUMCP_ADMIN_PASSWORD")
             .env_remove("JUMCP_AGENT_TOKENS")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

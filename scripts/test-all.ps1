@@ -37,8 +37,9 @@ $BackendDir = Join-Path $RepoRoot 'backend'
 $WebDir = Join-Path $RepoRoot 'admin-web'
 $PolicyFile = Join-Path $RepoRoot 'config/policy.toml'
 
-$AdminTokens = 'alice:tok_alice_000000000,bob:tok_bob_00000000000'
-$AliceToken = 'tok_alice_000000000'
+# 管理面只认账号密码换来的会话 cookie：e2e 与浏览器走同一条登录链路。
+$AdminUsername = 'alice'
+$AdminPassword = 'alice-correct-horse'
 # /mcp 的 per-request 身份（agent_id:role:token）；E2E 用 analyst 主体取工具清单
 $AgentTokens = 'agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001'
 $AnalystAgentToken = 'tok_agent_analyst_0001'
@@ -269,7 +270,8 @@ try {
     JUMCP_MCP_CONFIG_FILE   = $PolicyFile
     JUMCP_MCP_REGISTRY_PATH = (Join-Path $script:TempDir 'registry.sqlite3')
     JUMCP_MCP_AUDIT_PATH    = (Join-Path $script:TempDir 'audit.sqlite3')
-    JUMCP_ADMIN_TOKENS      = $AdminTokens
+    JUMCP_ADMIN_USERNAME    = $AdminUsername
+    JUMCP_ADMIN_PASSWORD    = $AdminPassword
     JUMCP_AGENT_TOKENS      = $AgentTokens
     # 测试固定密钥：HTTP 模式缺它会拒绝启动。
     JUMCP_SECRET_KEY        = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
@@ -318,7 +320,7 @@ try {
   }
   Add-Step 'e2e: health /health' 'PASS' $sw.Elapsed.TotalSeconds $serverLog
 
-  # 4b. 管理面鉴权：匿名 401 / alice 200 且含 items
+  # 4b. 管理面鉴权：匿名 401 → 用户名口令登录换 cookie → 会话身份可读且含 items
   Write-Host '==> e2e: admin auth /admin/review-queue'
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $authFile = Join-Path $script:TempDir 'review_queue.json'
@@ -327,10 +329,25 @@ try {
     $sw.Stop()
     Fail-E2E 'e2e: admin auth /admin/review-queue' $sw.Elapsed.TotalSeconds '' ("匿名访问 /admin/review-queue 期望 401，实际 {0}" -f $code)
   }
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $authFile -w '%{http_code}' -H "Authorization: Bearer $AliceToken" "$base/admin/review-queue" 2>$null | Out-String).Trim()
+  # 登录是唯一的身份来源；POST 必须带同源 Origin（CSRF）。body 走文件，避开 Windows curl 的 argv 转码。
+  $adminJar = Join-Path $script:TempDir 'admin-cookies.txt'
+  $loginFile = Join-Path $script:TempDir 'admin_login.json'
+  $loginBodyFile = Join-Path $script:TempDir 'admin_login_body.json'
+  $loginBody = '{"username":"' + $AdminUsername + '","password":"' + $AdminPassword + '"}'
+  [System.IO.File]::WriteAllText($loginBodyFile, $loginBody, [System.Text.UTF8Encoding]::new($false))
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -c $adminJar -o $loginFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Origin: $base" --data-binary "@$loginBodyFile" "$base/admin/login" 2>$null | Out-String).Trim()
+  if ($code -ne '204') {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin auth /admin/review-queue' $sw.Elapsed.TotalSeconds '' ("POST /admin/login 期望 204，实际 {0}" -f $code)
+  }
+  if (-not (Select-String -Path $adminJar -Pattern 'jumcp_session' -Quiet)) {
+    $sw.Stop()
+    Fail-E2E 'e2e: admin auth /admin/review-queue' $sw.Elapsed.TotalSeconds '' 'POST /admin/login 未下发 jumcp_session cookie'
+  }
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $authFile -w '%{http_code}' -b $adminJar "$base/admin/review-queue" 2>$null | Out-String).Trim()
   if ($code -ne '200') {
     $sw.Stop()
-    Fail-E2E 'e2e: admin auth /admin/review-queue' $sw.Elapsed.TotalSeconds '' ("带 alice token 访问 /admin/review-queue 期望 200，实际 {0}" -f $code)
+    Fail-E2E 'e2e: admin auth /admin/review-queue' $sw.Elapsed.TotalSeconds '' ("带会话 cookie 访问 /admin/review-queue 期望 200，实际 {0}" -f $code)
   }
   $ok = Invoke-NodeCheck $authFile 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(!Array.isArray(d.items)){console.error("响应缺少 items 字段");process.exit(1)}'
   $sw.Stop()
@@ -372,7 +389,7 @@ try {
   Write-Host '==> e2e: admin /admin/audit-events'
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $auditFile = Join-Path $script:TempDir 'audit_events.json'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $auditFile -w '%{http_code}' -H "Authorization: Bearer $AliceToken" "$base/admin/audit-events?limit=5" 2>$null | Out-String).Trim()
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $auditFile -w '%{http_code}' -b $adminJar "$base/admin/audit-events?limit=5" 2>$null | Out-String).Trim()
   if ($code -ne '200') {
     $sw.Stop()
     Fail-E2E 'e2e: admin /admin/audit-events' $sw.Elapsed.TotalSeconds '' ("GET /admin/audit-events 期望 200，实际 {0}" -f $code)
@@ -393,7 +410,7 @@ try {
   # 服务端 serde_json 因非法 UTF-8 直接 400。@文件 原样传 UTF-8 字节；文件在 TempDir 内随脚本清理。
   $tokenBodyFile = Join-Path $script:TempDir 'token_create_body.json'
   [System.IO.File]::WriteAllText($tokenBodyFile, $tokenBody, [System.Text.UTF8Encoding]::new($false))
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $AliceToken" --data-binary "@$tokenBodyFile" "$base/admin/tokens" 2>$null | Out-String).Trim()
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $tokenFile -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Origin: $base" -b $adminJar --data-binary "@$tokenBodyFile" "$base/admin/tokens" 2>$null | Out-String).Trim()
   if ($code -ne '201') {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens 期望 201，实际 {0}" -f $code)
@@ -414,7 +431,7 @@ try {
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds $script:CheckLog 'allowlist 过滤失败'
   }
   $revokeFile = Join-Path $script:TempDir 'token_revoke.json'
-  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $revokeFile -w '%{http_code}' -X POST -H "Authorization: Bearer $AliceToken" "$base/admin/tokens/$platformTokenId/revoke" 2>$null | Out-String).Trim()
+  $code = (& $curl -sS --connect-timeout 2 --max-time 5 -o $revokeFile -w '%{http_code}' -X POST -H "Origin: $base" -b $adminJar "$base/admin/tokens/$platformTokenId/revoke" 2>$null | Out-String).Trim()
   if ($code -ne '200') {
     $sw.Stop()
     Fail-E2E 'e2e: admin token create + mcp tools/list filter' $sw.Elapsed.TotalSeconds '' ("POST /admin/tokens/{id}/revoke 期望 200，实际 {0}" -f $code)

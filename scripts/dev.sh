@@ -11,7 +11,7 @@
 #   --no-web        只起后端
 #
 # 两个监听面（不能相同）：MCP 面挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面挂 `/admin/*` 与管理台静态站。
-# 管理台自带登录页：浏览器打开前端地址，在登录页里输入管理面 token（本脚本的 alice/bob）即可，前端不读任何 token 环境变量。
+# 管理台自带登录页：浏览器打开前端地址，用本脚本播种的管理员账号登录即可，前端不读任何凭证环境变量。
 # 前端代理目标：管理面走 JUMCP_DEV_ADMIN_TARGET（默认 http://127.0.0.1:8080），MCP 面走 JUMCP_DEV_API_TARGET（默认 http://127.0.0.1:8000），
 # 两者都只存在于 Node 进程环境。
 #
@@ -29,11 +29,11 @@ DATA_DIR="$REPO_ROOT/.dev-data"
 LOG_DIR="$DATA_DIR/logs"
 BASE_POLICY="$REPO_ROOT/config/policy.toml"
 
-ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"
+# 首次启动播种的管理员账号（库里已有账号时后端忽略这两个变量）。
+ADMIN_USERNAME="alice"
+ADMIN_PASSWORD="alice-correct-horse"
 # /mcp 的 per-request 身份：agent_id:role:token（role 必须在 config/policy.toml 的 [roles] 里）
 AGENT_TOKENS="agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001"
-ALICE_TOKEN="tok_alice_000000000"
-BOB_TOKEN="tok_bob_00000000000"
 
 BACKEND_PORT=8000
 ADMIN_PORT=8080
@@ -241,7 +241,8 @@ BACKEND_LOG="$LOG_DIR/backend.log"
   export JUMCP_MCP_CONFIG_FILE="$POLICY_FILE"
   export JUMCP_MCP_REGISTRY_PATH="$DATA_DIR/registry.sqlite3"
   export JUMCP_MCP_AUDIT_PATH="$DATA_DIR/audit.sqlite3"
-  export JUMCP_ADMIN_TOKENS="$ADMIN_TOKENS"
+  export JUMCP_ADMIN_USERNAME="$ADMIN_USERNAME"
+  export JUMCP_ADMIN_PASSWORD="$ADMIN_PASSWORD"
   export JUMCP_AGENT_TOKENS="$AGENT_TOKENS"
   # 本地开发用固定密钥：HTTP 模式缺它会拒绝启动（密码字段加密用）。
   export JUMCP_SECRET_KEY="${JUMCP_SECRET_KEY:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
@@ -340,11 +341,11 @@ fi
 echo ""
 echo "================ 开发环境已就绪 ================"
 echo "$WEB_LINE"
-echo "登录     打开上面的管理台地址 → 在登录页输入管理面 token（alice 或 bob）"
+echo "登录     打开上面的管理台地址 → 账号 $ADMIN_USERNAME / 口令 $ADMIN_PASSWORD"
 echo "MCP      http://127.0.0.1:$BACKEND_PORT/mcp"
-echo "管理面   http://127.0.0.1:$ADMIN_PORT/ （登录页；脚本直连 /admin/* 需 Bearer）"
+echo "管理面   http://127.0.0.1:$ADMIN_PORT/ （登录页；脚本直连 /admin/* 需先 POST /admin/login 换 cookie）"
 echo "健康     http://127.0.0.1:$BACKEND_PORT/health （MCP 面） / http://127.0.0.1:$ADMIN_PORT/health （管理面）"
-echo "令牌     alice=$ALICE_TOKEN （普通）  bob=$BOB_TOKEN （审批）"
+echo "账号     仅 $ADMIN_USERNAME（可在管理台 /admin/admins 增删改）"
 echo "数据     .dev-data/{registry,audit}.sqlite3   日志  .dev-data/logs/"
 echo "停止     Ctrl+C（会同时停掉前后端）"
 echo "================================================="

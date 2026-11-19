@@ -83,7 +83,12 @@ pub(super) fn observation(env: &Envelope) -> Option<CallObservation> {
             .to_string(),
         tokens: data.get("tokens").and_then(|v| v.as_i64()),
         cache: data.get("cache").and_then(|v| v.as_str()).map(String::from),
-        elapsed_ms: data.get("elapsed_ms").and_then(|v| v.as_i64()),
+        // 两个键的来源不同：模板/内置端点写 `elapsed_ms`，上游工具调用（`mcp/dispatch/upstream.rs`）
+        // 写 `duration_ms`；只认前者会让上游耗时在台账里恒为 null。
+        elapsed_ms: data
+            .get("elapsed_ms")
+            .or_else(|| data.get("duration_ms"))
+            .and_then(|v| v.as_i64()),
         version: data.get("version").and_then(|v| v.as_i64()),
         error_code: env
             .payload

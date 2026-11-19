@@ -163,7 +163,7 @@ async fn stats_lists_all_builtin_ids() {
     let h = harness();
     let (status, body) = call(&h.app, Req::get("/admin/tools/stats")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 7);
+    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 8);
     for id in BUILTIN_CAPABILITY_IDS {
         let cap = find_tool(&body, id);
         assert_eq!(
@@ -183,6 +183,7 @@ async fn stats_lists_all_builtin_ids() {
     for (id, category) in [
         ("search_capabilities", "basic"),
         ("describe_capability", "basic"),
+        ("db_run_template", "basic"),
         ("admin_review_queue", "analysis"),
         ("admin_audit_queries", "admin"),
     ] {
@@ -235,8 +236,8 @@ async fn stats_clamps_window_and_marks_limit_truncation() {
     );
     assert_eq!(
         body["tools"].as_array().expect("tools").len(),
-        9,
-        "7 个 builtin + 2 个注册能力"
+        10,
+        "8 个 builtin + 2 个注册能力"
     );
     assert_eq!(body["truncated"], json!(false));
 }
@@ -317,6 +318,34 @@ async fn tool_calls_detail_is_scoped_ordered_and_nullable() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], json!(0));
     assert_eq!(body["calls"], json!([]));
+}
+
+/// 上游工具调用的耗时键是 `duration_ms`（`mcp/dispatch/upstream.rs`），不是 `elapsed_ms`：
+/// 明细页必须回退到它，否则上游调用的耗时恒为 null。
+#[tokio::test]
+async fn tool_calls_reports_upstream_duration_ms() {
+    let h = harness();
+    append_event(
+        &h.audit,
+        "tool_call",
+        minutes_ago(10),
+        "s-up",
+        json!({
+            "object_type": "tool",
+            "object_id": "upstream.echo",
+            "action": "invoke",
+            "outcome": "ok",
+            "data": {
+                "arguments": {"text": "hi"},
+                "duration_ms": 42
+            }
+        }),
+    );
+
+    let (status, body) = call(&h.app, Req::get("/admin/tools/upstream.echo/calls")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], json!(1));
+    assert_eq!(body["calls"][0]["elapsed_ms"], json!(42));
 }
 
 /// 明细只读结构化载荷：`data.arguments` / `data.executed_script` / `data.bound_params`。
@@ -602,16 +631,14 @@ async fn admin_surface_events_are_excluded_from_stats_but_queryable() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], json!(0));
 
-    // 审计查询仍然返回它们，并且 surface 过滤生效。
+    // 审计缺省全量：业务面的 template_run 也在（统计排除不等于审计隐藏），平台面两条照常可查。
+    let (status, body) = call(&h.app, Req::get("/admin/audit-events")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], json!(3));
+    // 显式 surface=admin 收窄到平台操作。
     let (status, body) = call(&h.app, Req::get("/admin/audit-events?surface=admin")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], json!(2));
     let events = body["events"].as_array().expect("events");
     assert!(events.iter().all(|e| e["surface"] == json!("admin")));
-
-    let (status, body) = call(&h.app, Req::get("/admin/audit-events?surface=mcp")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["total"], json!(1), "业务面只有那条 template_run");
-    let events = body["events"].as_array().expect("events");
-    assert!(events.iter().all(|e| e["surface"] == json!("mcp")));
 }

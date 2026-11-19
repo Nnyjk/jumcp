@@ -9,7 +9,9 @@ pub mod canonical;
 pub mod config;
 pub mod entry;
 pub mod errors;
+pub mod password;
 pub mod registry;
+pub mod schemas;
 pub mod secret;
 pub mod template;
 
