@@ -40,7 +40,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
         json!({"query":"", "category":"basic", "limit":50}),
     )
     .await;
-    let ids: Vec<&str> = basic["result"]["content"]
+    let ids: Vec<&str> = basic["result"]["structuredContent"]["results"]
         .as_array()
         .expect("hits")
         .iter()
@@ -57,7 +57,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
         json!({"query":"admin_", "category":"admin", "limit":50}),
     )
     .await;
-    assert_eq!(admin["result"]["content"], json!([]));
+    assert_eq!(admin["result"]["structuredContent"]["results"], json!([]));
 
     // 旧 allowlist 里残留的两个取数工具 id：已不是内置工具，签发令牌时直接按未知 id 拒绝。
     let (status, rejected) = call(
@@ -123,7 +123,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
         json!({"query":"", "category":"analysis", "limit":50}),
     )
     .await;
-    let analysis_ids: Vec<&str> = analysis["result"]["content"]
+    let analysis_ids: Vec<&str> = analysis["result"]["structuredContent"]["results"]
         .as_array()
         .expect("hits")
         .iter()
@@ -145,7 +145,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
         json!({"query":"", "category":"admin", "limit":50}),
     )
     .await;
-    let admin_only_ids: Vec<&str> = admin_only["result"]["content"]
+    let admin_only_ids: Vec<&str> = admin_only["result"]["structuredContent"]["results"]
         .as_array()
         .expect("hits")
         .iter()

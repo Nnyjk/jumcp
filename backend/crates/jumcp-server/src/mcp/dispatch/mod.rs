@@ -347,8 +347,30 @@ fn rpc_mcp_error(id: &Value, e: &McpError) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":e.message,"data":data}})
 }
 
+/// `tools/call` 结果的规范形状：`content` 永远是 content block 数组，结构化对象另放
+/// `structuredContent`，失败再置 `isError`。
+///
+/// 为什么不再把对象塞进 `content`：MCP 客户端里有的只认 content block 数组（mcp-go 直接
+/// 报 `content is not an array`），把对象放 `content` 等于让内置工具对该类客户端不可用；
+/// 而纯文本块又丢掉结构，所以文本块承载同一份 JSON、`structuredContent` 承载原对象。
+fn tool_result(id: &Value, payload: Value, is_error: bool) -> Value {
+    let text = payload.to_string();
+    json!({
+        "jsonrpc":"2.0","id":id,
+        "result":{
+            "content":[{"type":"text","text":text}],
+            "structuredContent": payload,
+            "isError": is_error
+        }
+    })
+}
+
 fn err_tool(id: &Value, e: &McpError) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"result":{"content":{"error":{"code":e.code,"message":e.message,"data":e.data}},"isError":true}})
+    tool_result(
+        id,
+        json!({"error":{"code":e.code,"message":e.message,"data":e.data}}),
+        true,
+    )
 }
 
 #[cfg(test)]

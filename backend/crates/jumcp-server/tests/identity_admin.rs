@@ -298,7 +298,7 @@ async fn search_ids(app: &Router, token: &str, query: &str) -> Vec<String> {
         json!({"query": query, "limit": 50}),
     )
     .await;
-    resp["result"]["content"]
+    resp["result"]["structuredContent"]["results"]
         .as_array()
         .map(|hits| {
             hits.iter()
@@ -310,7 +310,7 @@ async fn search_ids(app: &Router, token: &str, query: &str) -> Vec<String> {
 
 /// 工具错误的稳定码（`result.content.error.code`）。
 fn err_code(resp: &Value) -> String {
-    resp["result"]["content"]["error"]["code"]
+    resp["result"]["structuredContent"]["error"]["code"]
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -520,7 +520,7 @@ async fn admin_register_template_creates_draft_then_human_publish_exposes_it() {
     )
     .await;
     assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
-    let content = &resp["result"]["content"];
+    let content = &resp["result"]["structuredContent"];
     assert_eq!(content["id"], json!("order.daily_summary"));
     assert_eq!(content["status"], json!("draft"));
     assert_eq!(content["version"], json!(1));
@@ -657,8 +657,11 @@ async fn admin_set_visibility_rejects_builtin_and_audits_success() {
     )
     .await;
     assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
-    assert_eq!(resp["result"]["content"]["discoverable"], json!(true));
-    assert_eq!(resp["result"]["content"]["callable"], json!(true));
+    assert_eq!(
+        resp["result"]["structuredContent"]["discoverable"],
+        json!(true)
+    );
+    assert_eq!(resp["result"]["structuredContent"]["callable"], json!(true));
 
     let events = audit_events(&h, "admin_change").await;
     let event = events
@@ -697,13 +700,13 @@ async fn admin_read_tools_serve_queue_and_audit_pages() {
 
     let queue = call_tool(&h.app, ADMIN_TOKEN, "admin_review_queue", json!({})).await;
     assert_eq!(queue["result"]["isError"], json!(false), "{queue}");
-    assert_eq!(queue["result"]["content"]["total"], json!(1));
+    assert_eq!(queue["result"]["structuredContent"]["total"], json!(1));
     assert_eq!(
-        queue["result"]["content"]["items"][0]["id"],
+        queue["result"]["structuredContent"]["items"][0]["id"],
         json!("cap.draft")
     );
     assert_eq!(
-        queue["result"]["content"]["items"][0]["status"],
+        queue["result"]["structuredContent"]["items"][0]["status"],
         json!("draft")
     );
 
@@ -716,7 +719,7 @@ async fn admin_read_tools_serve_queue_and_audit_pages() {
     .await;
     assert_eq!(page["result"]["isError"], json!(false), "{page}");
     assert_eq!(
-        page["result"]["content"]["limit"],
+        page["result"]["structuredContent"]["limit"],
         json!(200),
         "limit 必须夹紧到 200"
     );
@@ -901,7 +904,7 @@ async fn admin_register_template_without_audit_rejects_and_persists_nothing() {
     .await;
     assert_eq!(err_code(&resp), "MCP_AUDIT_ERROR", "{resp}");
     assert_eq!(
-        resp["result"]["content"]["error"]["data"]["hint"],
+        resp["result"]["structuredContent"]["error"]["data"]["hint"],
         json!("审计未启用，维护通道拒绝写入"),
         "{resp}"
     );
@@ -1128,4 +1131,233 @@ async fn generic_dispatch_call_audits_arguments() {
     // 维护工具不执行脚本：executed_script 必须为 null，不得伪造 SQL。
     assert_eq!(record["executed_script"], Value::Null);
     assert_eq!(record["outcome"], json!("ok"));
+}
+
+/// 内置工具结果必须是 content block 数组，且文本块与 `structuredContent` 同源。
+///
+/// 有的 MCP 客户端只认数组（mcp-go 对对象 `content` 直接报 `content is not an array`），
+/// 所以这里钉住形状：单块 text + 同一份 JSON 放 `structuredContent`。
+fn assert_text_blocks(resp: &Value) -> Value {
+    let result = &resp["result"];
+    let blocks = result["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("result.content 必须是数组: {resp}"));
+    assert_eq!(blocks.len(), 1, "单块结果: {resp}");
+    assert_eq!(blocks[0]["type"], json!("text"), "{resp}");
+    let text = blocks[0]["text"].as_str().expect("text 块必须带 text");
+    let parsed: Value = serde_json::from_str(text).expect("text 块必须是 JSON");
+    assert_eq!(
+        parsed, result["structuredContent"],
+        "文本块与 structuredContent 必须等价: {resp}"
+    );
+    parsed
+}
+
+/// 不支持自定义头的 MCP 客户端（现网 mcp-go 只在 `tools/call` 上带 Authorization）：
+/// `initialize` / `tools/list` 可用 `?access_token=` 完成鉴权。
+#[tokio::test]
+async fn query_access_token_authenticates_without_headers() {
+    let h = harness();
+
+    let (status, init) = call(
+        &h.app,
+        "POST",
+        &format!("/mcp?access_token={ANALYST_TOKEN}"),
+        None,
+        None,
+        Some(rpc("initialize", json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{init}");
+    assert!(
+        init["error"].is_null(),
+        "query token 必须能完成 initialize: {init}"
+    );
+    assert_eq!(
+        init["result"]["serverInfo"]["name"],
+        json!("jumcp"),
+        "{init}"
+    );
+    assert!(init["result"]["protocolVersion"].is_string(), "{init}");
+
+    let (status, listed) = call(
+        &h.app,
+        "POST",
+        &format!("/mcp?access_token={ANALYST_TOKEN}"),
+        None,
+        None,
+        Some(rpc("tools/list", json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        !names_of(&listed).is_empty(),
+        "query token 必须能列工具: {listed}"
+    );
+
+    // 头与 query 同时给：以头为准。query 里就算是垃圾 token，也不该把带合法头的请求拖成拒绝。
+    let (status, both) = call(
+        &h.app,
+        "POST",
+        "/mcp?access_token=tok_bogus_000000",
+        Some(ADMIN_TOKEN),
+        None,
+        Some(rpc("tools/list", json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{both}");
+    assert!(
+        names_of(&both).contains(&"admin_audit_queries".to_string()),
+        "头优先：身份必须来自 Authorization: {both}"
+    );
+}
+
+/// 未知 query token 与未知头 token 走同一条拒绝路径：状态码与错误体都不因来源分叉。
+#[tokio::test]
+async fn query_access_token_rejects_unknown_token() {
+    let h = harness();
+    // HTTP 状态沿用现状（200 + JSON-RPC 错误），鉴权结果只在 `data.mcp_code`。
+    let (status, body) = call(
+        &h.app,
+        "POST",
+        "/mcp?access_token=tok_not_configured_0001",
+        None,
+        None,
+        Some(rpc("initialize", json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["error"]["data"]["mcp_code"],
+        json!("MCP_UNAUTHORIZED"),
+        "{body}"
+    );
+    assert!(
+        body["result"].is_null(),
+        "非法 token 不得初始化成功: {body}"
+    );
+
+    // 空值、以及别的参数名（token=）都不算凭据：未授权不因"URL 上带了个东西"而放行。
+    for uri in ["/mcp?access_token=", "/mcp?token=tok_bogus"] {
+        let (_, body) = call(
+            &h.app,
+            "POST",
+            uri,
+            None,
+            None,
+            Some(rpc("initialize", json!({}))),
+        )
+        .await;
+        assert_eq!(
+            body["error"]["data"]["mcp_code"],
+            json!("MCP_UNAUTHORIZED"),
+            "{uri}: {body}"
+        );
+    }
+}
+
+/// query token 派生的身份与头 token 完全一致：`tool_call` 审计里必须有 token_id。
+#[tokio::test]
+async fn query_access_token_records_token_identity_in_audit() {
+    let h = harness();
+    let (_, resp) = call(
+        &h.app,
+        "POST",
+        &format!("/mcp?access_token={ADMIN_TOKEN}"),
+        None,
+        None,
+        Some(rpc(
+            "tools/call",
+            json!({"name": "admin_audit_queries", "arguments": {}}),
+        )),
+    )
+    .await;
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+
+    let events = audit_events(&h, "tool_call").await;
+    let called = events
+        .iter()
+        .find(|e| e.payload["object_id"] == json!("admin_audit_queries"))
+        .expect("必须写 tool_call");
+    assert_eq!(
+        called.actor["id"],
+        json!("agent-admin"),
+        "{:?}",
+        called.actor
+    );
+    let token_id = called.actor["token_id"]
+        .as_str()
+        .expect("query token 的审计必须带 token_id");
+    assert!(!token_id.is_empty(), "{:?}", called.actor);
+}
+
+/// `/admin/*` 只认头：URL 上的 token 不被接受（回落仅限 MCP 面）。
+#[tokio::test]
+async fn admin_surface_rejects_query_token() {
+    let h = harness();
+    let (status, body) = call(
+        &h.app,
+        "GET",
+        &format!("/admin/audit-events?access_token={ALICE_TOKEN}"),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"]["code"], json!("MCP_UNAUTHORIZED"), "{body}");
+}
+
+/// 内置工具（搜索/描述/组索引/维护通道/错误路径）结果统一成 content block 数组。
+#[tokio::test]
+async fn builtin_tool_results_are_content_blocks() {
+    let h = harness();
+    for (name, arguments) in [
+        ("search_capabilities", json!({"query": ""})),
+        (
+            "describe_capability",
+            json!({"capability_id": "search_capabilities"}),
+        ),
+        ("list_groups", json!({})),
+        ("admin_review_queue", json!({})),
+        ("admin_audit_queries", json!({})),
+    ] {
+        let resp = call_tool(&h.app, ADMIN_TOKEN, name, arguments).await;
+        assert_eq!(resp["result"]["isError"], json!(false), "{name}: {resp}");
+        let structured = assert_text_blocks(&resp);
+        assert!(
+            structured.is_object(),
+            "{name} 的 structuredContent 必须是对象: {resp}"
+        );
+    }
+    // 列表类结果落在结构化对象的具名字段里（对象不能直接是数组）。
+    let searched = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "search_capabilities",
+        json!({"query": ""}),
+    )
+    .await;
+    assert!(
+        assert_text_blocks(&searched)["results"].is_array(),
+        "{searched}"
+    );
+    let groups = call_tool(&h.app, ADMIN_TOKEN, "list_groups", json!({})).await;
+    assert!(assert_text_blocks(&groups)["groups"].is_array(), "{groups}");
+
+    // 错误路径同样是数组 + `isError:true`，错误对象原样放 structuredContent。
+    let missing = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "describe_capability",
+        json!({"capability_id": "nope"}),
+    )
+    .await;
+    assert_eq!(missing["result"]["isError"], json!(true), "{missing}");
+    let structured = assert_text_blocks(&missing);
+    assert_eq!(
+        structured["error"]["code"],
+        json!("MCP_CAPABILITY_NOT_FOUND"),
+        "{missing}"
+    );
 }

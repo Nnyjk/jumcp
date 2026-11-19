@@ -179,7 +179,7 @@ async fn flatten_over_budget_fails_with_hint() {
     };
     let server = server_with(catalog_with(5, "db.read.core"), 40, "fail", Some(caps));
     let resp = tools_list(&server).await;
-    let error = &resp["result"]["content"]["error"];
+    let error = &resp["result"]["structuredContent"]["error"];
     assert_eq!(error["code"], json!("MCP_BUDGET_EXCEEDED"));
     assert_eq!(error["data"]["flattened_count"], json!(5));
     assert!(error["data"]["suggestions"].as_array().is_some_and(|s| {
@@ -222,7 +222,7 @@ async fn flattened_definition_matches_describe() {
             "params":{"name":"describe_capability","arguments":{"capability_id":"cap.tool.00"}}
         }))
         .await;
-    let content = &described["result"]["content"];
+    let content = &described["result"]["structuredContent"];
     assert_eq!(
         flattened["inputSchema"], content["params_schema"],
         "平铺 schema 与 describe 必须同源"

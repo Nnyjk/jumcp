@@ -50,7 +50,7 @@
 - 管理台 UI：`http://<任意 swarm 节点>:<JUMCP_ADMIN_PORT_PUBLISHED>`（默认 8080，线上 52913），首屏是**登录页**
   （`POST /admin/login` 换 HttpOnly 会话 cookie）。管理台不再依赖反向代理注入 Bearer——这是本次分面带来的最大变化。
 - 健康检查：`GET /health` **两个面都有**；镜像与栈的 healthcheck 都各探一次，避免"另一面没监听"被判健康。
-- MCP endpoint：`POST /mcp`，客户端带 `Authorization: Bearer <agent token>`，走 MCP 面发布端口（默认 8000，线上 52912）。
+- MCP endpoint：`POST /mcp`，客户端带 `Authorization: Bearer <agent token>`；不支持自定义请求头的客户端（例如只在 `tools/call` 上带头的 mcp-go 系）可用 `POST /mcp?access_token=<agent token>`（仅 MCP 面，token 会出现在 URL 中，限内网、可重签发轮换），走 MCP 面发布端口（默认 8000，线上 52912）。
 - 分面是硬边界：管理面访问 `/mcp`、`/internal/*` 返回 `404 MCP_NOT_FOUND`；MCP 面访问 `/admin/*` 与 `/`
   同样 404（MCP 面不托管任何页面）。不要为了"方便"把两个端口映射到同一个发布端口。
 - 管理面是浏览器入口，默认 cookie **不带** `Secure`（内网 HTTP）。要经公网暴露，请前置 TLS 终止并设置

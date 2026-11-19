@@ -90,11 +90,11 @@ async fn inserted_upstream_tools_are_listed_and_forwarded() {
     )
     .await;
     assert_eq!(
-        searched["result"]["content"][0]["id"],
+        searched["result"]["structuredContent"]["results"][0]["id"],
         json!("analytics__echo")
     );
     assert_eq!(
-        searched["result"]["content"][0]["category"],
+        searched["result"]["structuredContent"]["results"][0]["category"],
         json!("custom")
     );
     let described = call_tool(
@@ -104,10 +104,13 @@ async fn inserted_upstream_tools_are_listed_and_forwarded() {
         json!({"capability_id":"analytics__echo"}),
     )
     .await;
-    assert_eq!(described["result"]["content"]["source"], json!("upstream"));
+    assert_eq!(
+        described["result"]["structuredContent"]["source"],
+        json!("upstream")
+    );
     let groups = call_tool(&h.app, &token, "list_groups", json!({})).await;
     assert!(
-        groups["result"]["content"]
+        groups["result"]["structuredContent"]["groups"]
             .as_array()
             .expect("groups")
             .iter()
@@ -144,12 +147,15 @@ async fn upstream_tools_respect_the_token_allowlist() {
         json!({"query":"analytics__", "limit":10}),
     )
     .await;
-    assert_eq!(searched["result"]["content"], json!([]));
+    assert_eq!(
+        searched["result"]["structuredContent"]["results"],
+        json!([])
+    );
 
     let resp = call_tool(&h.app, &denied, "analytics__echo", json!({})).await;
     assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
     assert_eq!(
-        resp["result"]["content"]["error"]["code"],
+        resp["result"]["structuredContent"]["error"]["code"],
         json!("MCP_CAPABILITY_NOT_FOUND")
     );
     assert!(
@@ -218,7 +224,7 @@ async fn upstream_errors_become_is_error_and_prefix_fallback_works() {
     let resp = call_tool(&h.app, &token, "analytics__explode", json!({})).await;
     assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
     assert_eq!(
-        resp["result"]["content"]["error"]["code"],
+        resp["result"]["structuredContent"]["error"]["code"],
         json!("MCP_UPSTREAM_ERROR")
     );
     assert!(resp.get("error").is_none(), "不得变成 JSON-RPC 协议错误");

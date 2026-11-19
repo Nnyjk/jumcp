@@ -4,7 +4,7 @@ use super::McpServer;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Uri};
 use axum::routing::post;
 use jumcp_core::entry::Actor;
 use jumcp_core::errors::McpError;
@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// `/mcp` 路由：per-request 身份来自 `Authorization: Bearer <平台生成的 access token>`。
+/// `/mcp` 路由：per-request 身份来自 `Authorization: Bearer <平台生成的 access token>`，
+/// 没有该头时回落到 `?access_token=<token>`（仅本路由；管理面与内置端点面只认头）。
 ///
 /// 放在库内（而不是 main 里）是为了让集成测试能走真实的 axum 链路验证身份派生，
 /// 而不是在测试里复制一份鉴权逻辑。生产环境只有这一条鉴权分支：token 必须命中
@@ -50,23 +51,49 @@ fn unauthorized(server: &McpServer, detail: Value) -> Value {
     })
 }
 
+/// `/mcp` 的 query 回落：只认 `access_token` 一个参数名（大小写敏感），其余参数
+///（`token`/`api_key` 之类）一律不看——多一套别名就多一条凭据泄漏面。
+///
+/// token 是 URL-safe 字符集，因此这里不做百分号解码：编码过的值匹配不上就是未知 token，
+/// 走与"没带 token"完全相同的拒绝路径。query 值绝不出现在错误体或日志里。
+fn query_access_token(uri: &Uri) -> Option<String> {
+    uri.query()?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|&(key, value)| key == ACCESS_TOKEN_PARAM && !value.is_empty())
+        .map(|(_, value)| value.to_string())
+}
+
+/// 查询参数名：`access_token`（OAuth 2.0 Bearer Token Usage 的既有名字，客户端不用自造）。
+const ACCESS_TOKEN_PARAM: &str = "access_token";
+
 async fn post_mcp(
     State(server): State<Arc<McpServer>>,
+    uri: Uri,
     headers: HeaderMap,
     body: String,
 ) -> Json<Value> {
     // 身份只来自数据库 token：缺 token / token 未知 / 已撤销 / 已过期一律 MCP_UNAUTHORIZED
     //（不回落默认 analyst，也不读环境变量静态 token）。
+    //
+    // 取 token 的顺序：Authorization 头优先，完全没有该头时才回落到 `?access_token=`。
+    // 两者都给时不看 query（不做"不一致就拒绝"的二次判定：那会把一次合法请求拖成 401，
+    // 也会把 token 是否有效的差异暴露成两种失败）；缺头回落是给不支持自定义头的 MCP
+    // 客户端留的通道（有的 Go 客户端只在 tools/call 上带 Authorization）。
+    // 仅 `/mcp` 走这条回落：`/admin/*`、`/internal/mcp/*` 只认头，URL 上的 token 不被接受。
     let token = match crate::admin::bearer(&headers) {
-        Some(token) if !token.is_empty() => token,
-        _ => {
-            return Json(unauthorized(
-                &server,
-                json!({"hint": "需要 Authorization: Bearer <平台生成的 access token>"}),
-            ));
-        }
+        Some(token) if !token.is_empty() => token.to_string(),
+        _ => match query_access_token(&uri) {
+            Some(token) => token,
+            None => {
+                return Json(unauthorized(
+                    &server,
+                    json!({"hint": "需要 Authorization: Bearer <平台生成的 access token>，或在 URL 上带 ?access_token=<token>"}),
+                ));
+            }
+        },
     };
-    let record = match server.service().authenticate_mcp_token(token) {
+    let record = match server.service().authenticate_mcp_token(&token) {
         Ok(Some(record)) => record,
         Ok(None) => {
             return Json(unauthorized(

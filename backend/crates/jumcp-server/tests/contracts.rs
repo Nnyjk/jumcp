@@ -91,7 +91,7 @@ fn call(name: &str, args: Value) -> Value {
 }
 
 fn err_code(resp: &Value) -> String {
-    resp["result"]["content"]["error"]["code"]
+    resp["result"]["structuredContent"]["error"]["code"]
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -202,7 +202,12 @@ async fn describe_schema_records_tokens() {
         ))
         .await;
     assert_eq!(resp["result"]["isError"], json!(false));
-    assert!(resp["result"]["schema_tokens"].as_i64().unwrap_or(0) >= 1);
+    assert!(
+        resp["result"]["structuredContent"]["schema_tokens"]
+            .as_i64()
+            .unwrap_or(0)
+            >= 1
+    );
 }
 
 #[tokio::test]

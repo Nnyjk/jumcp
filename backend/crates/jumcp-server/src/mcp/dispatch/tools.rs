@@ -194,8 +194,9 @@ impl McpServer {
                 ) {
                     return err_tool(id, &e);
                 }
-                let content: Vec<Value> = hits.iter().map(|h| json!({"id": h.id, "kind": h.kind, "group": h.group, "category": h.category, "one_line": h.one_line, "param_summary": h.param_summary, "token_cost": h.token_cost})).collect();
-                ok(id, json!({"content": content, "isError": false}))
+                let hits: Vec<Value> = hits.iter().map(|h| json!({"id": h.id, "kind": h.kind, "group": h.group, "category": h.category, "one_line": h.one_line, "param_summary": h.param_summary, "token_cost": h.token_cost})).collect();
+                // 结构化结果必须是对象（`structuredContent` 的规范形状），命中列表挂在 `results`。
+                tool_result(id, json!({"results": hits}), false)
             }
             "describe_capability" => {
                 let cap_id = args
@@ -248,22 +249,21 @@ impl McpServer {
                 ) {
                     return err_tool(id, &e);
                 }
-                ok(
+                tool_result(
                     id,
                     json!({
-                        "content": json!({
-                            "id": cap.id,
-                            "kind": cap.kind,
-                            "group": cap.group,
-                            "risk": cap.risk,
-                            "one_line": cap.one_line,
-                            "params_schema": cap.params_schema,
-                            "source": cap.source,
-                            "category": cap.category
-                        }),
-                        "isError": false,
+                        "id": cap.id,
+                        "kind": cap.kind,
+                        "group": cap.group,
+                        "risk": cap.risk,
+                        "one_line": cap.one_line,
+                        "params_schema": cap.params_schema,
+                        "source": cap.source,
+                        "category": cap.category,
+                        // schema 成本仍随结果回显：它是本次调用计入会话预算的量。
                         "schema_tokens": cost
                     }),
+                    false,
                 )
             }
             "list_groups" => {
@@ -276,7 +276,8 @@ impl McpServer {
                     Err(e) => return err_tool(id, &e),
                 };
                 let counts = catalog::group_counts(&visible);
-                ok(id, json!({"content": counts, "isError": false}))
+                // 结构化结果必须是对象：组索引挂在 `groups` 下，条目字段不变。
+                tool_result(id, json!({"groups": counts}), false)
             }
             // 维护通道：可见性与调用权都由服务端 scope 判定（客户端是否看过清单不影响结果）。
             "admin_register_template"

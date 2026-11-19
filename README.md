@@ -79,7 +79,7 @@ JUMCP_MCP_TRANSPORT=streamable-http cargo run -p jumcp-server  # HTTP（POST /mc
 
 HTTP 模式起**两个监听**：MCP 面（`JUMCP_MCP_PORT`）只挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面（`JUMCP_ADMIN_PORT`）只挂 `/admin/*`、`/health` 与管理台静态站。跨面访问一律 `404`（例如管理面 `POST /mcp`、MCP 面 `GET /admin/me`）。管理台自带登录页：`POST /admin/login {"token":"<admin token>"}` → `204` + HttpOnly 会话 cookie，脚本仍可用 `Authorization: Bearer`。完整契约（cookie 优先、CSRF 同源校验、登录限流、会话表）见 `docs/mcp-router.md` §9.0–9.1。
 
-MCP 接入令牌由管理平台生成并持久化在 registry SQLite 的 `access_tokens` 表；`/mcp` 只认 `Authorization: Bearer <平台 token>`，缺/错/撤销/过期一律 `MCP_UNAUTHORIZED`。创建示例：
+MCP 接入令牌由管理平台生成并持久化在 registry SQLite 的 `access_tokens` 表；`/mcp` 认 `Authorization: Bearer <平台 token>`，没有该头时回落到 `?access_token=<token>`（仅此参数名，仅 MCP 面；内网用，token 会出现在 URL 里，可随时重签发轮换），缺/错/撤销/过期一律 `MCP_UNAUTHORIZED`。创建示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/admin/tokens \
