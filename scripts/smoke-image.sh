@@ -309,7 +309,7 @@ get "$BASE/admin/admins" "$TMP_ROOT/admins.json" -b "$JAR"
 json_is "$TMP_ROOT/admins.json" \
   "((.items | type) == \"array\") and (.total >= 1)
      and ((.items[] | select(.username == \"${ADMIN_USERNAME}\") | .state) == \"active\")
-     and ((tostring | contains(\"\\$argon2id\\$\")) | not)
+     and ((tostring | contains(\"argon2id\")) | not)
      and ((tostring | contains(\"${ADMIN_PASSWORD}\")) | not)" \
   '/admin/admins 响应不合契约（缺账号、状态不是 active、或回显了哈希/口令）'
 echo "    ok: cookie 身份 GET /admin/admins → 200（含 ${ADMIN_USERNAME}，无哈希/口令）"
