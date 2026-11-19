@@ -13,7 +13,12 @@ async fn builtin_categories_are_exposed_and_filterable() {
         "agent-categories",
         "analyst",
         &["db.read.core"],
-        &["search_capabilities", "describe_capability", "list_groups"],
+        &[
+            "search_capabilities",
+            "describe_capability",
+            "list_groups",
+            "db_run_template",
+        ],
     )
     .await;
     let resp = mcp(&h.app, &token, "tools/list", json!({})).await;
@@ -28,10 +33,10 @@ async fn builtin_categories_are_exposed_and_filterable() {
     assert_eq!(category_of("search_capabilities"), json!("basic"));
     assert_eq!(category_of("describe_capability"), json!("basic"));
     assert_eq!(category_of("list_groups"), json!("basic"));
+    assert_eq!(category_of("db_run_template"), json!("basic"));
 
-    // 取数工具不在内置 basic 组：任何 token 的 tools/list 都不出现它们。
+    // 自由的只读 SQL 工具已移除：任何 token 的 tools/list 都不出现它。
     assert_eq!(category_of("db_query_readonly"), Value::Null);
-    assert_eq!(category_of("db_run_template"), Value::Null);
 
     let basic = call_tool(
         &h.app,
@@ -47,6 +52,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
         .filter_map(|h| h["id"].as_str())
         .collect();
     assert!(ids.contains(&"search_capabilities"));
+    assert!(ids.contains(&"db_run_template"));
     assert!(!ids.contains(&"db_query_readonly"));
 
     // admin 组的工具对 analyst 不可见（分类不改变授权）。
@@ -59,7 +65,8 @@ async fn builtin_categories_are_exposed_and_filterable() {
     .await;
     assert_eq!(admin["result"]["structuredContent"]["results"], json!([]));
 
-    // 旧 allowlist 里残留的两个取数工具 id：已不是内置工具，签发令牌时直接按未知 id 拒绝。
+    // 旧 allowlist 里残留的自由 SQL 工具 id：已不是内置工具，签发令牌时直接按未知 id 拒绝
+    // （`db_run_template` 仍是内置工具，不该被拒）。
     let (status, rejected) = call(
         &h.app,
         "POST",
@@ -78,7 +85,7 @@ async fn builtin_categories_are_exposed_and_filterable() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
     assert_eq!(
         rejected["error"]["data"]["unknown"],
-        json!(["db_query_readonly", "db_run_template"]),
+        json!(["db_query_readonly"]),
         "{rejected}"
     );
 

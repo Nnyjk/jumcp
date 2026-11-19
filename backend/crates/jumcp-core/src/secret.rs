@@ -91,15 +91,20 @@ impl fmt::Debug for SecretKey {
     }
 }
 
-/// 取 `len` 字节系统随机数的 hex（内置端点的 Bearer token 用）。
+/// 取 `len` 字节系统随机数（会话 id、密码盐等凭据材料共用同一随机源）。
 ///
-/// 与 nonce 同一随机源（`OsRng`），不额外引入 RNG 依赖。
-pub fn random_hex(len: usize) -> Result<String, SecretError> {
+/// 与 nonce 共用 `OsRng`，不额外引入 RNG 依赖。
+pub fn random_bytes(len: usize) -> Result<Vec<u8>, SecretError> {
     let mut bytes = vec![0u8; len];
     OsRng
         .try_fill_bytes(&mut bytes)
         .map_err(|_| SecretError::RandomFailed)?;
-    Ok(encode_hex(&bytes))
+    Ok(bytes)
+}
+
+/// 取 `len` 字节系统随机数的 hex（内置端点的 Bearer token 用）。
+pub fn random_hex(len: usize) -> Result<String, SecretError> {
+    Ok(encode_hex(&random_bytes(len)?))
 }
 
 /// 值是否已是密文（无需密钥）。

@@ -237,6 +237,7 @@ pub(super) fn builtin_label(id: &str) -> &'static str {
         "search_capabilities" => "检索能力",
         "describe_capability" => "描述能力",
         "list_groups" => "组索引",
+        "db_run_template" => "模板执行",
         "admin_register_template" => "登记模板草案",
         "admin_review_queue" => "审核队列",
         "admin_audit_queries" => "审计查询",

@@ -42,6 +42,12 @@ impl TemplateRecord {
     }
 }
 
+/// 模板结果缓存键：模板 + 版本 + 参数哈希。
+///
+/// **不含身份**。命中安全的前提是 `tool_db_run_template` 先过
+/// `callable_capabilities(scope)`——组不在 scope 内根本走不到缓存查询，因此同一缓存
+/// 只会在"都能看见该组"的调用者之间共享。若将来放宽这道门（例如按能力而非组授权、
+/// 或加入 per-agent 可见性），必须把身份并入键，否则就是跨身份的结果泄漏。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     template_id: String,

@@ -65,23 +65,8 @@ impl QueryParams {
                 ));
             }
         };
-        if !connection_allowed.is_empty() && !requested.is_empty() {
-            let offending: Vec<&String> = requested
-                .iter()
-                .filter(|s| !connection_allowed.contains(*s))
-                .collect();
-            if !offending.is_empty() {
-                return Err(McpError::new(
-                    "MCP_SCHEMA_OUT_OF_SCOPE",
-                    json!({"offending_schemas": offending, "allowed": connection_allowed}),
-                ));
-            }
-        }
-        let effective_schemas = if requested.is_empty() {
-            connection_allowed.to_vec()
-        } else {
-            requested
-        };
+        let effective_schemas =
+            jumcp_core::schemas::narrow_schemas(connection_allowed, &requested)?;
         let params = match args.get("params") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(a)) => a.clone(),

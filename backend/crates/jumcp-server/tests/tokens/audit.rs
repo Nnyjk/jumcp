@@ -55,44 +55,48 @@ async fn call_details_and_audit_filter_carry_token_origin() {
     .await;
     assert_eq!(call_resp["result"]["isError"], json!(false), "{call_resp}");
 
-    // 审计查询：token_id 精确匹配到该 token 的事件，没有 token 归属的事件不出现。
-    let (status, filtered) = call(
-        &h.app,
-        "GET",
-        &format!("/admin/audit-events?token_id={token_id}&limit=200"),
-        Some(ALICE_TOKEN),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{filtered}");
-    let events = filtered["events"].as_array().expect("events");
-    assert!(!events.is_empty(), "token 调用必须能被 token_id 过滤到");
+    // token_id 过滤仍精确匹配该 token 的事件，没有 token 归属的事件不出现
+    // （审计查询缺省全量，这里直接查审计存储，验证的是过滤语义）。
+    let filtered = h
+        .audit
+        .query(Some(&json!({"token_id": token_id})))
+        .expect("query");
+    assert!(!filtered.is_empty(), "token 调用必须能被 token_id 过滤到");
     assert!(
-        events
+        filtered
             .iter()
-            .all(|e| e["actor"]["token_id"] == json!(token_id)
-                && e["actor"]["source"] == json!("agent")),
-        "{events:?}"
+            .all(|e| e.actor["token_id"] == json!(token_id) && e.actor["source"] == json!("agent")),
+        "{filtered:?}"
     );
     assert!(
-        events
-            .iter()
-            .all(|e| e["event_id"] != json!(legacy.event_id)),
+        filtered.iter().all(|e| e.event_id != legacy.event_id),
         "旧事件（无 token_id）不得被 token_id 过滤命中"
     );
+    let none = h
+        .audit
+        .query(Some(&json!({"token_id": "tok_does_not_exist"})))
+        .expect("query");
+    assert!(none.is_empty());
 
-    let (status, none) = call(
+    // 这次工具调用属 MCP 面：显式 surface=admin 收窄后，它不该出现在平台操作列表里。
+    let (status, platform) = call(
         &h.app,
         "GET",
-        "/admin/audit-events?token_id=tok_does_not_exist",
+        "/admin/audit-events?limit=200&surface=admin",
         Some(ALICE_TOKEN),
         &[],
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{none}");
-    assert_eq!(none["total"], json!(0));
+    assert_eq!(status, StatusCode::OK, "{platform}");
+    assert!(
+        platform["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .all(|e| e["event_type"] != json!("tool_call")),
+        "{platform}"
+    );
 
     // 工具调用明细：新调用的 actor 带 source/token_id，旧调用只有 id/role。
     let (status, calls) = call(

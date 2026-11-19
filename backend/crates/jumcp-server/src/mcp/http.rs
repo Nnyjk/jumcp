@@ -162,8 +162,13 @@ mod category_tests {
 
     #[test]
     fn every_builtin_id_has_its_responsibility_category() {
-        // basic：基础查询（目录走查）。
-        for id in ["search_capabilities", "describe_capability", "list_groups"] {
+        // basic：基础查询（目录走查 + 模板取数）。
+        for id in [
+            "search_capabilities",
+            "describe_capability",
+            "list_groups",
+            "db_run_template",
+        ] {
             assert_eq!(builtin_category(id), CATEGORY_BASIC, "{id} 应归 basic");
         }
         // analysis：工具列表分析与变更提交审计。

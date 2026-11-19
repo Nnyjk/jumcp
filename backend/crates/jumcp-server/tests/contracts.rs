@@ -150,10 +150,15 @@ async fn resident_budget_truncate_drops_capability_tools() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    // 内置 basic 组只剩元工具三件套：tools/list 精确等于常驻名单。
+    // 内置 basic 组 = 元工具三件套 + 模板执行臂：tools/list 精确等于常驻名单。
     assert_eq!(
         names,
-        vec!["search_capabilities", "describe_capability", "list_groups"]
+        vec![
+            "search_capabilities",
+            "describe_capability",
+            "list_groups",
+            "db_run_template"
+        ]
     );
     assert_eq!(
         resp["result"]["dropped_groups"],

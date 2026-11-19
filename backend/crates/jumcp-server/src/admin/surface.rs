@@ -1,8 +1,10 @@
 use super::*;
 
-/// `GET /admin/me`：当前 token 派生出的管理主体（前端据此显示操作者，不自述身份）。
+/// `GET /admin/me`：会话所属的管理主体（前端据此显示操作者，不自述身份）。
+///
+/// 形状必须与 `/admin/session` 的 `actor` 逐字段一致（同一身份两种入口）。
 pub(super) async fn me(Extension(auth): Extension<AuthenticatedAdmin>) -> Json<Value> {
-    Json(json!({"id": auth.id, "role": "admin", "type": "admin"}))
+    Json(json!({"id": auth.id, "user_id": auth.user_id, "role": "admin", "type": "admin"}))
 }
 
 pub(super) async fn health(State(state): State<AdminState>) -> Json<Value> {
@@ -21,20 +23,10 @@ pub(super) async fn audit_events(
     for (key, value) in raw {
         match key.as_str() {
             "limit" => {
-                limit = value.parse::<i64>().map_err(|_| {
-                    ApiError(McpError::new(
-                        "MCP_BAD_REQUEST",
-                        json!({"field": "limit", "value": value}),
-                    ))
-                })?;
+                limit = parse_page_param(&state, &actor, "admin/audit-events", "limit", &value)?;
             }
             "offset" => {
-                offset = value.parse::<i64>().map_err(|_| {
-                    ApiError(McpError::new(
-                        "MCP_BAD_REQUEST",
-                        json!({"field": "offset", "value": value}),
-                    ))
-                })?;
+                offset = parse_page_param(&state, &actor, "admin/audit-events", "offset", &value)?;
             }
             "order" => {
                 order = Order::parse(&value).map_err(|e| {
@@ -46,23 +38,53 @@ pub(super) async fn audit_events(
                     )
                 })?;
             }
+            // 面筛选：`all` 等价缺省（不插过滤），因此历史行 `surface=''` 也可见。
+            "surface" => match value.as_str() {
+                "admin" | "mcp" => {
+                    filters.insert("surface".to_string(), json!(value));
+                }
+                "all" => {}
+                _ => {
+                    let e = McpError::new(
+                        "MCP_BAD_REQUEST",
+                        json!({
+                            "field": "surface",
+                            "value": value,
+                            "supported": SURFACES,
+                        }),
+                    );
+                    return Err(reject(
+                        &state,
+                        &actor,
+                        e,
+                        json!({"surface": "admin/audit-events", "field": "surface"}),
+                    ));
+                }
+            },
             other if FILTER_KEYS.contains(&other) => {
                 filters.insert(other.to_string(), json!(value));
             }
             _ => {
+                // `surface` 走上面的单独分支校验取值，但仍是过滤契约的一部分：报错时一并列出，
+                // 否则前端照着 `supported` 生成筛选器会把面筛选漏掉。
+                let mut supported = FILTER_KEYS.to_vec();
+                supported.push("surface");
                 let e = McpError::new(
                     "MCP_FILTER_UNSUPPORTED",
-                    json!({"filter": key, "supported": FILTER_KEYS}),
+                    json!({"filter": key, "supported": supported}),
                 );
                 return Err(reject(
                     &state,
                     &actor,
                     e,
-                    json!({"surface": "admin", "filter": key}),
+                    json!({"surface": "admin/audit-events", "filter": key}),
                 ));
             }
         }
     }
+    // 缺省不按面过滤：agent 发起的治理写（`admin_change`：注册模板 / 改可见性）与 MCP 工具
+    // 调用同属审计事实，管理台"从审计提取高频查询 → 定制化"必须两者都看得见。
+    // MCP 鉴权噪音用 `event_type` / `actor_id` 收窄，不由 surface 隐藏。
     // 超上限夹紧而不是报错：管理面分页是展示需求，不构成契约破坏。
     let limit = limit.clamp(1, MAX_LIMIT);
     let offset = offset.max(0);

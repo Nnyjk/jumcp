@@ -14,6 +14,7 @@ use std::time::Instant;
 use super::{admin_tool_definitions, flattened_tool, tool_definitions};
 
 mod admin;
+mod template;
 mod tools;
 mod upstream;
 
@@ -30,6 +31,33 @@ fn audit_base(
 fn audit_data(mut payload: serde_json::Map<String, Value>, data: Value) -> Value {
     payload.insert("data".into(), data);
     Value::Object(payload)
+}
+
+/// 给审计载荷补错误字段：失败事件必须能直接读 `error_code` / `error_message`。
+fn audit_error(mut payload: Value, e: &McpError) -> Value {
+    if let Some(map) = payload.as_object_mut() {
+        map.insert("error_code".into(), json!(e.code));
+        map.insert("error_message".into(), json!(e.message));
+    }
+    payload
+}
+
+/// 把上下文键并入 `data`（已有 `data` 则合并，没有则新建）。
+fn with_audit_context(mut payload: Value, context: &Value) -> Value {
+    let Some(source) = context.as_object() else {
+        return payload;
+    };
+    let data = payload.as_object_mut().and_then(|p| {
+        p.entry("data")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+    });
+    if let Some(data) = data {
+        for (k, v) in source {
+            data.insert(k.clone(), v.clone());
+        }
+    }
+    payload
 }
 
 pub struct McpServer {
@@ -254,6 +282,70 @@ impl McpServer {
             }
         }
         match self.service.policy_decision(actor, e, detail) {
+            Ok(_) => err_tool(id, e),
+            Err(audit_error) => err_tool(id, &audit_error),
+        }
+    }
+
+    /// 工具调用被拒：先写调用台账（拿到 event_id），再写与之关联的 `policy_decision`。
+    ///
+    /// 台账类型随工具走：普通工具写 `tool_call`，`db_run_template` 写 `template_run`
+    /// （`admin/stats.rs` 的模板行只按 `template_run` 聚合，执行前的拒绝也必须落这一类，
+    /// 否则模板失败会被静默漏掉）；两类事件不会对同一次失败各计一遍。
+    ///
+    /// 与 `reject` 的差别只有关联 id：`tools/call` 的拒绝必须让治理面能把"拒绝的调用"
+    /// 和"拒绝的判定"对上。模板执行面还要把 object_type 记成 `template`（台账按模板聚合）。
+    fn reject_tool_call(
+        &self,
+        id: &Value,
+        actor: &Actor,
+        e: &McpError,
+        tool: &str,
+        context: Value,
+    ) -> Value {
+        let is_template = tool == "db_run_template";
+        let object_id = if is_template {
+            context
+                .get("template_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(tool)
+                .to_string()
+        } else {
+            tool.to_string()
+        };
+        let object_type = if is_template { "template" } else { "tool" };
+        let payload = with_audit_context(
+            audit_error(
+                Value::Object(audit_base(object_type, &object_id, "invoke", "error")),
+                e,
+            ),
+            &context,
+        );
+        // 模板调用只有一个台账来源：`template_run`（`admin/stats.rs` 按它算模板行的
+        // calls/hit_rate）。执行前的拒绝也写这一条，否则模板行的失败会被静默漏掉；
+        // 普通工具仍写 `tool_call`，两类事件不会对同一次失败各计一遍。
+        let event_type = if is_template {
+            "template_run"
+        } else {
+            "tool_call"
+        };
+        let event_id = match self.service.audit_event(event_type, payload, actor) {
+            Ok(event_id) => event_id,
+            Err(audit_error) => return err_tool(id, &audit_error),
+        };
+        let mut detail = json!({"tool": tool, "context": context});
+        if is_template {
+            detail["template_id"] = json!(object_id);
+        }
+        let correlation = if event_id.is_empty() {
+            None
+        } else {
+            Some(event_id.as_str())
+        };
+        match self
+            .service
+            .policy_decision_correlated(actor, e, detail, correlation)
+        {
             Ok(_) => err_tool(id, e),
             Err(audit_error) => err_tool(id, &audit_error),
         }

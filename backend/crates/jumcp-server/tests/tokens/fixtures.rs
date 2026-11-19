@@ -2,7 +2,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::AuditLog;
-use jumcp_core::config::{AdminTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-pub(crate) const ALICE_TOKEN: &str = "tok_alice_000000000";
-pub(crate) const BOB_TOKEN: &str = "tok_bob_00000000000";
+// 管理面只认会话 cookie：这就是 `seed_admin_accounts` 建好的 alice 会话 id。
+pub(crate) const ALICE_TOKEN: &str = crate::support::ALICE_TOKEN;
 
 struct FakeExecutor;
 
@@ -53,8 +53,6 @@ fn settings() -> Settings {
         },
     );
     Settings {
-        admin_tokens: AdminTokens::parse(&format!("alice:{ALICE_TOKEN},bob:{BOB_TOKEN}"))
-            .expect("admin tokens"),
         policy: TenantPolicy {
             groups: vec![
                 GroupDef {
@@ -103,8 +101,9 @@ pub(crate) fn harness() -> Harness {
     let audit = Arc::new(AuditLog::open(":memory:").expect("audit"));
     let store = Arc::new(CapabilityStore::open(":memory:", Some(audit.clone())).expect("store"));
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
+    let boot = settings();
     let service = Arc::new(
-        Service::new(settings())
+        Service::new(boot.clone())
             .with_executor(Arc::new(FakeExecutor))
             .with_audit(audit.clone())
             .with_templates(registry)
@@ -117,10 +116,10 @@ pub(crate) fn harness() -> Harness {
                 allowed_builtin_tools: None,
             }),
     );
+    crate::support::seed_admin_accounts(&store, boot.admin_session_ttl_secs);
     let admin = AdminState {
         service: service.clone(),
         store: store.clone(),
-        tokens: settings().admin_tokens,
         transport_key: Some(crate::support::transport_key()),
     };
     let app = jumcp_server::admin::router(admin)
@@ -150,10 +149,8 @@ pub(crate) async fn call(
     headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(token) = token {
-        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
+    let mut builder =
+        crate::support::attach_identity(Request::builder().method(method).uri(uri), token);
     for (key, value) in headers {
         builder = builder.header(*key, *value);
     }

@@ -230,6 +230,17 @@ impl Service {
         Ok(())
     }
 
+    /// 结果记账：返回记账后的预算状态（`summary` 决定是否只回摘要）。
+    pub fn record_result(
+        &self,
+        session_key: &str,
+        token_cost: i64,
+    ) -> Result<BudgetCheckResult, McpError> {
+        let mut ledger = self.budget.lock().map_err(|_| McpError::lock())?;
+        ledger.record_result(session_key, token_cost);
+        Ok(ledger.summary_state(session_key))
+    }
+
     /// 追加审计：审计写失败必须上抛（治理面不可静默失效）。
     ///
     /// 返回 `event_id`：拒绝路径要把 `policy_decision.correlation_id` 指向同一次失败的

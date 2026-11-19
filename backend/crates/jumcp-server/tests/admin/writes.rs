@@ -250,10 +250,10 @@ async fn write_endpoints_refuse_when_audit_disabled() {
                 allowed_builtin_tools: None,
             }),
     );
+    crate::support::seed_admin_accounts(&store, 3600);
     let app = router(AdminState {
         service,
         store: store.clone(),
-        tokens: settings().admin_tokens,
         transport_key: Some(crate::support::transport_key()),
     });
 
