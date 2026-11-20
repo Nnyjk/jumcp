@@ -45,6 +45,7 @@ mod admins;
 mod capabilities;
 mod groups;
 mod packages;
+mod scoring;
 mod session;
 mod stats;
 mod surface;
@@ -58,7 +59,8 @@ use self::capabilities::{capabilities, capability_detail, capability_versions};
 use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
 use self::packages::{install_package, list_catalog, uninstall_package, update_package_config};
 use self::session::{login, logout, session_info};
-use self::stats::{tool_calls, tool_stats};
+pub(crate) use self::stats::{STATS_DEFAULT_WINDOW_DAYS, tool_candidates_report};
+use self::stats::{tool_calls, tool_candidates, tool_stats};
 pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
 use self::tokens::{
@@ -134,6 +136,7 @@ pub fn router(state: AdminState) -> Router {
         .route("/tokens/{id}", delete(delete_token))
         .route("/review-queue", get(review_queue))
         .route("/tools/stats", get(tool_stats))
+        .route("/tools/candidates", get(tool_candidates))
         .route("/tools/{id}/calls", get(tool_calls))
         .route("/upstreams", get(list_upstreams).post(create_upstream))
         .route(
@@ -447,6 +450,7 @@ pub fn routes() -> Vec<(&'static str, &'static str)> {
         ("DELETE", "/admin/tokens/{id}"),
         ("GET", "/admin/review-queue"),
         ("GET", "/admin/tools/stats"),
+        ("GET", "/admin/tools/candidates"),
         ("GET", "/admin/tools/{id}/calls"),
         ("POST", "/admin/capabilities/{id}/submit"),
         ("POST", "/admin/capabilities/{id}/publish"),

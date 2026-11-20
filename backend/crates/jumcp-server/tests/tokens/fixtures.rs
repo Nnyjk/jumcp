@@ -2,12 +2,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::AuditLog;
-use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
 use jumcp_server::admin::AdminState;
-use jumcp_server::executor::{ExecFuture, QueryExecutor, QueryParams};
 use jumcp_server::mcp::{McpServer, http_router};
 use jumcp_server::service::Service;
 use serde_json::{Value, json};
@@ -16,23 +15,6 @@ use tower::ServiceExt;
 
 // 管理面只认会话 cookie：这就是 `seed_admin_accounts` 建好的 alice 会话 id。
 pub(crate) const ALICE_TOKEN: &str = crate::support::ALICE_TOKEN;
-
-struct FakeExecutor;
-
-impl QueryExecutor for FakeExecutor {
-    fn execute<'a>(&'a self, _scope: &'a EffectiveScope, _q: &'a QueryParams) -> ExecFuture<'a> {
-        Box::pin(async {
-            Ok(json!({
-                "rows": [["2026-11-05", 3]],
-                "row_count": 1,
-                "truncated": false,
-                "effective_max_rows": 100,
-                "elapsed_ms": 1,
-                "tokens": 3
-            }))
-        })
-    }
-}
 
 fn settings() -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -79,14 +61,6 @@ fn settings() -> Settings {
             allow_intersect: false,
         },
         budget_overflow: "fail".into(),
-        datasources: vec![DatasourceRef {
-            name: "main".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec![],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }
@@ -104,7 +78,6 @@ pub(crate) fn harness() -> Harness {
     let boot = settings();
     let service = Arc::new(
         Service::new(boot.clone())
-            .with_executor(Arc::new(FakeExecutor))
             .with_audit(audit.clone())
             .with_templates(registry)
             .with_scope(EffectiveScope {

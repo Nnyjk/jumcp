@@ -71,6 +71,27 @@ pub fn external_approval(
     })
 }
 
+/// agent 自审通过（`admin_publish_capability`）：`verified=true`。
+///
+/// 为什么可以标"已验证"：批准人身份不是请求里的自述字段，而是 `access_tokens` 查表 +
+/// 常量时间比较得出的 `Actor`——与外部单据（人填单号，系统无法校验真伪）本质不同。
+/// `id` 由工具层生成（`agent:<actor_id>:<rfc3339>`）或由调用方给出，两种都记在这里。
+pub fn agent_approval(
+    approval_id: &str,
+    submitted_by: &str,
+    approved_by: &str,
+    approved_at: &str,
+) -> Value {
+    json!({
+        "id": approval_id,
+        "source": "agent",
+        "verified": true,
+        "submitted_by": if submitted_by.is_empty() { Value::Null } else { json!(submitted_by) },
+        "approved_by": if approved_by.is_empty() { Value::Null } else { json!(approved_by) },
+        "approved_at": if approved_at.is_empty() { Value::Null } else { json!(approved_at) }
+    })
+}
+
 /// 审计分页顺序：默认 `desc`（最新优先），`asc` 用于回放/定位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {

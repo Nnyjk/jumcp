@@ -9,7 +9,6 @@ import { WINDOW_OPTIONS } from '../../constants'
 import '../../styles/dashboard.css'
 import { ActivityFeed } from './ActivityFeed'
 import { DASHBOARD_EVENT_LIMIT } from './dashboardData'
-import { DataSourcesCard } from './DataSourcesCard'
 import { FailureRanking } from './FailureRanking'
 import { HealthDonut } from './HealthDonut'
 import { KpiGrid } from './KpiGrid'
@@ -28,7 +27,6 @@ export default function DashboardPage() {
   const {
     statsQuery,
     reviewQuery,
-    healthQuery,
     stats,
     rows,
     draftCount,
@@ -38,7 +36,6 @@ export default function DashboardPage() {
     topTools,
     maxCalls,
     failureTools,
-    datasources,
     trendPoints,
     trendTruncated,
     trendPending,
@@ -113,7 +110,6 @@ export default function DashboardPage() {
           draftCount={draftCount}
           chain={chain}
           chainHint={chainHint}
-          datasourceCount={healthQuery.data?.datasources.length}
         />
 
         <div className="dash-span-8">
@@ -186,13 +182,6 @@ export default function DashboardPage() {
           statsPending={statsQuery.isPending}
           statsError={statsQuery.isError ? statsQuery.error : undefined}
           hasStats={stats !== undefined}
-        />
-
-        <DataSourcesCard
-          datasources={datasources}
-          hasHealth={healthQuery.data !== undefined}
-          healthPending={healthQuery.isPending}
-          healthError={healthQuery.isError ? healthQuery.error : undefined}
         />
 
         <ActivityFeed

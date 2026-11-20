@@ -298,6 +298,23 @@ impl UpstreamManager {
         })
     }
 
+    /// 暴露名所属的上游 id：只按 `<id>__` 前缀判定，纯 SQLite 查询，**不建连、不拉工具清单**。
+    ///
+    /// 供 SQL 前置拦截在 `resolve`（会触网）之前定位审计坐标。为什么不用 `resolve` 的结果：
+    /// 拦截必须发生在任何上游交互之前，而被拒的调用恰恰不该产生交互。
+    /// 准入过滤与 [`Self::matches_upstream`] 一致（enabled + 写开关），组不在 scope 时
+    /// 这里仍返回 id——名字最终由 `resolve` 判为不可路由，拦截只是更早的 fail-closed。
+    pub fn owning_upstream(&self, name: &str) -> Option<String> {
+        let defs = self.store.upstreams().ok()?;
+        defs.into_iter()
+            .find(|def| {
+                def.enabled
+                    && (def.read_only || self.write_allowed)
+                    && name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id))
+            })
+            .map(|def| def.id)
+    }
+
     /// 逐工具组覆盖的索引形态：`upstream_id → tool_name → group_code`（读失败按无覆盖处理，
     /// 只会让"上游组不在 scope"的工具更少可见，不会放宽任何授权）。
     fn tool_group_overrides(&self) -> HashMap<String, HashMap<String, String>> {

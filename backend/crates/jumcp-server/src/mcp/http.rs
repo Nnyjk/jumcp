@@ -174,8 +174,10 @@ mod category_tests {
         // analysis：工具列表分析与变更提交审计。
         for id in [
             "admin_review_queue",
+            "admin_tool_candidates",
             "admin_register_template",
             "admin_set_visibility",
+            "admin_publish_capability",
         ] {
             assert_eq!(
                 builtin_category(id),

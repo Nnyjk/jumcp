@@ -78,7 +78,7 @@
   flex-direction: column;
 }
 
-/* 同一行卡片底边对齐：数据源这类短卡片不再在行内留下断裂空洞。 */
+/* 同一行卡片底边对齐：矮卡片（如环形图）不再在行内留下断裂空洞。 */
 .dash-grid > * > .card {
   flex: 1 1 auto;
 }
@@ -89,10 +89,6 @@
 
 .dash-span-8 {
   grid-column: span 8;
-}
-
-.dash-span-6 {
-  grid-column: span 6;
 }
 
 .dash-span-4 {
@@ -110,9 +106,8 @@
   }
 }
 
-/* 侧栏在 1100 折叠后内容区仍有 ~930px，趋势图保持整行；只有 6/4 列卡片降为半宽。 */
+/* 侧栏在 1100 折叠后内容区仍有 ~930px：4 列卡片降为半宽仍放得下图表。 */
 @media (max-width: 1100px) {
-  .dash-span-6,
   .dash-span-4 {
     grid-column: span 6;
   }
@@ -121,7 +116,6 @@
 @media (max-width: 900px) {
   .dash-span-12,
   .dash-span-8,
-  .dash-span-6,
   .dash-span-4 {
     grid-column: span 12;
   }

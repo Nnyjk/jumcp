@@ -6,9 +6,9 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 
 | 路径 | 职责 |
 |---|---|
-| `backend/` | Rust workspace：MCP server、治理域、SQL 只读校验、ClickHouse connector agent |
+| `backend/` | Rust workspace：MCP server、治理域、SQL 只读校验（`jumcp-sqlguard`）与内置库形式的 ClickHouse 执行件 |
 | `admin-web/` | React + Vite 管理台（构建产物 `admin-web/dist` 由后端同源提供） |
-| `config/` | 部署策略：`policy.toml`（组、角色、数据源、预算、只读策略） |
+| `config/` | 部署策略：`policy.toml`（组、角色、预算与只读策略）；不含数据源声明 |
 | `deploy/` | 部署定义：`portainer-stack.yml`（Portainer / Docker Swarm stack，单副本 + 命名卷），见 [portainer-swarm.md](portainer-swarm.md) |
 | `scripts/` | 本地与 CI 共用的启动/测试/冒烟脚本（PowerShell + Bash 双份） |
 | `docs/` | 当前有效的方案、契约与运维文档 |
@@ -30,7 +30,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 
 | 模块 | 职责 |
 |---|---|
-| `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 管理面与 agent 主体令牌（常量时间比较）、`datasource` 数据源引用（DSN 只取环境变量） |
+| `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 管理面与 agent 主体令牌（常量时间比较） |
 | `registry/` | 能力注册表：`record` 记录/版本/管理变更结构与定义 diff、`lifecycle` 注册→审核→发布→下架与可见性、`groups` 管理组 CRUD 与引用计数、`upstreams` 上游配置与逐工具组覆盖 |
 | `builtin/` | 内置 MCP 插件类型：`BuiltinPackage` / `BuiltinField` / `BuiltinToolDef` / `BuiltinConfig` / `BuiltinError` 与 `BuiltinMcp` trait（只依赖 `serde_json` 与 `std`，不依赖任何具体数据库） |
 | `secret.rs` | 配置字段加密：`SecretKey` 解析 64 位 hex 密钥，`enc:v1:` 前缀的 AES-256-GCM 加解密、`is_encrypted`（明文值原样兼容）与 `to_hex`（仅供 `GET /admin/transport-key` 下发传输密钥）；落库密钥 `JUMCP_SECRET_KEY` 与传输密钥 `JUMCP_TRANSPORT_KEY` 共用实现、用途分离 |
@@ -46,19 +46,19 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 
 ### `backend/crates/jumcp-sqlguard/`
 
-只读 SQL 校验（L4）与结果整形：`dialect.rs` 方言差异、`lex.rs` 词法、`validate.rs` 规则判定、`shape.rs` 结果形状、`error.rs` 错误类型。纯函数式，可被 server 与 connector 同时引用。
+只读 SQL 校验（L4）与结果整形：`dialect.rs` 方言差异、`lex.rs` 词法、`validate.rs` 规则判定、`shape.rs` 结果形状、`error.rs` 错误类型。纯函数式：`jumcp-server` 用它的方言定义编译模板，内置包 `clickhouse-basic` 用它做执行前校验。
 
 ### `backend/crates/jumcp-connector-protocol/`
 
-host 与 connector agent 之间的按行 JSON-RPC 协议定义（`src/lib.rs`：消息类型与序列化），两端共用同一份契约。
+按行 JSON-RPC 的查询协议定义（`src/lib.rs`：消息类型与序列化），由内置包 `clickhouse-basic` 与 `jumcp-connector-clickhouse` 共用；`jumcp-server` 本身不依赖它（它只经上游 MCP 调用）。
 
 ### `backend/crates/jumcp-connector-clickhouse/`
 
-ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参数绑定、执行、取数。`src/lib.rs` 是被 host 拉起的实现，`src/main.rs` 是二进制入口（`jumcp-connector-clickhouse`）；`tests/protocol.rs` 覆盖协议编解码。
+ClickHouse 执行件：`src/lib.rs` 导出 `ClickHouseAgent`（连接池 + 只读执行 + 取数，固定 `readonly=1`），由内置包 `clickhouse-basic` 在**进程内**直接使用；`src/main.rs` 是同一实现的 stdin/stdout 二进制入口，`tests/protocol.rs` 覆盖它的协议编解码。
 
 ### `backend/crates/jumcp-mcp-clickhouse/`
 
-内置 MCP 包 `clickhouse-basic` 的**库**（无二进制、无 stdio 行循环）：`src/plugin.rs` 是 `BuiltinMcp` 实现（静态包定义与字段、按配置指纹缓存 `ClickHouseAgent`）、`src/tools.rs` 是工具定义与参数校验、`src/executor.rs` 包装 connector 的只读执行、`src/lib.rs` 是 `Server::call_tool`（工具语义）；配置按字段 key 传入 `BuiltinConfig`。`tests/protocol.rs` 覆盖工具语义（协议层由 `jumcp-server` 的内嵌端点测试覆盖）。
+内置 MCP 包 `clickhouse-basic` 的**库**（无二进制、无 stdio 行循环）：`src/plugin.rs` 是 `BuiltinMcp` 实现（静态包定义与字段、按配置指纹缓存 `ClickHouseAgent`）、`src/tools.rs` 是工具定义与 `jumcp-sqlguard` 校验、`src/executor.rs` 包装只读执行、`src/lib.rs` 是 `Server::call_tool`（工具语义）；配置按字段 key 传入 `BuiltinConfig`。`tests/protocol.rs` 覆盖工具语义（协议层由 `jumcp-server` 的内嵌端点测试覆盖）。
 
 ### `backend/crates/jumcp-server/`
 
@@ -67,13 +67,12 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 | 模块 | 职责 |
 |---|---|
 | `main.rs` / `lib.rs` | 进程入口（参数、启动装配）与可测试的库骨架 |
-| `service.rs` | `Service` 聚合：配置、catalog、执行委托、审计与按会话预算 |
-| `mcp/` | 手写 JSON-RPC MCP 服务：`mod` 的 tools/list（按 `EffectiveScope` 过滤 + 常驻预算）与元工具、维护通道；`http` 把 HTTP 请求翻成平台身份；`dispatch/{tools,upstream,admin}` 分别是工具、上游转发、管理类方法的处理臂 |
+| `service.rs` | `Service` 聚合：配置、catalog、审计与按会话预算（不持有任何数据库连接） |
+| `mcp/` | 手写 JSON-RPC MCP 服务：`mod` 的 tools/list（按 `EffectiveScope` 过滤 + 常驻预算）与元工具、维护通道；`http` 把 HTTP 请求翻成平台身份；`dispatch/{tools,template,upstream,admin}` 分别是工具分派、模板执行、上游转发、管理类方法的处理臂 |
 | `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现，`packages` 内置 MCP 包目录、安装、配置编辑与卸载 |
 | `builtin/` | 内置 MCP 运行时：`mod` 是插件注册表（`plugin(id)` / `plugins()`）、内嵌端点 `POST /internal/mcp/{package_id}/{upstream_id}`（Bearer 内存 token）与 `BuiltinEndpoint`（base + token，供上游客户端注入鉴权）；`migrate` 把旧 stdio 安装改写为 HTTP |
 | `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现；`http` 对命中内置端点 base 的请求注入 internal Bearer；`stdio::bundled_binary` 是手工 stdio 上游可执行文件的唯一解析点（`JUMCP_MCP_BUNDLED_BIN_DIR` → 服务同目录 → `PATH`） |
-| `connector/` | 连接器桥：把已校验的只读执行委托给子进程 `jumcp-connector-clickhouse`（L4、database 白名单、行数夹紧、单格整形留在 host） |
-| `executor.rs` | 只读执行委托契约（`QueryExecutor`）；未配置数据源时显式报错，绝不假执行 |
+| `preflight/` | 第三方调用前置拦截：`preflight::check_call` 按入参形状分派 `sql`/`file`/`http` 三族，共用 `PreflightConfig`（`JUMCP_SQL_ALLOWED_SCHEMAS`、`JUMCP_FILE_ALLOWED_ROOTS`、`JUMCP_HTTP_ALLOW_PRIVATE_HOSTS` 与上限常量），拦在 `UpstreamManager::resolve` 之前 |
 | `catalog.rs` | 能力抽象与内存目录（可见性 `published ∧ discoverable ∧ group ∈ scope`，不可见与不存在同构） |
 | `discovery.rs` | 发现面唯一的可见集生产函数：`builtin ∪ 注册表可见行 ∪ 内存目录`，供 search / describe / list_groups / tools/list 共用 |
 | `web.rs` | 管理台静态托管：HTTP 模式下提供 `admin-web/dist`（`JUMCP_MCP_WEB_DIR` 为空则不挂）、SPA 回退与路径空间隔离 |
@@ -81,7 +80,7 @@ ClickHouse connector agent：stdin/stdout 按行 JSON-RPC，只做连接、参�
 
 ### `backend/crates/jumcp-server/tests/`
 
-契约与集成测试，共用真实 axum 链路但不需要真实数据源；真实 ClickHouse 用例是 `#[ignore]`。
+契约与集成测试，共用真实 axum 链路但不需要真实数据库（上游一律用 `support/fake_upstream.rs`）；真实 ClickHouse 用例是 `#[ignore]`。
 
 | 路径 | 职责 |
 |---|---|
@@ -111,7 +110,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 
 ## 其他目录边界
 
-- `config/`：只放部署策略文件。`policy.toml` 是唯一的策略入口（`[[groups]]`、`[[roles]]`、`[[datasources]]`、预算与只读开关），数据源只写 `dsn_env` 环境变量名，DSN 由部署注入。镜像把它复制到 `/app/config/policy.toml`。
+- `config/`：只放部署策略文件。`policy.toml` 是唯一的策略入口（`[[groups]]`、`[[roles]]`、预算与只读开关）。数据库只经已接入的上游 MCP 工具访问，策略文件里不再声明数据源。镜像把它复制到 `/app/config/policy.toml`。
 - `deploy/`：只放部署定义。`portainer-stack.yml` 是 Portainer（Stacks）与 `docker stack deploy` 共用的 Swarm 定义：单副本、`stop-first` 更新/回滚、命名卷 `/data`、`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD` fail-fast，`docker stack config` 可离线校验（CI 的 `image` job 会跑）。平台用 placement constraints 固定 linux/amd64，因为 Swarm 的 stack 格式不接受 `platform`。前置条件与运维边界见 [portainer-swarm.md](portainer-swarm.md)。
 - `scripts/`：`dev.ps1`/`dev.sh`（一键启动前后端）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
 - `docs/`：只写**当前有效**的结论（方案、契约、运维与 CI），结论变了就改原文，不保留阶段性设计与变更叙述；这类历史与被否决项放 `notes/`。文档索引在 `README.md`。

@@ -99,6 +99,48 @@ pub(crate) fn tool_call(
     );
 }
 
+/// 上游工具调用事件：候选评分只认带 `upstream_id`/`upstream_tool` 的 `tool_call`，
+/// 内置工具事件没有这两个键（见 `tool_call` 上面那个 helper）。
+///
+/// `token` 落在 `actor.token_id`：评分规则一的"同一令牌"与规则三的"不同令牌"都以它为口径。
+pub(crate) fn upstream_call(
+    log: &AuditLog,
+    minutes: i64,
+    token: &str,
+    outcome: &str,
+    arguments: Value,
+    upstream_id: &str,
+    upstream_tool: &str,
+) {
+    log.append(AuditEvent {
+        tenant: "t1".into(),
+        actor: ActorRef {
+            actor_type: "agent".into(),
+            id: format!("agent-{token}"),
+            role: "analyst".into(),
+            token_id: Some(token.into()),
+            source: None,
+        },
+        event_type: "tool_call".into(),
+        payload: json!({
+            "object_type": "tool",
+            "object_id": format!("{upstream_id}__{upstream_tool}"),
+            "action": "call",
+            "outcome": outcome,
+            "data": {
+                "arguments": arguments,
+                "upstream_id": upstream_id,
+                "upstream_tool": upstream_tool,
+                "elapsed_ms": 5
+            }
+        }),
+        session_id: format!("s-{token}"),
+        ts: minutes_ago(minutes),
+        event_id: String::new(),
+    })
+    .expect("append");
+}
+
 /// 平台面事件（`actor_type == "admin"` → 审计 `surface == "admin"`）。
 ///
 /// 存在的理由：统计口径必须能把"管理台自己产生的调用"排除掉，而这条路径在测试里
@@ -156,6 +198,7 @@ pub(crate) fn template_definition(id: &str) -> Value {
         "risk": "read",
         "description": "人工登记的模板",
         "sql": "SELECT day FROM public.orders WHERE created_at >= :start_date",
+        "target": {"upstream": "ch", "tool": "query"},
         "params": [{"name":"start_date","type":"timestamp","required":true,"nullable":false}],
         "constraints": {
             "allowed_schemas": ["public"],

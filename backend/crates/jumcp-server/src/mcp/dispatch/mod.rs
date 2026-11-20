@@ -62,6 +62,9 @@ fn with_audit_context(mut payload: Value, context: &Value) -> Value {
 
 pub struct McpServer {
     service: Arc<Service>,
+    /// 前置拦截配置（SQL/文件/接口三族共用）：`None` 表示关闭拦截（排障/对照测试用），
+    /// 生产从环境变量构造，见 [`McpServer::with_preflight`]。
+    preflight: Option<Arc<crate::preflight::PreflightConfig>>,
     /// `initialize` 的 `_meta` 通道解析出的会话 scope（低于 HTTP 的 `X-MCP-Tool-Groups`）。
     /// 按 actor_id 分桶：多身份共用同一进程时，一个 agent 声明的收窄 scope 不能套到另一个身上。
     session_scope: Mutex<HashMap<String, EffectiveScope>>,
@@ -74,8 +77,17 @@ impl McpServer {
     pub fn from_arc(service: Arc<Service>) -> Self {
         Self {
             service,
+            preflight: Some(Arc::new(crate::preflight::PreflightConfig::from_env())),
             session_scope: Mutex::new(HashMap::new()),
         }
+    }
+    /// 替换前置拦截配置：测试按用例切换白名单与上限，`None` 关闭拦截。
+    pub fn with_preflight(
+        mut self,
+        preflight: Option<Arc<crate::preflight::PreflightConfig>>,
+    ) -> Self {
+        self.preflight = preflight;
+        self
     }
     pub fn service(&self) -> &Service {
         &self.service

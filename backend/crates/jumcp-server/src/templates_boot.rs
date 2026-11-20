@@ -1,4 +1,8 @@
-//! 启动期模板预置：从部署配置装载模板定义，走同一条"注册 → 预检 → 提审 → 发布 → 开放"链。
+//! 启动期模板预置：从部署配置装载模板定义，走同一条"注册 → 提审 → 发布 → 开放"链。
+//!
+//! 预检就是注册门禁本身（`TemplateRegistry::register`）：定义解析 → `target` 校验 → 占位符
+//! 改写 → 渲染期 sqlguard（ClickHouse 方言）复核。ClickHouse 没有 PG 那种 EXPLAIN 预演，
+//! 因此不再有额外的 EXPLAIN 步骤。
 //!
 //! 为什么由部署文件携带 approval 字段：审批主体属于治理记录，配置里显式写明提交人/批准人；
 //! 服务端只记录这两个事实身份，不允许"启动即自动发布"的隐式路径。
@@ -48,9 +52,9 @@ pub fn load_template_seeds(path: &str) -> Result<Vec<TemplateSeed>, McpError> {
     Ok(seeds)
 }
 
-/// 预置发布：注册草案 → （调用方先做 EXPLAIN 预检）→ 提审 → 发布 → 开放。
+/// 预置发布：注册草案（= 预检）→ 提审 → 发布 → 开放。
 ///
-/// `preflight` 由调用方在执行 EXPLAIN 前拿到编译产物；这里把它作为参数传入，避免二次编译。
+/// `compiled` 由调用方在注册时拿到；这里作为参数传入，避免二次编译与二次门禁。
 pub fn publish_seed(
     registry: &TemplateRegistry,
     seed: &TemplateSeed,
@@ -74,7 +78,7 @@ pub fn publish_seed(
     Ok(())
 }
 
-/// 预置流程的共享入口：注册（编译门禁）→ 返回编译产物供调用方跑 EXPLAIN。
+/// 预置流程的共享入口：注册（定义门禁 + 编译 + sqlguard 复核）→ 返回编译产物。
 pub fn register_seed(
     registry: &TemplateRegistry,
     seed: &TemplateSeed,
@@ -101,6 +105,7 @@ mod tests {
             "risk": "read",
             "description": "按日汇总",
             "sql": sql,
+            "target": {"upstream": "ch", "tool": "query"},
             "params": [{"name":"day","type":"date","required":true,"nullable":false}],
             "constraints": {"allowed_schemas": ["public"]},
             "discoverable": true,

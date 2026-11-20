@@ -122,6 +122,19 @@ pub struct Preflight {
     pub require_index: bool,
 }
 
+/// 模板执行目标：渲染后的 SQL 交给哪台上游 MCP 的哪个工具。
+///
+/// 路由层只编排、不直连数据库，因此模板必须声明目标；缺省没有合理默认值
+/// （猜一个上游等于把用户 SQL 发到别处），注册期即拒。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateTarget {
+    pub upstream: String,
+    pub tool: String,
+    #[serde(default)]
+    pub database: Option<String>,
+}
+
 /// 显式变体：when 条件命中即用该 SQL（每个变体独立预审核/预检）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +159,8 @@ pub struct TemplateDef {
     #[serde(default)]
     pub tags: Vec<String>,
     pub sql: String,
+    /// 执行目标：模板不再由本进程直连数据库，必须声明经由哪台上游的哪个工具执行。
+    pub target: TemplateTarget,
     #[serde(default)]
     pub params: Vec<ParamSpec>,
     #[serde(default)]
@@ -201,6 +216,15 @@ pub struct PreflightReceipt {
 impl TemplateDef {
     /// 严格解析 + 语义校验（非法定义在注册期一次性拒绝，运行期不重复校验）。
     pub fn parse(value: &Value) -> Result<Self, McpError> {
+        // 缺 target 的定义来自旧版本（直连数据库时代），报错要点明迁移方向，
+        // 不能只留 serde 的 missing field 文本。
+        if value.get("target").is_none_or(Value::is_null) {
+            return Err(target_error(
+                "target_required",
+                "模板必须声明 target.upstream/target.tool：执行走已接入的上游 MCP 工具，不再直连数据库",
+                json!({}),
+            ));
+        }
         let def: TemplateDef = serde_json::from_value(value.clone())
             .map_err(|e| template_error("schema", &format!("模板定义不合法: {e}"), json!({})))?;
         def.validate()?;
@@ -233,6 +257,7 @@ impl TemplateDef {
         if self.sql.trim().is_empty() {
             return Err(template_error("sql_required", "sql 不能为空", json!({})));
         }
+        self.target.validate()?;
         let mut seen: HashSet<&str> = HashSet::new();
         for p in &self.params {
             if !seen.insert(p.name.as_str()) {
@@ -293,6 +318,86 @@ impl TemplateDef {
         }
         Ok(())
     }
+}
+
+impl TemplateTarget {
+    /// 目标在注册期一次性校验：运行期 `resolve` 找不到上游属于部署漂移，不是定义错误。
+    fn validate(&self) -> Result<(), McpError> {
+        if !crate::registry::is_valid_upstream_id(&self.upstream)
+            || crate::registry::RESERVED_UPSTREAM_IDS.contains(&self.upstream.as_str())
+            || crate::registry::is_builtin_id(&self.upstream)
+        {
+            return Err(target_error(
+                "upstream_invalid",
+                &format!(
+                    "target.upstream 必须是已接入的自定义上游 id（小写字母开头、2..=32 位、不含 `__`、非保留 id）：{}",
+                    self.upstream
+                ),
+                json!({"upstream": self.upstream}),
+            ));
+        }
+        let tool_len = self.tool.len();
+        if tool_len == 0
+            || tool_len > 64
+            || !self
+                .tool
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(target_error(
+                "tool_invalid",
+                &format!(
+                    "target.tool 必须是上游暴露的工具名（1..=64 位 [A-Za-z0-9_-]）：{}",
+                    self.tool
+                ),
+                json!({"tool": self.tool}),
+            ));
+        }
+        // `admin_` 前缀留给内置管理面，模板不得借此触达管理工具。
+        if self.tool.starts_with("admin_") {
+            return Err(target_error(
+                "tool_reserved",
+                &format!(
+                    "target.tool 不得以 admin_ 开头（管理工具不供模板调用）：{}",
+                    self.tool
+                ),
+                json!({"tool": self.tool}),
+            ));
+        }
+        if let Some(database) = &self.database {
+            let len = database.len();
+            if len == 0
+                || len > 64
+                || !database
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return Err(target_error(
+                    "database_invalid",
+                    &format!("target.database 必须为空或 1..=64 位 [A-Za-z0-9_]：{database}"),
+                    json!({"database": database}),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 目标字段的错误统一带 `data.field="target"`：接入方按字段定位注册期报错。
+fn target_error(rule: &str, message: &str, detail: Value) -> McpError {
+    let mut data = serde_json::Map::new();
+    data.insert("field".to_string(), json!("target"));
+    data.insert("rule".to_string(), json!(rule));
+    if let Value::Object(extra) = detail {
+        for (k, v) in extra {
+            data.insert(k, v);
+        }
+    }
+    McpError::with_message(
+        "MCP_VALIDATION_ERROR",
+        message.to_string(),
+        Value::Object(data),
+    )
 }
 
 fn validate_param_spec(p: &ParamSpec) -> Result<(), McpError> {

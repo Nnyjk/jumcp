@@ -27,6 +27,42 @@ impl McpServer {
                 json!({"tool": name, "surface": "mcp/upstream-allowlist"}),
             ));
         }
+        // 前置拦截（SQL/文件/接口三族）：必须在 `resolve` 之前——它要建连并拉 tools/list，
+        // 被拒的调用连"上游存在哪些工具"都不该去问。上游是第三方，本服务是唯一收口点。
+        if let Some(guard) = self.preflight.as_deref()
+            && let Some(upstream_id) = manager.owning_upstream(name)
+            && let Some(crate::preflight::Rejection {
+                family,
+                rule,
+                message,
+                hint,
+            }) = crate::preflight::check_call(args, guard)
+        {
+            let e = McpError::with_message(
+                family.error_code(),
+                message,
+                json!({
+                    "rule": rule,
+                    "hint": hint,
+                    "upstream_id": upstream_id,
+                    "tool": name,
+                }),
+            );
+            let mut detail = json!({
+                "surface": family.surface(),
+                "rule": rule,
+                "tool": name,
+                "upstream_id": upstream_id,
+            });
+            // sql 只留前 200 字符：审计要能复盘意图，但不能把整条大查询塞进台账。
+            // 文件/接口调用的入参里没有查询文本，这一项只对 SQL 族有意义。
+            if family == crate::preflight::Family::Sql
+                && let Some(sql) = crate::preflight::sql_argument(args)
+            {
+                detail["sql"] = json!(sql.chars().take(200).collect::<String>());
+            }
+            return Some(self.reject(id, actor, &e, detail));
+        }
         let call = manager.resolve(scope, name).await?;
         let started = Instant::now();
         let outcome = manager.call(&call, args).await;

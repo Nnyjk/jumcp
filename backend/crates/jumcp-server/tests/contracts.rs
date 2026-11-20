@@ -5,7 +5,7 @@
 
 use jumcp_core::audit::AuditLog;
 use jumcp_core::budget::BudgetCaps;
-use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::{Actor, GroupRequest, resolve_scope};
 use jumcp_server::catalog::Capability;
 use jumcp_server::mcp::McpServer;
@@ -54,14 +54,6 @@ fn settings(overflow: &str) -> Settings {
     Settings {
         policy: policy(),
         budget_overflow: overflow.to_string(),
-        datasources: vec![DatasourceRef {
-            name: "main-ch".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec!["default".into()],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }

@@ -10,15 +10,22 @@
 | category | 职责 | 工具 | 可见性判定 |
 |---|---|---|---|
 | `basic` | 基础查询与计算：走查工具目录 / 取 schema / 按已发布模板取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
-| `analysis` | 工具列表分析、变更提交审计 | `admin_review_queue`、`admin_register_template`、`admin_set_visibility` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
+| `analysis` | 工具列表分析、变更提交审计、定制化候选排名 | `admin_review_queue`、`admin_tool_candidates`、`admin_register_template`、`admin_set_visibility`、`admin_publish_capability` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
 | `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
 
 未知 id 落 `custom`（新增内置工具忘记归类时不会冒充 `admin`）。
 
-注解与行为一致：`admin_register_template` / `admin_set_visibility` 实际写库，声明
-`readOnlyHint=false`（`destructiveHint=false`，不触碰数据源）；`admin_review_queue` /
-`admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
+注解与行为一致：`admin_register_template` / `admin_set_visibility` / `admin_publish_capability`
+实际写库，声明 `readOnlyHint=false`（`destructiveHint=false`，不触碰数据源）；`admin_review_queue` /
+`admin_tool_candidates` / `admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
 未声明时按上游 `read_only` 保守生成（`read_only=false` → `destructiveHint=true`、`readOnlyHint=false`）。
+
+维护通道的分工：`admin_register_template` 只产草案（`status=draft`，不改已发布版本）、
+`admin_set_visibility` 只改 `discoverable`/`callable`、`admin_publish_capability` 可发布——
+**agent 自审**：审批留痕 `source="agent"`、`verified=true`（批准人身份来自已鉴权的 agent token，
+不是自述），单号缺省由服务端生成 `agent:<actor_id>:<rfc3339>`。发布只推进状态、不改定义：
+改 SQL/参数仍需重新登记草案，因此不存在"改完定义立即生效"的旁路。人发布仍走 HTTP 管理面
+`POST /admin/capabilities/{id}/publish`，必带外部单号，留痕 `source="external"`、`verified=false`。
 
 ### `basic` 是代码内置组，不是授权组
 
@@ -71,8 +78,31 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 
 ### `db_run_template`：模板执行臂
 
-内置工具里**只有**这一条会碰数据源，也是"从审计提取高频查询 → 注册成模板 → agent 调用"
+内置工具里**只有**这一条会碰数据库，也是"从审计提取高频查询 → 注册成模板 → agent 调用"
 闭环的执行端。agent 不能自由拼 SQL，只能调注册期已过 sqlguard 的固定查询路径。
+
+路由器自己不持有数据库连接：模板在定义里用 `target` 声明由**哪个已接入的上游 MCP 工具**代劳，
+执行时只是"渲染 → 经该上游工具调用"。
+
+**方言是隐含契约**：注册期编译与渲染期门禁都按**上游的 SQL 方言**走，当前固定 ClickHouse
+（`main.rs` 用 `TemplateRegistry::with_dialect(store, Dialect::ClickHouse)` 构造；
+`TemplateRegistry::new()` 的 PostgreSQL 默认只服务单元测试）。`render_inline` 只认 `?` 占位符，
+`validate_rendered` 也按同一方言跑。因此模板 SQL 与 `target` 指向的上游必须与 ClickHouse 词法
+兼容——这是当前契约，不是缺陷：接入方言不兼容的上游时，模板会在注册期或渲染期被门禁拒绝，
+而不是悄悄发出错误语法。注册期不做方言探测，`target` 也没有方言字段。
+
+```toml
+[[templates]]
+template_id = "order.daily_summary"
+group = "db.read.analytics"
+risk = "read"
+sql = "SELECT day, count(*) AS orders FROM public.orders WHERE day = :day"
+
+[target]                  # 必填：没有它模板注册就被拒（data.field="target"）
+upstream = "ch"           # 已接入的上游 id（不含 __、不是保留 id）
+tool = "query"            # 上游工具名（不得以 admin_ 开头）
+database = "analytics"    # 可选：透传给上游的默认库
+```
 
 `inputSchema`：`{"template_id": string(必填), "params": object, "version": integer}`。
 `params` 按模板定义里的具名参数取值（缺失/类型/枚举/column_ref 白名单在渲染期判定）。
@@ -85,20 +115,29 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 2. **版本钉住**：`TemplateRegistry::pin(session_key(actor), template_id, version, current)`，
    键是 `<tenant>:<actor_id>`。同一会话显式换版本 → `MCP_VERSION_CONFLICT`
    （`data.pinned`/`data.requested`）。钉住只在进程内存里，重启或换 agent 身份即失效。
-3. **渲染**：`CompiledTemplate::render(&params)` → `PreparedQuery{sql, values, params_hash}`，
-   命名占位符在注册期已改写为 `?`。
+3. **渲染**：`CompiledTemplate::render_inline(&params)` → `RenderedSql{sql, params_hash}`。
+   命名占位符在注册期已改写为 `?`，渲染期按 `bind_order` 依次替换成**转义后的字面量**
+   （字符串 `\`→`\\`、`'`→`\'`；数字原样；`NULL`；`??` 是字面 `?`）。渲染完再用
+   `preflight::sql::check` 前检一遍（`MCP_SQL_BLOCKED`），防止拼接产生注入。
 4. **结果缓存**：键 `(template_id, version, params_hash)`，TTL 取模板的 `result_cache_ttl_s`
-   （≤0 不缓存，上限 300 秒）。命中即不执行、不再计预算。
-5. **执行**：schema 只能收窄连接白名单（模板 `constraints.allowed_schemas` 为空则用连接的
-   白名单，越界 → `MCP_SCHEMA_OUT_OF_SCOPE`）；`QueryParams` 取模板的 `auto_limit` /
-   `statement_timeout_ms`，单元格 `cell_char_limit=200`、`cell_char_offset=0`。
+   （≤0 不缓存，上限 300 秒）。命中即不触达上游、不再计预算。
+5. **执行**：`UpstreamManager::resolve(scope, "{target.upstream}__{target.tool}")`，解析不到
+   → `MCP_UPSTREAM_NOT_FOUND`（`data.upstream`/`data.tool`）；参数是
+   `{"sql": <渲染后 SQL>, "database"?: <target.database>}`。上游的失败码原样透传
+   （`MCP_UPSTREAM_UNREACHABLE` / `MCP_EXEC_TIMEOUT` / …），审计 `outcome` 用上游给的
+   `error`/`unknown`；成功时从 `structuredContent`（缺则解析首个 `content.text` 的 JSON）取
+   `{columns, rows, row_count, elapsed_ms}`，`elapsed_ms` 缺失才回落到本地计时。
 6. **结果预算**：结果 token 数超过模板 `constraints.max_result_tokens` → `MCP_BUDGET_EXCEEDED`
    （`data.scope="max_result_tokens"`）；否则记入会话预算，预算溢出按服务端策略
    `OverflowPolicy::Fail`（回错误）或 `Truncate`（回摘要）。
 
 返回：`structuredContent` 为 `{content, cache: "hit"|"miss", version}`；`content` 里带上
-`template_id`/`version`/`cache`/`variant` 与预算 `summary`。预算摘要模式下只回
-`{row_count, summary:true, template_id, version}`。
+`template_id`/`version`/`cache`/`variant`、上游的 `columns`/`rows`/`row_count`/`elapsed_ms`
+与预算 `summary`。预算摘要模式下只回 `{row_count, summary:true, template_id, version}`。
+
+审计事件 `template_run` 的关键 `data`：`executed_script`（真正发出去的 SQL）、`bound_params`
+（调用方给的原始参数）、`upstream_id`、`upstream_tool`、`tokens`、`cache`、`elapsed_ms`、
+`version`、`row_count`、`truncated`。
 
 **升级注意**：`db_run_template` 是恢复后的内置 id，已存在的访问令牌如果 `builtin_tools`
 是显式白名单（既不含它、也不含 `*` 或其它通配），调用会被 allowlist 门禁拒绝——

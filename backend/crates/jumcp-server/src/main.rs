@@ -5,7 +5,6 @@ use jumcp_core::audit::AuditLog;
 use jumcp_core::config::Settings;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
-use jumcp_server::connector::{ConnectorConfig, ConnectorExecutor};
 use jumcp_server::mcp::McpServer;
 use jumcp_server::service::{Service, health};
 use serde_json::Value;
@@ -53,52 +52,6 @@ async fn main() -> anyhow::Result<()> {
         store.clone(),
         jumcp_sqlguard::Dialect::ClickHouse,
     ));
-    let readonly_datasources: Vec<_> = settings
-        .datasources
-        .iter()
-        .filter(|ds| ds.readonly)
-        .collect();
-    if readonly_datasources.len() > 1 {
-        let names: Vec<&str> = readonly_datasources
-            .iter()
-            .map(|ds| ds.name.as_str())
-            .collect();
-        anyhow::bail!(
-            "只支持单一主数据源，但声明了多个 readonly 数据源: {}",
-            names.join(",")
-        );
-    }
-    let primary_datasource = settings.primary_datasource();
-    match primary_datasource {
-        None => {}
-        Some(ds) if ds.engine == "clickhouse" => {
-            let dsn = ds.dsn().map_err(|e| anyhow::anyhow!("{e}"))?;
-            // 拉起 agent + `initialize` 握手都失败即拒绝启动（fail-closed）。
-            let executor = ConnectorExecutor::connect(ConnectorConfig {
-                datasource_name: ds.name.clone(),
-                dsn,
-                statement_timeout_ms: ds.statement_timeout_ms,
-                allowed_schemas: ds.allowed_schemas.clone(),
-            })
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "数据源 {} 启动自检失败: [{}] {}",
-                    ds.name,
-                    e.code,
-                    e.message
-                )
-            })?;
-            service = service.with_executor(Arc::new(executor));
-        }
-        Some(ds) => {
-            anyhow::bail!(
-                "数据源 {} 的引擎 {} 不受支持：当前只接受 engine=clickhouse（connector agent）",
-                ds.name,
-                ds.engine
-            );
-        }
-    }
     if !settings.templates_file.is_empty() {
         let seeds = jumcp_server::templates_boot::load_template_seeds(&settings.templates_file)
             .map_err(|e| anyhow::anyhow!("{e}"))?;

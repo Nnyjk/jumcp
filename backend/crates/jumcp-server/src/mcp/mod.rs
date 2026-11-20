@@ -96,8 +96,11 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 ///   模板取数入口（版本钉住 + 结果缓存，SQL 注册期已过 sqlguard）。上游工具按 `group_code`
 ///   归组，不占 `basic`。
 /// - `analysis`（工具列表分析、变更提交审计）：面向工具目录与变更流的观察/提交动作——
-///   `admin_review_queue` 看队列、`admin_register_template` 提交草案、
-///   `admin_set_visibility` 提交可见性变更；它们只读或写本项目自有元数据。
+///   `admin_review_queue` 看队列、`admin_tool_candidates` 给出"哪张表/哪个接口值得固化成
+///   定制 tool"的加权排名（只读，供审计 agent 少走人工评审轮次）、`admin_register_template`
+///   提交草案、`admin_set_visibility` 提交可见性变更、`admin_publish_capability` 提交发布
+///   （agent 自审，审批留痕 `source="agent"`）；它们只读或写本项目自有元数据，
+///   都不改已登记的定义。
 /// - `admin`（仅审计操作）：`admin_audit_queries`，查询调用审计流水。
 ///
 /// 分类与授权解耦，只是展示/检索标签：它**不是** `scope.groups` 的授权组，Header 收窄不会
@@ -110,9 +113,11 @@ pub fn builtin_category(id: &str) -> &'static str {
         "search_capabilities" | "describe_capability" | "list_groups" | "db_run_template" => {
             CATEGORY_BASIC
         }
-        "admin_review_queue" | "admin_register_template" | "admin_set_visibility" => {
-            CATEGORY_ANALYSIS
-        }
+        "admin_review_queue"
+        | "admin_tool_candidates"
+        | "admin_register_template"
+        | "admin_set_visibility"
+        | "admin_publish_capability" => CATEGORY_ANALYSIS,
         "admin_audit_queries" => CATEGORY_ADMIN,
         _ => CATEGORY_CUSTOM,
     }
@@ -121,13 +126,16 @@ pub fn builtin_category(id: &str) -> &'static str {
 /// 维护通道的内置工具（`group="admin"`）：只在 `scope.groups` 含 admin 时出现在
 /// `tools/list` 与发现面，调用前还要再判一次（不依赖客户端是否看过清单）。
 ///
-/// 边界：只能改能力定义（只产 draft）/ 可见性，**不提供发布或审批工具**——
-/// `review → published` 只能走带人工审批的 HTTP 管理面，agent 无法自我发布。
+/// 边界：`admin_register_template` 只产草案、`admin_set_visibility` 只改双布尔，
+/// `admin_publish_capability` 可发布（agent 自审：审批留痕 `source="agent"`、`verified=true`，
+/// 单号缺省由服务端生成 `agent:<actor_id>:<rfc3339>`）。发布只推进状态、不改定义——
+/// 改定义仍需重新登记草案，两条发布路径（人走 HTTP 管理面带外部单号、agent 走本工具）
+/// 都不会替调用方改 SQL 或参数。
 pub fn admin_tool_definitions() -> Vec<Value> {
     vec![
         write_tool(
             "admin_register_template",
-            "登记模板草案（status=draft；发布必须走人工审批的管理面）",
+            "登记模板草案（status=draft；放行走 admin_publish_capability 或人工审批）",
             json!({"type":"object","properties":{
                 "definition":{"type":"object","description":"模板定义原文（template_id/group/sql/params...）"}
             },"required":["definition"]}),
@@ -147,11 +155,29 @@ pub fn admin_tool_definitions() -> Vec<Value> {
                 "offset":{"type":"integer"}
             }}),
         ),
+        tool(
+            "admin_tool_candidates",
+            "定制化 tool 候选评分（只读）：按连续收紧/失败/多令牌加权排序，附加分理由",
+            json!({"type":"object","properties":{
+                "window_days":{"type":"integer","description":"统计窗口（天），默认 7、夹紧 1..=30"},
+                "limit":{"type":"integer","description":"返回候选数，夹紧 1..=200"}
+            }}),
+        ),
         write_tool(
             "admin_set_visibility",
             "改 discoverable/callable（写 admin_change；不改定义、不触发重新审核）",
             json!({"type":"object","properties":{
                 "capability_id":{"type":"string"},
+                "discoverable":{"type":"boolean"},
+                "callable":{"type":"boolean"}
+            },"required":["capability_id"]}),
+        ),
+        write_tool(
+            "admin_publish_capability",
+            "发布能力（agent 自审：审批留痕 source=agent/verified=true；draft 先提审、published 幂等）",
+            json!({"type":"object","properties":{
+                "capability_id":{"type":"string"},
+                "approval_id":{"type":"string","description":"可选：外部单据号；缺省时记 agent 自审"},
                 "discoverable":{"type":"boolean"},
                 "callable":{"type":"boolean"}
             },"required":["capability_id"]}),

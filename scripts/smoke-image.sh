@@ -219,7 +219,10 @@ health_json "$TMP_ROOT/health-xhr.json" "Accept: application/json" -H 'Accept: a
 get "$MCP_BASE/health" "$TMP_ROOT/health-mcp.json"
 [ "$CODE" = "200" ] || fail "GET ${MCP_BASE}/health 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/health-mcp.json" '.audit_chain == "valid"' "MCP 面 /health 的 audit_chain 不是 \"valid\""
-echo "    ok: /health 探针分支 → 200 JSON 且 audit_chain=valid（两面 + 无 Accept / Accept: application/json）"
+# 路由层不持有数据库连接：健康面出现数据源键就说明旧概念又回来了。
+json_is "$TMP_ROOT/health.json" 'has("datasources") | not' "/health 不应再暴露 datasources"
+json_is "$TMP_ROOT/health.json" 'has("datasource") | not' "/health 不应再暴露 datasource"
+echo "    ok: /health 探针分支 → 200 JSON、audit_chain=valid、无 datasources（两面 + 无 Accept / Accept: application/json）"
 
 # 2. /health 浏览器导航分支：Accept 含 text/html 时回退到同源静态站的 index.html
 get "$BASE/health" "$TMP_ROOT/health-page.html" -H 'Accept: text/html,application/xhtml+xml,*/*;q=0.8'

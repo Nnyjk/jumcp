@@ -10,7 +10,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::{ActorRef, AuditEvent, AuditLog};
-use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::secret::SecretKey;
@@ -98,14 +98,6 @@ pub fn settings() -> Settings {
             tenant_budget_cap: 2000,
             allow_intersect: false,
         },
-        datasources: vec![DatasourceRef {
-            name: "main-pg".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec![],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }

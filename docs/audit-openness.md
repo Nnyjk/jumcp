@@ -36,7 +36,7 @@
 | `from_status` | string \| null | 生命周期迁移前状态；无状态对象为 `null` |
 | `to_status` | string \| null | 迁移后状态 |
 | `changes` | array | 字段级真实前后值 `[{field, before, after}]`；无变化为 `[]` |
-| `approval` | object \| null | 外部审批引用（见 §5） |
+| `approval` | object \| null | 审批引用（两种来源，见 §5） |
 | `reason` | string \| null | 退回等动作的说明 |
 | `correlation_id` | string \| null | 关联事件 id：`policy_decision` 指向同一次失败先写入的 `tool_call.event_id` |
 | `data` | object | 事件专属明细（入参、脚本、token、哈希、版本等） |
@@ -125,10 +125,11 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 ```
 
 - `publish` 与已发布定义的 `update_definition` 携带 `approval`；草稿阶段的 `update_definition`、`create`/`submit`/`reject`/`visibility`/`deprecate` 为 `null`。
-- `source` 恒为 `"external"`：本系统没有接入外部审批系统，只留痕。
-- `verified` 恒为 `false`：单号真伪不由本系统校验，如实标注。
-- `id` 来自发布或已发布定义修订请求体的 `approval_id`，格式不受约束。
+- 两种来源，按**谁批准**区分：
+  - `source="external"`：人走 HTTP 管理面（`POST /admin/capabilities/{id}/publish`、已发布定义的 `PUT .../definition`），必带请求体里的 `approval_id`，缺则 `MCP_APPROVAL_REQUIRED`。`verified=false`——单号真伪不由本系统校验，如实标注；`id` 格式不受约束。
+  - `source="agent"`：admin agent 走 MCP `admin_publish_capability`。`verified=true`——批准人身份不是自述，而是已鉴权的 agent token（`access_tokens` 查表 + 常量时间比较）派生出的身份。`id` 由服务端生成 `agent:<actor_id>:<rfc3339>`，或由调用方在 `approval_id` 里给出（仍记 `source="agent"`，因为批准人是 agent）。
 - `submitted_by` 取提审时的鉴权派生身份；`approved_by` 取发布或定义修订请求的鉴权派生身份（表单不能自述批准人）。两者如实记录，当前不限制二者相同。
+- `admin_publish_capability` 对 `draft` 能力由服务端先提审（提审人 = 当前 agent）再发布，两步都留痕：`submit` 事件的 `approval` 为 `null`，`publish` 事件带上述 `agent` 载荷。
 
 ## 6. 审计查询
 
@@ -242,6 +243,34 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
 - `window_days` 默认 7、上限 30；`limit` 默认 200、上限 200。
 - `truncated`：窗口内某类审计扫描命中上限（50,000 条）时为 `true`，表示聚合不是全量。
 - `p95_response_tokens`：对窗口内 token 样本复制后升序排序，按最近秩法取第 `ceil(0.95 × n)` 个（同值多时取该秩的值），样本为空时为 `null`。`recent_tokens` 仍按时间顺序保留最近 20 个非空样本，两者排序不同。
+
+### 7.5.1 `GET /admin/tools/candidates?window_days=&limit=`
+
+定制化 tool 候选加权评分：把窗口内的 `tool_call` 流水按**调用对象**（SQL 表 / 文件路径 /
+接口 `host+path` / 上游工具名）聚合成排名，分数越高越值得固化成定制 tool。MCP 内置工具
+`admin_tool_candidates` 与它共用同一份实现，同一窗口必得同一顺序。
+
+```
+{ window:{days,from,to},
+  weights:{segment_gap_seconds,refine_step,failure_penalty,multi_token_bonus,multi_token_cap},
+  truncated,
+  candidates:[{
+    subject, family, upstream_id, upstream_tool, score, calls,
+    longest_segment, refined_calls, failures, distinct_tokens, reasons:[…] }] }
+```
+
+- `family`：`sql` / `file` / `http` / `tool`（认不出对象参数时退到上游工具本身）。
+- 四条加权规则：同令牌对同一对象的**连续收紧**（相邻调用间隔 ≤ `segment_gap_seconds` 视为一段，
+  段内第 ⌈n/2⌉ 次之后逐次递增 `k × refine_step`）、**失败**每次 `-failure_penalty`、
+  同对象被**多令牌**访问 `min((t-1) × multi_token_bonus, multi_token_cap)`。权重随响应回显：
+  分数是加权和，不给系数就无法解释"为什么它是 9 分"。
+- 「条件收紧」按**短间隔重复调用同一对象**推断，不解析语句结构：`tool_call` 审计只留入参，
+  无法可靠判定后一次查询的范围是否更窄（先放宽再收窄同样常见），按结构判定会漏掉真实调参。
+- 分数 ≤ 0 的对象不出现（"试过但没成气候"不该占 `limit`，更不该冒充候选）；结果按分数降序。
+- `truncated`：窗口扫描命中 50,000 条上限，或候选数超过 `limit`。
+- `window_days` 默认 7、上限 30；`limit` 默认 200、上限 200。
+- 只扫 `tool_call`：`template_run` 已经是固化路径，再推荐"把它固化成 tool"是同一件事做两遍。
+- `reasons` 是分项证据（哪条规则加/减了多少），审计 agent 不必回查原始流水就能解释排名。
 
 ### 7.6 `GET /admin/tools/{id}/calls?window_days=&limit=&offset=`
 
@@ -392,7 +421,7 @@ DELETE /admin/groups/{code}
 
 ## 8. 发布与可见性是两步
 
-1. `POST /admin/capabilities/{id}/publish`：`review → published`，必须带外部审批单号 `approval_id`；批准人取当前 token 派生身份并记入 `approval.approved_by`。
+1. `POST /admin/capabilities/{id}/publish`：`review → published`，必须带外部审批单号 `approval_id`；批准人取当前 token 派生身份并记入 `approval.approved_by`（`source="external"`、`verified=false`）。MCP 侧对应 `admin_publish_capability`：admin agent 自审发布，`source="agent"`、`verified=true`，可同一次调用顺带设置可见性；它同样要求能力处于提审态（`draft` 会先由服务端提审，`deprecated` 直接拒绝），且不能改定义。
 2. `POST /admin/capabilities/{id}/visibility`：设置 `discoverable` / `callable`。
 
 **发布 ≠ 对调用方开放**：只有两个开关都打开、且调用方属于该能力所在组，才既出现在 `tools/list`/`search` 又能 `tools/call`。管理台「审批」分栏把两步合并为一次操作，但仍是两次独立请求；第二步失败不会回滚已发布状态，界面会明确提示「已发布但可见性保存失败」。

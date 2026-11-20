@@ -13,6 +13,7 @@ mod basic;
 mod crud;
 mod fixtures;
 mod packages;
+mod preflight;
 mod scope;
 mod token_options;
 mod tools;
