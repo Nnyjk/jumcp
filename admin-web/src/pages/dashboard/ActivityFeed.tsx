@@ -27,7 +27,7 @@ export function ActivityFeed({
   roleIndex: Map<string, RoleItem>
 }) {
   return (
-    <div className="dash-span-6">
+    <div className="dash-span-12">
       <Card title="治理动态" subtitle={`最近 ${GOVERNANCE_LIMIT} 条`}>
         {pending && items.length === 0 && (
           <LoadingState rows={4} label="正在加载治理动态" />

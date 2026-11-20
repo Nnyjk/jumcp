@@ -6,7 +6,7 @@ import {
   refreshUpstream,
   updateUpstream,
 } from '../../api/admin'
-import { groupLabel, indexGroups, useGroupsQuery } from '../../api/queries'
+import { UPSTREAMS_KEY, groupLabel, indexGroups, useGroupsQuery } from '../../api/queries'
 import type { UpstreamItem } from '../../api/types'
 import { Badge, CategoryBadge, UpstreamStatusBadge } from '../../components/Badge'
 import { Card } from '../../components/Card'
@@ -60,7 +60,7 @@ export default function UpstreamsPage() {
   }
 
   const upstreamsQuery = useQuery({
-    queryKey: ['upstreams'],
+    queryKey: UPSTREAMS_KEY,
     queryFn: ({ signal }) => fetchUpstreams(signal),
   })
   const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
@@ -70,7 +70,7 @@ export default function UpstreamsPage() {
 
   /** 上游写操作会改变 router 暴露的工具集合，台账一并失效。 */
   const refreshAfterWrite = () => {
-    void queryClient.invalidateQueries({ queryKey: ['upstreams'] })
+    void queryClient.invalidateQueries({ queryKey: UPSTREAMS_KEY })
     void queryClient.invalidateQueries({ queryKey: ['tool-stats'] })
   }
 

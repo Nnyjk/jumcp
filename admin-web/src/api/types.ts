@@ -240,16 +240,9 @@ export interface CapabilityQuery {
 /** 健康检查：链校验结论。 */
 export type AuditChainState = 'valid' | 'tampered' | 'error'
 
-export interface HealthDatasource {
-  name: string
-  engine: string
-  readonly: boolean
-}
-
 export interface HealthPayload {
   status: string
   version: string
-  datasources: HealthDatasource[]
   audit_chain: AuditChainState
   /** 篡改事件 id 或校验失败原因：可能是字符串或对象，按原样转文本展示。 */
   audit_chain_detail?: unknown
