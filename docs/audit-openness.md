@@ -426,6 +426,8 @@ DELETE /admin/groups/{code}
 
 **发布 ≠ 对调用方开放**：只有两个开关都打开、且调用方属于该能力所在组，才既出现在 `tools/list`/`search` 又能 `tools/call`。管理台「审批」分栏把两步合并为一次操作，但仍是两次独立请求；第二步失败不会回滚已发布状态，界面会明确提示「已发布但可见性保存失败」。
 
+agent 侧推荐在 `admin_publish_capability` 里一并传 `discoverable` / `callable`，否则发布后仍是 `callable=false`，紧接着的 `db_run_template` 返回 `MCP_CAPABILITY_NOT_FOUND`（消息「能力不存在或不可见」）——看起来像登记失败，实际只是没开调用面。
+
 可见性判定只看组名与调用方角色；组的 `min_budget` / `priority` 不改变可见范围。
 
 ## 9. 旧行边界（旧格式事件）
