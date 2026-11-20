@@ -96,8 +96,9 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 ///   模板取数入口（版本钉住 + 结果缓存，SQL 注册期已过 sqlguard）。上游工具按 `group_code`
 ///   归组，不占 `basic`。
 /// - `analysis`（工具列表分析、变更提交审计）：面向工具目录与变更流的观察/提交动作——
-///   `admin_review_queue` 看队列、`admin_register_template` 提交草案、
-///   `admin_set_visibility` 提交可见性变更、`admin_publish_capability` 提交发布
+///   `admin_review_queue` 看队列、`admin_tool_candidates` 给出"哪张表/哪个接口值得固化成
+///   定制 tool"的加权排名（只读，供审计 agent 少走人工评审轮次）、`admin_register_template`
+///   提交草案、`admin_set_visibility` 提交可见性变更、`admin_publish_capability` 提交发布
 ///   （agent 自审，审批留痕 `source="agent"`）；它们只读或写本项目自有元数据，
 ///   都不改已登记的定义。
 /// - `admin`（仅审计操作）：`admin_audit_queries`，查询调用审计流水。
@@ -113,6 +114,7 @@ pub fn builtin_category(id: &str) -> &'static str {
             CATEGORY_BASIC
         }
         "admin_review_queue"
+        | "admin_tool_candidates"
         | "admin_register_template"
         | "admin_set_visibility"
         | "admin_publish_capability" => CATEGORY_ANALYSIS,
@@ -151,6 +153,14 @@ pub fn admin_tool_definitions() -> Vec<Value> {
                 "order":{"type":"string","description":"asc|desc（默认 desc）"},
                 "limit":{"type":"integer"},
                 "offset":{"type":"integer"}
+            }}),
+        ),
+        tool(
+            "admin_tool_candidates",
+            "定制化 tool 候选评分（只读）：按连续收紧/失败/多令牌加权排序，附加分理由",
+            json!({"type":"object","properties":{
+                "window_days":{"type":"integer","description":"统计窗口（天），默认 7、夹紧 1..=30"},
+                "limit":{"type":"integer","description":"返回候选数，夹紧 1..=200"}
             }}),
         ),
         write_tool(

@@ -72,7 +72,7 @@ ClickHouse 执行件：`src/lib.rs` 导出 `ClickHouseAgent`（连接池 + 只�
 | `admin/` | `/admin/*` 管理面：`surface` 路由与 `/admin/me`，`capabilities`、`writes`（定义/提审/发布/驳回/可见性等写操作）、`stats`、`tokens`、`groups`、`upstreams` 各面实现，`packages` 内置 MCP 包目录、安装、配置编辑与卸载 |
 | `builtin/` | 内置 MCP 运行时：`mod` 是插件注册表（`plugin(id)` / `plugins()`）、内嵌端点 `POST /internal/mcp/{package_id}/{upstream_id}`（Bearer 内存 token）与 `BuiltinEndpoint`（base + token，供上游客户端注入鉴权）；`migrate` 把旧 stdio 安装改写为 HTTP |
 | `upstream/` | 动态上游 MCP server 接入：`client` 传输抽象与连接池（http / stdio 二选一）、`http` 与 `stdio` 两种传输实现；`http` 对命中内置端点 base 的请求注入 internal Bearer；`stdio::bundled_binary` 是手工 stdio 上游可执行文件的唯一解析点（`JUMCP_MCP_BUNDLED_BIN_DIR` → 服务同目录 → `PATH`） |
-| `sql_guard.rs` | 第三方 SQL 前置拦截：`sql_guard::check` 的 10 条词法规则与 `GuardConfig`（`JUMCP_SQL_ALLOWED_SCHEMAS` 库白名单、`max_limit` 常量），拦在 `UpstreamManager::resolve` 之前 |
+| `preflight/` | 第三方调用前置拦截：`preflight::check_call` 按入参形状分派 `sql`/`file`/`http` 三族，共用 `PreflightConfig`（`JUMCP_SQL_ALLOWED_SCHEMAS`、`JUMCP_FILE_ALLOWED_ROOTS`、`JUMCP_HTTP_ALLOW_PRIVATE_HOSTS` 与上限常量），拦在 `UpstreamManager::resolve` 之前 |
 | `catalog.rs` | 能力抽象与内存目录（可见性 `published ∧ discoverable ∧ group ∈ scope`，不可见与不存在同构） |
 | `discovery.rs` | 发现面唯一的可见集生产函数：`builtin ∪ 注册表可见行 ∪ 内存目录`，供 search / describe / list_groups / tools/list 共用 |
 | `web.rs` | 管理台静态托管：HTTP 模式下提供 `admin-web/dist`（`JUMCP_MCP_WEB_DIR` 为空则不挂）、SPA 回退与路径空间隔离 |

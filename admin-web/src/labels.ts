@@ -136,6 +136,8 @@ export const ERROR_CODE_LABEL: Record<string, string> = {
   MCP_SCHEMA_OUT_OF_SCOPE: '超出允许的 schema',
   MCP_SQL_REJECTED: 'SQL 被拒绝',
   MCP_SQL_BLOCKED: 'SQL 被前置拦截',
+  MCP_FILE_BLOCKED: '文件访问被前置拦截',
+  MCP_HTTP_BLOCKED: '接口调用被前置拦截',
   MCP_STATE_TRANSITION_INVALID: '非法状态迁移',
   MCP_TEMPLATE_INVALID: '模板定义非法',
   MCP_UNSUPPORTED_COLUMN_TYPE: '不支持的列类型',

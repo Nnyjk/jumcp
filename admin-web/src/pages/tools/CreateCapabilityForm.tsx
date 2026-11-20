@@ -100,8 +100,8 @@ export function CreateCapabilityForm({
       }}
     >
       <p className="hint">
-        模板 SQL 会发给所选上游 MCP 的工具执行，jumcp 不再直连数据库；SQL 会先过 sql_guard
-        前置拦截（拒绝无 LIMIT 且无 WHERE 的宽查询）。
+        模板 SQL 会发给所选上游 MCP 的工具执行，jumcp 不再直连数据库；SQL 会先过前置拦截
+        （拒绝无 LIMIT 且无 WHERE 的宽查询）。
       </p>
       <div className="form-row">
         <Field label="模板 ID" title="template_id">
