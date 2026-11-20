@@ -33,8 +33,11 @@ async fn health_does_not_require_token() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], json!("ok"));
     assert_eq!(body["audit_chain"], json!("valid"));
-    assert_eq!(body["datasources"][0]["name"], json!("main-pg"));
-    assert_eq!(body["datasources"][0]["readonly"], json!(true));
+    // 路由层不持有数据库连接：健康面不得再出现任何数据源声明。
+    assert!(
+        body.get("datasources").is_none() && body.get("datasource").is_none(),
+        "health 不应再暴露 datasources: {body}"
+    );
 }
 
 #[tokio::test]

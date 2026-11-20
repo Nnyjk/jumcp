@@ -4,19 +4,9 @@ use jumcp_core::budget::BudgetCaps;
 use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_server::catalog::{Capability, Catalog};
-use jumcp_server::executor::{ExecFuture, QueryExecutor, QueryParams};
 use jumcp_server::mcp::{McpServer, READONLY_ANNOTATIONS};
 use jumcp_server::service::{RESIDENT_TOOL_NAMES, Service};
 use serde_json::{Value, json};
-use std::sync::Arc;
-
-struct NoopExecutor;
-
-impl QueryExecutor for NoopExecutor {
-    fn execute<'a>(&'a self, _scope: &'a EffectiveScope, _q: &'a QueryParams) -> ExecFuture<'a> {
-        Box::pin(async { Ok(json!({"rows": [], "row_count": 0, "tokens": 1})) })
-    }
-}
 
 fn settings(threshold: i64, overflow: &str) -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -82,7 +72,6 @@ fn server_with(
     caps: Option<BudgetCaps>,
 ) -> McpServer {
     let mut service = Service::new(settings(threshold, overflow))
-        .with_executor(Arc::new(NoopExecutor))
         .with_catalog(catalog)
         .with_scope(EffectiveScope {
             groups: vec!["db.read.core".into(), "db.read.analytics".into()],

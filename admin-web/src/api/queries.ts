@@ -1,14 +1,15 @@
 /**
- * 组 / 角色引用数据的共享查询：所有页面都从 fetchGroups、fetchRoles 读同一份缓存。
- * 组写操作按前缀失效 ['groups']，角色写操作（如果将来出现）同理，不需要逐页失效。
+ * 组 / 角色 / 上游引用数据的共享查询：所有页面都从 fetchGroups、fetchRoles、fetchUpstreams 读同一份缓存。
+ * 写操作按前缀失效（['groups']、['upstreams']），不需要逐页失效。
  */
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchGroups, fetchRoles, fetchUpstreamTools } from './admin'
+import { fetchGroups, fetchRoles, fetchUpstreamTools, fetchUpstreams } from './admin'
 import type { GroupItem, GroupPage, RoleItem, RolePage } from './types'
 
 export const GROUPS_KEY = ['groups'] as const
 export const ROLES_KEY = ['roles'] as const
+export const UPSTREAMS_KEY = ['upstreams'] as const
 export const UPSTREAM_TOOLS_KEY = ['upstream-tools'] as const
 
 /** 单个上游的工具缓存；写操作后按该 key 精确失效。 */
@@ -31,6 +32,14 @@ export function useRolesQuery() {
   return useQuery({
     queryKey: ROLES_KEY,
     queryFn: ({ signal }) => fetchRoles(signal),
+  })
+}
+
+/** 上游清单：维护页与需要选执行目标的表单共用同一份缓存。 */
+export function useUpstreamsQuery() {
+  return useQuery({
+    queryKey: UPSTREAMS_KEY,
+    queryFn: ({ signal }) => fetchUpstreams(signal),
   })
 }
 

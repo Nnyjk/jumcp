@@ -1004,7 +1004,6 @@ dependencies = [
  "axum",
  "chrono",
  "jumcp-connector-clickhouse",
- "jumcp-connector-protocol",
  "jumcp-core",
  "jumcp-mcp-clickhouse",
  "jumcp-sqlguard",

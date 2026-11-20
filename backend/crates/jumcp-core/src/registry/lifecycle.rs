@@ -9,6 +9,29 @@ use crate::canonical::{canonical_json, definition_hash};
 use crate::errors::McpError;
 use serde_json::{Value, json};
 
+/// 发布审批的来源：同一段迁移逻辑，只是留痕载荷不同。
+///
+/// 用枚举而不是 `bool`：调用点读起来是 `ApprovalKind::Agent`，不会出现
+/// `promote(..., true)` 这种"true 是什么"的问题；新增来源也只是多一个变体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalKind {
+    /// 人走 HTTP 管理面，单号由外部系统给出；系统不校验真伪 → `verified=false`。
+    External,
+    /// agent 走 MCP `admin_publish_capability`，批准人来自已鉴权 token → `verified=true`。
+    Agent,
+}
+
+impl ApprovalKind {
+    fn approval(self, approval_id: &str, submitted_by: &str, approved_by: &str, at: &str) -> Value {
+        match self {
+            Self::External => {
+                crate::audit::external_approval(approval_id, submitted_by, approved_by, at)
+            }
+            Self::Agent => crate::audit::agent_approval(approval_id, submitted_by, approved_by, at),
+        }
+    }
+}
+
 impl CapabilityStore {
     pub fn get(&self, id: &str) -> Result<Option<CapabilityRecord>, McpError> {
         let conn = self.conn.lock().map_err(|_| McpError::lock())?;
@@ -274,7 +297,7 @@ impl CapabilityStore {
         ))
     }
 
-    /// review → published：盖章当前版本行 + 更新生命周期 + 写一条可读审计。
+    /// review → published（外部审批来源）：HTTP 管理面与模板注册表的历史入口。
     fn transition_to_published(
         &self,
         id: &str,
@@ -282,7 +305,28 @@ impl CapabilityStore {
         submitted_by: &str,
         approved_by: impl IntoAuditOrigin,
     ) -> Result<CapabilityRecord, McpError> {
-        let approved_origin = approved_by.into_audit_origin();
+        self.publish_core(
+            id,
+            approval_id,
+            submitted_by,
+            ApprovalKind::External,
+            approved_by.into_audit_origin(),
+        )
+    }
+
+    /// review → published：盖章当前版本行 + 更新生命周期 + 写一条可读审计。
+    ///
+    /// 审批来源只是"哪张载荷"，不改迁移规则：两种来源都必须带非空 `approval_id`。
+    /// 人走管理面时空值来自漏填单号（面向调用方的错误）；agent 走 MCP 时由工具层生成
+    /// `agent:<actor_id>:<rfc3339>`——核心不再兜底生成，避免同一 id 有两个生成点。
+    fn publish_core(
+        &self,
+        id: &str,
+        approval_id: &str,
+        submitted_by: &str,
+        kind: ApprovalKind,
+        approved_origin: crate::audit::AuditOrigin,
+    ) -> Result<CapabilityRecord, McpError> {
         let approved_by = approved_origin.id.as_str();
         if approval_id.is_empty() {
             return Err(McpError::new(
@@ -313,8 +357,7 @@ impl CapabilityStore {
             )
             .map_err(|e| McpError::store(e.to_string()))?;
         }
-        let approval =
-            crate::audit::external_approval(approval_id, submitted_by, approved_by, &now);
+        let approval = kind.approval(approval_id, submitted_by, approved_by, &now);
         self.write_admin_audit(
             AdminChange::new("capability", id, "publish")
                 .with_origin(approved_origin)
@@ -441,6 +484,34 @@ impl CapabilityStore {
             ));
         }
         self.transition_to_published(id, approval_id, &record.submitted_by, approved_by)
+    }
+
+    /// agent 自审发布：review → published，审批载荷记 [`ApprovalKind::Agent`]（`verified=true`）。
+    ///
+    /// 与 [`Self::promote_to_published`] 的唯一差别是审批来源；状态判定（draft 先提审、
+    /// published 幂等）在工具层做——两个入口共用同一个状态机，不另开一条路径。
+    /// `approval_id` 由调用方（MCP 工具层）生成并保证非空，核心不兜底。
+    pub fn publish_by_agent(
+        &self,
+        id: &str,
+        approval_id: &str,
+        approved_by: impl IntoAuditOrigin,
+    ) -> Result<CapabilityRecord, McpError> {
+        ensure_mutable(id)?;
+        let record = self.require(id)?;
+        if record.status != "review" {
+            return Err(McpError::new(
+                "MCP_STATE_TRANSITION_INVALID",
+                json!({"capability_id": id, "from": record.status, "to": "published"}),
+            ));
+        }
+        self.publish_core(
+            id,
+            approval_id,
+            &record.submitted_by,
+            ApprovalKind::Agent,
+            approved_by.into_audit_origin(),
+        )
     }
 
     /// 已发布定义只插入新 version；哈希变化须新 `approval_id`。单个事务内：校验状态→插入新 version 行→更新指针(status 保持不变，不经过 review 中间态)。

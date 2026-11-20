@@ -18,6 +18,11 @@
   background: var(--fill-subtle);
 }
 
+/* 7 个指标在 4 列栅格里会空出一格：审计链格最宽（徽标 + 状态说明两句），跨 2 列把整行补满。 */
+.kpi-wide {
+  grid-column: span 2;
+}
+
 .kpi-label {
   color: var(--text-secondary);
   font-size: var(--fs-12);
@@ -61,6 +66,11 @@
 @media (max-width: 560px) {
   .kpi-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 单列栅格里 span 2 会撑出隐式第二列，回到独占一行。 */
+  .kpi-wide {
+    grid-column: span 1;
   }
 }
 

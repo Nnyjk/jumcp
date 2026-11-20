@@ -27,6 +27,34 @@ impl McpServer {
                 json!({"tool": name, "surface": "mcp/upstream-allowlist"}),
             ));
         }
+        // SQL 前置拦截：必须在 `resolve` 之前——它要建连并拉 tools/list，
+        // 被拒的调用连"上游存在哪些工具"都不该去问。上游是第三方，本服务是唯一收口点。
+        if let Some(guard) = self.sql_guard.as_deref()
+            && let Some(sql) = crate::sql_guard::sql_argument(args)
+            && let Some(upstream_id) = manager.owning_upstream(name)
+            && let Err(rejection) = crate::sql_guard::check(sql, guard)
+        {
+            let hint = rejection.hint;
+            let e = McpError::with_message(
+                "MCP_SQL_BLOCKED",
+                rejection.message,
+                json!({
+                    "rule": rejection.rule,
+                    "hint": hint,
+                    "upstream_id": upstream_id,
+                    "tool": name,
+                }),
+            );
+            // sql 只留前 200 字符：审计要能复盘意图，但不能把整条大查询塞进台账。
+            let detail = json!({
+                "surface": "mcp/sql-preflight",
+                "rule": rejection.rule,
+                "tool": name,
+                "upstream_id": upstream_id,
+                "sql": sql.chars().take(200).collect::<String>(),
+            });
+            return Some(self.reject(id, actor, &e, detail));
+        }
         let call = manager.resolve(scope, name).await?;
         let started = Instant::now();
         let outcome = manager.call(&call, args).await;

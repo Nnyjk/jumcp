@@ -107,8 +107,6 @@ export function useDashboardData(windowDays: number, autoRefresh: boolean) {
     .sort((left, right) => right.failure - left.failure)
     .slice(0, 5)
 
-  const datasources = healthQuery.data?.datasources ?? []
-
   const trendEvents = [
     ...(trendToolQuery.data?.events ?? []),
     ...(trendTemplateQuery.data?.events ?? []),
@@ -147,7 +145,6 @@ export function useDashboardData(windowDays: number, autoRefresh: boolean) {
     topTools,
     maxCalls,
     failureTools,
-    datasources,
     trendPoints,
     trendTruncated,
     trendPending,

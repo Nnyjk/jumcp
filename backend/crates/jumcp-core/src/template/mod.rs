@@ -17,10 +17,10 @@ mod render;
 
 pub use definition::{
     CompiledTemplate, CompiledVariant, Constraints, PARAM_TYPES, ParamSpec, Preflight,
-    PreflightReceipt, TemplateDef, Variant,
+    PreflightReceipt, TemplateDef, TemplateTarget, Variant,
 };
 pub use registry::{TemplateRecord, TemplateRegistry};
-pub use render::{PreparedQuery, compile, compile_with_dialect};
+pub use render::{PreparedQuery, RenderedSql, compile, compile_with_dialect};
 
 use crate::errors::McpError;
 use serde_json::{Value, json};

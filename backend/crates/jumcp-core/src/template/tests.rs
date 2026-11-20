@@ -13,6 +13,7 @@ fn def_value(sql: &str, params: Value, variants: Value) -> Value {
         "risk": "read",
         "description": "按 day 汇总",
         "sql": sql,
+        "target": {"upstream": "ch", "tool": "query"},
         "params": params,
         "variants": variants,
         "constraints": {"allowed_schemas": ["public"]},

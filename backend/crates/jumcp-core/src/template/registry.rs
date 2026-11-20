@@ -71,7 +71,8 @@ pub struct TemplateRegistry {
 }
 
 impl TemplateRegistry {
-    /// 默认按 PostgreSQL 方言编译（既有测试/调用方）；生产入口用 [`with_dialect`] 指定数据源方言。
+    /// 默认按 PostgreSQL 方言编译，只供单元测试/离线调用方使用；生产入口用
+    /// [`with_dialect`] 指定**上游 SQL 方言**（`main.rs` 固定 `Dialect::ClickHouse`）。
     pub fn new(store: Arc<CapabilityStore>) -> Self {
         Self::with_dialect(store, Dialect::Postgres)
     }

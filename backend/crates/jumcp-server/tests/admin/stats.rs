@@ -163,7 +163,7 @@ async fn stats_lists_all_builtin_ids() {
     let h = harness();
     let (status, body) = call(&h.app, Req::get("/admin/tools/stats")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 8);
+    assert_eq!(BUILTIN_CAPABILITY_IDS.len(), 9);
     for id in BUILTIN_CAPABILITY_IDS {
         let cap = find_tool(&body, id);
         assert_eq!(
@@ -185,6 +185,7 @@ async fn stats_lists_all_builtin_ids() {
         ("describe_capability", "basic"),
         ("db_run_template", "basic"),
         ("admin_review_queue", "analysis"),
+        ("admin_publish_capability", "analysis"),
         ("admin_audit_queries", "admin"),
     ] {
         assert_eq!(
@@ -236,8 +237,8 @@ async fn stats_clamps_window_and_marks_limit_truncation() {
     );
     assert_eq!(
         body["tools"].as_array().expect("tools").len(),
-        10,
-        "8 个 builtin + 2 个注册能力"
+        11,
+        "9 个 builtin + 2 个注册能力"
     );
     assert_eq!(body["truncated"], json!(false));
 }

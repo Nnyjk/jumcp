@@ -21,7 +21,6 @@ export function KpiGrid({
   draftCount,
   chain,
   chainHint,
-  datasourceCount,
 }: {
   windowDays: number
   stats: ToolStatsPayload | undefined
@@ -34,7 +33,6 @@ export function KpiGrid({
   draftCount: number
   chain: AuditChainState | undefined
   chainHint: string
-  datasourceCount: number | undefined
 }) {
   const kpiRef = useGsapScope<HTMLDivElement>((scope) => {
     gsap.from(scope.children, {
@@ -131,7 +129,7 @@ export function KpiGrid({
                 </div>
                 <span className="kpi-hint">队列全量，不受时间窗限制</span>
               </div>
-              <div className="kpi">
+              <div className="kpi kpi-wide">
                 <span className="kpi-label">审计链</span>
                 <div className="kpi-value">
                   {chain === undefined ? (
@@ -143,17 +141,6 @@ export function KpiGrid({
                   )}
                 </div>
                 <span className="kpi-hint">{chainHint}</span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">数据源</span>
-                <div className="kpi-value">
-                  {datasourceCount === undefined ? (
-                    <span className="kpi-muted">—</span>
-                  ) : (
-                    <span className="mono">{formatCount(datasourceCount)}</span>
-                  )}
-                </div>
-                <span className="kpi-hint">健康检查</span>
               </div>
             </div>
             {stats.truncated && (

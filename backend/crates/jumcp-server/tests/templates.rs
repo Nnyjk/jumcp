@@ -17,6 +17,7 @@ fn template_value(sql: &str, params: Value, extra: Value) -> Value {
         "description": "按日汇总订单",
         "tags": ["order", "daily"],
         "sql": sql,
+        "target": {"upstream": "ch", "tool": "query", "database": "analytics"},
         "params": params,
         "constraints": {
             "allowed_schemas": ["public"],

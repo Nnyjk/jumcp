@@ -3,32 +3,14 @@
 //! 装配真实 `CapabilityStore`（`:memory:`）+ `TemplateRegistry`，只把执行器换成 fake，
 //! 因此这里验证的是"注册表 → 发现面"这条真实链路，而不是内存目录的替身。
 
-use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
-use jumcp_server::executor::{ExecFuture, QueryExecutor, QueryParams};
 use jumcp_server::mcp::McpServer;
 use jumcp_server::service::{RESIDENT_TOOL_NAMES, Service};
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-struct FakeExecutor;
-
-impl QueryExecutor for FakeExecutor {
-    fn execute<'a>(&'a self, _scope: &'a EffectiveScope, _q: &'a QueryParams) -> ExecFuture<'a> {
-        Box::pin(async {
-            Ok(json!({
-                "rows": [["2026-11-05", 3]],
-                "row_count": 1,
-                "truncated": false,
-                "effective_max_rows": 100,
-                "elapsed_ms": 1,
-                "tokens": 3
-            }))
-        })
-    }
-}
 
 fn settings() -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -67,14 +49,6 @@ fn settings() -> Settings {
             allow_intersect: false,
         },
         budget_overflow: "fail".into(),
-        datasources: vec![DatasourceRef {
-            name: "main-pg".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec!["public".into()],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }
@@ -101,7 +75,6 @@ fn harness() -> Harness {
     let store = Arc::new(CapabilityStore::open(":memory:", None).expect("store"));
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
     let service = Service::new(settings())
-        .with_executor(Arc::new(FakeExecutor))
         .with_scope(scope())
         .with_templates(registry.clone());
     Harness {
@@ -119,6 +92,7 @@ fn template_value() -> Value {
         "description": "按日汇总订单",
         "tags": ["order", "daily"],
         "sql": "SELECT day FROM public.orders WHERE created_at >= :start_date AND created_at < :end_date",
+        "target": {"upstream": "ch", "tool": "query"},
         "params": [
             {"name":"start_date","type":"timestamp","required":true,"nullable":false},
             {"name":"end_date","type":"timestamp","required":true,"nullable":false}

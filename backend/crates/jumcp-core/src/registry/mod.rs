@@ -61,6 +61,7 @@ pub const ADMIN_CAPABILITY_IDS: &[&str] = &[
     "admin_review_queue",
     "admin_audit_queries",
     "admin_set_visibility",
+    "admin_publish_capability",
 ];
 
 /// 全部内置 id：常驻 ∪ 维护。
@@ -76,6 +77,7 @@ pub const BUILTIN_CAPABILITY_IDS: &[&str] = &[
     "admin_review_queue",
     "admin_audit_queries",
     "admin_set_visibility",
+    "admin_publish_capability",
 ];
 
 pub fn is_builtin_id(id: &str) -> bool {

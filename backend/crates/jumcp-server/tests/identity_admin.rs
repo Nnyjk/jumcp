@@ -6,7 +6,9 @@
 //! 关键不变量：
 //! - HTTP `/mcp` 没有兜底身份：缺 token / token 未知 → `MCP_UNAUTHORIZED`；
 //! - admin 工具对非 admin 身份"看不到也调不了"（发现面与调用面同一判定）；
-//! - `review → published` 只能走 HTTP 管理面（人工审批），MCP 面不存在发布工具。
+//! - 发布有两条路：人走 HTTP 管理面（必带外部单号，`approval.source="external"`），
+//!   admin agent 走 `admin_publish_capability`（agent 自审，`approval.source="agent"`）；
+//!   两条路都只推进状态，MCP 面不存在改定义后即发布的通道。
 
 mod support;
 
@@ -15,12 +17,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::AuditLog;
 use jumcp_core::budget::BudgetCaps;
-use jumcp_core::config::{AgentTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{AgentTokens, GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
 use jumcp_server::admin::AdminState;
-use jumcp_server::executor::{ExecFuture, QueryExecutor, QueryParams};
 use jumcp_server::mcp::{McpServer, http_router};
 use jumcp_server::service::{ADMIN_TOOL_NAMES, RESIDENT_TOOL_NAMES, Service};
 use serde_json::{Value, json};
@@ -33,23 +34,6 @@ const ADMIN_TOKEN: &str = "tok_agent_admin_000001";
 // 管理面只认会话 cookie：这两个常量就是 `support::seed_admin_accounts` 建好的会话 id。
 const ALICE_TOKEN: &str = support::ALICE_TOKEN;
 const BOB_TOKEN: &str = support::BOB_TOKEN;
-
-struct FakeExecutor;
-
-impl QueryExecutor for FakeExecutor {
-    fn execute<'a>(&'a self, _scope: &'a EffectiveScope, _q: &'a QueryParams) -> ExecFuture<'a> {
-        Box::pin(async {
-            Ok(json!({
-                "rows": [["2026-11-05", 3]],
-                "row_count": 1,
-                "truncated": false,
-                "effective_max_rows": 100,
-                "elapsed_ms": 1,
-                "tokens": 3
-            }))
-        })
-    }
-}
 
 fn settings() -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -104,14 +88,6 @@ fn settings() -> Settings {
             allow_intersect: false,
         },
         budget_overflow: "fail".into(),
-        datasources: vec![DatasourceRef {
-            name: "main-pg".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec![],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }
@@ -138,7 +114,6 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
     let ttl = boot.admin_session_ttl_secs;
     let mut service = Service::new(boot)
-        .with_executor(Arc::new(FakeExecutor))
         .with_audit(audit.clone())
         .with_templates(registry.clone())
         .with_scope(EffectiveScope {
@@ -320,6 +295,7 @@ fn template_value() -> Value {
         "description": "按日汇总订单",
         "tags": ["order", "daily"],
         "sql": "SELECT day FROM public.orders WHERE created_at >= :start_date AND created_at < :end_date",
+        "target": {"upstream": "ch", "tool": "query"},
         "params": [
             {"name":"start_date","type":"timestamp","required":true,"nullable":false},
             {"name":"end_date","type":"timestamp","required":true,"nullable":false}
@@ -403,10 +379,23 @@ async fn tools_list_depends_on_derived_identity() {
         RESIDENT_TOOL_NAMES.len() + ADMIN_TOOL_NAMES.len(),
         "admin 的清单 = 常驻 + 维护: {admin:?}"
     );
-    // 工具清单里不得出现任何发布/审批类工具（人工发布只能走 HTTP 管理面）。
+    // 发布工具必须存在（agent 自审），但只能是 admin 组成员；不存在"改定义后直接发布"的入口。
     assert!(
-        admin.iter().all(|n| !n.starts_with("admin_publish")),
-        "MCP 面不得提供发布工具: {admin:?}"
+        admin.iter().any(|n| n == "admin_publish_capability"),
+        "admin 清单必须含发布工具: {admin:?}"
+    );
+    assert!(
+        admin
+            .iter()
+            .all(|n| !n.starts_with("admin_promote") && !n.contains("approve")),
+        "MCP 面不应另有提审/审批工具: {admin:?}"
+    );
+    assert!(
+        !tools_list(&h.app, ANALYST_TOKEN)
+            .await
+            .iter()
+            .any(|n| n == "admin_publish_capability"),
+        "非 admin 身份不得看到发布工具"
     );
 
     // 发现面同口径：analyst 连 admin 工具的存在都搜不到。
@@ -611,14 +600,18 @@ async fn admin_register_template_creates_draft_then_human_publish_exposes_it() {
         vec!["order.daily_summary".to_string()],
         "人工发布并开可见性后，analyst 的**下一次**请求即可见"
     );
-    // MCP 面始终不存在"自我批准"的入口。
-    assert!(
-        tools_list(&h.app, ADMIN_TOKEN)
-            .await
-            .iter()
-            .all(|n| !n.starts_with("admin_publish") && !n.starts_with("admin_promote")),
-        "维护通道不得提供发布/提审工具"
-    );
+    // 人发布的留痕仍是 external（agent 主动发布走 admin_publish_capability，不在这里）。
+    let approvals = audit_events(&h, "admin_change").await;
+    let publish = approvals
+        .iter()
+        .find(|e| {
+            e.payload["object_id"] == json!("order.daily_summary")
+                && e.payload["action"] == json!("publish")
+        })
+        .expect("人工发布必须写 admin_change");
+    assert_eq!(publish.payload["approval"]["source"], json!("external"));
+    assert_eq!(publish.payload["approval"]["verified"], json!(false));
+    assert_eq!(publish.payload["approval"]["id"], json!("ap-pub-1"));
 }
 
 /// `admin_set_visibility` 对内置 id 一律拒绝；对普通能力成功并写 `admin_change`（actor 为派生身份）。
@@ -864,7 +857,6 @@ fn harness_without_audit() -> NoAuditHarness {
         .expect("seed access tokens");
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
     let service = Service::new(boot.clone())
-        .with_executor(Arc::new(FakeExecutor))
         // 关键：不调用 with_audit，store 也不接审计。
         .with_templates(registry)
         .with_scope(EffectiveScope {
@@ -1356,4 +1348,248 @@ async fn builtin_tool_results_are_content_blocks() {
         json!("MCP_CAPABILITY_NOT_FOUND"),
         "{missing}"
     );
+}
+
+// ---------------------------------------------------------------- agent 自审发布
+
+/// 某条能力已写入的 `publish` 审计条数（幂等断言用）。
+async fn publish_events(h: &Harness, id: &str) -> Vec<jumcp_core::audit::Envelope> {
+    audit_events(h, "admin_change")
+        .await
+        .into_iter()
+        .filter(|e| e.payload["object_id"] == json!(id) && e.payload["action"] == json!("publish"))
+        .collect()
+}
+
+/// agent 自审发布：draft → review → published，审批留痕 `source="agent"`/`verified=true`，
+/// 版本行的 `approval_id` 由服务端生成（`agent:<actor_id>:<rfc3339>`）。
+#[tokio::test]
+async fn admin_publish_capability_publishes_draft_as_agent() {
+    let h = harness();
+    let registered = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_register_template",
+        json!({"definition": template_value()}),
+    )
+    .await;
+    assert_eq!(
+        registered["result"]["isError"],
+        json!(false),
+        "{registered}"
+    );
+
+    let resp = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "order.daily_summary"}),
+    )
+    .await;
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+    let content = &resp["result"]["structuredContent"];
+    assert_eq!(content["id"], json!("order.daily_summary"));
+    assert_eq!(content["status"], json!("published"));
+    assert_eq!(content["approval"]["source"], json!("agent"));
+    assert_eq!(content["approval"]["verified"], json!(true));
+    let approval_id = content["approval"]["id"].as_str().expect("approval id");
+    assert!(
+        approval_id.starts_with("agent:agent-admin:"),
+        "缺省单号必须由服务端按 agent:<actor_id>:<rfc3339> 生成: {approval_id}"
+    );
+    assert!(
+        !content["definition_hash"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty()
+    );
+
+    // 版本行同样留痕（不是只写在审计里）。
+    let versions = h.store.versions("order.daily_summary").expect("versions");
+    assert_eq!(versions.last().expect("version").approval_id, approval_id);
+    assert_eq!(versions.last().expect("version").approved_by, "agent-admin");
+
+    // draft→review 与 review→published 各有一条 admin_change，发布那条带 agent 审批。
+    let changes = audit_events(&h, "admin_change").await;
+    assert!(
+        changes
+            .iter()
+            .any(|e| e.payload["action"] == json!("submit")),
+        "draft 起步必须先提审并留痕: {:?}",
+        changes.iter().map(|e| &e.payload).collect::<Vec<_>>()
+    );
+    let publishes = publish_events(&h, "order.daily_summary").await;
+    assert_eq!(publishes.len(), 1, "发布只写一条 publish 审计");
+    assert_eq!(publishes[0].payload["approval"]["source"], json!("agent"));
+    assert_eq!(publishes[0].payload["approval"]["verified"], json!(true));
+    assert_eq!(
+        publishes[0].payload["approval"]["approved_by"],
+        json!("agent-admin")
+    );
+    assert_eq!(
+        publishes[0].payload["approval"]["submitted_by"],
+        json!("agent-admin")
+    );
+    assert_eq!(publishes[0].actor["id"], json!("agent-admin"));
+}
+
+/// 同一次调用带 `discoverable`/`callable`：发布即开放，管理面详情立刻反映。
+#[tokio::test]
+async fn admin_publish_capability_applies_visibility_in_one_call() {
+    let h = harness();
+    let registered = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_register_template",
+        json!({"definition": template_value()}),
+    )
+    .await;
+    assert_eq!(
+        registered["result"]["isError"],
+        json!(false),
+        "{registered}"
+    );
+
+    let resp = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "order.daily_summary", "discoverable": true, "callable": true}),
+    )
+    .await;
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+    let content = &resp["result"]["structuredContent"];
+    assert_eq!(content["status"], json!("published"));
+    assert_eq!(content["discoverable"], json!(true));
+    assert_eq!(content["callable"], json!(true));
+
+    let (status, body) = call(
+        &h.app,
+        "GET",
+        "/admin/capabilities/order.daily_summary",
+        Some(ALICE_TOKEN),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], json!("published"));
+    assert_eq!(body["discoverable"], json!(true));
+    assert_eq!(body["callable"], json!(true));
+    assert_eq!(
+        search_ids(&h.app, ANALYST_TOKEN, "order.daily_summary").await,
+        vec!["order.daily_summary".to_string()],
+        "agent 发布 + 开可见性后 analyst 立即可见"
+    );
+    // 可见性仍走既有写路径：一条 visibility 审计。
+    let changes = audit_events(&h, "admin_change").await;
+    assert!(
+        changes
+            .iter()
+            .any(|e| e.payload["action"] == json!("visibility")),
+        "可见性变更必须写 admin_change: {:?}",
+        changes.iter().map(|e| &e.payload).collect::<Vec<_>>()
+    );
+}
+
+/// 重复调用幂等：不重复盖章、不新增 publish 审计；已发布时仍允许补开可见性。
+#[tokio::test]
+async fn admin_publish_capability_is_idempotent() {
+    let h = harness();
+    call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_register_template",
+        json!({"definition": template_value()}),
+    )
+    .await;
+    let first = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "order.daily_summary"}),
+    )
+    .await;
+    assert_eq!(first["result"]["isError"], json!(false), "{first}");
+    let first_approval = first["result"]["structuredContent"]["approval"].clone();
+
+    let second = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "order.daily_summary", "discoverable": true}),
+    )
+    .await;
+    assert_eq!(second["result"]["isError"], json!(false), "{second}");
+    let content = &second["result"]["structuredContent"];
+    assert_eq!(content["status"], json!("published"));
+    assert_eq!(
+        content["approval"], first_approval,
+        "幂等返回必须回放首次发布的审批载荷，而不是伪造一条新的 agent 自审"
+    );
+    assert_eq!(content["discoverable"], json!(true));
+    assert_eq!(
+        publish_events(&h, "order.daily_summary").await.len(),
+        1,
+        "重复发布不得新增 publish 审计"
+    );
+}
+
+/// 无 admin 组：与"能力不存在"同构，并写 policy_decision。
+#[tokio::test]
+async fn admin_publish_capability_is_invisible_to_non_admin() {
+    let h = harness();
+    call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_register_template",
+        json!({"definition": template_value()}),
+    )
+    .await;
+
+    let resp = call_tool(
+        &h.app,
+        ANALYST_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "order.daily_summary"}),
+    )
+    .await;
+    assert_eq!(err_code(&resp), "MCP_CAPABILITY_NOT_FOUND", "{resp}");
+    let record = h
+        .store
+        .get("order.daily_summary")
+        .expect("get")
+        .expect("record");
+    assert_eq!(record.status, "draft", "被拒的发布不得改动状态");
+
+    let events = audit_events(&h, "policy_decision").await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.actor["id"] == json!("agent-analyst")
+                && e.payload["error_code"] == json!("MCP_CAPABILITY_NOT_FOUND")),
+        "拒绝必须记 policy_decision 且 actor 为派生身份: {:?}",
+        events
+            .iter()
+            .map(|e| (&e.actor, &e.payload))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `deprecated` 能力不可再发布。
+#[tokio::test]
+async fn admin_publish_capability_rejects_deprecated() {
+    let h = harness();
+    publish_capability(&h, "cap.keep", "db.read.core");
+    publish_capability(&h, "cap.old", "db.read.core");
+    h.store.deprecate("cap.old", "cap.keep").expect("deprecate");
+
+    let resp = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_publish_capability",
+        json!({"capability_id": "cap.old"}),
+    )
+    .await;
+    assert_eq!(err_code(&resp), "MCP_STATE_TRANSITION_INVALID", "{resp}");
 }
