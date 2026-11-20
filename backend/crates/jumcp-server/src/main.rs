@@ -205,11 +205,16 @@ async fn run_http(
     settings: Settings,
     builtin_endpoint: Option<jumcp_server::builtin::BuiltinEndpoint>,
 ) -> anyhow::Result<()> {
-    // fail-closed：没有 token 就不开管理面，也不提供"半开放"降级。
-    if settings.admin_tokens.is_empty() {
-        anyhow::bail!(
-            "HTTP 模式下 JUMCP_ADMIN_TOKENS 未配置：管理面不允许无鉴权启动（格式 id:token,id:token）"
-        );
+    // 首次启动必须能从环境变量播种初始管理员：账号表为空时没有任何登录途径，
+    // 管理面就此死锁。已有账号时这两个变量不参与（重启不该再要求一次口令）。
+    let seeded = store
+        .seed_initial_admin(
+            &std::env::var("JUMCP_ADMIN_USERNAME").unwrap_or_default(),
+            &std::env::var("JUMCP_ADMIN_PASSWORD").unwrap_or_default(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Some(user) = seeded {
+        tracing::info!(username = %user.username, "已创建初始管理员账号");
     }
     // 治理面不可静默失效：`Service::audit_event` 在无审计时是 no-op，
     // 维护通道（admin_register_template / admin_set_visibility）会"写成功但无痕迹"。
@@ -246,7 +251,6 @@ async fn run_http(
         jumcp_server::admin::AdminState {
             service,
             store: store.clone(),
-            tokens: settings.admin_tokens.clone(),
             transport_key: settings.transport_key.clone(),
         },
         &settings.web_dir,

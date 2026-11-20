@@ -19,7 +19,8 @@
 
    | 变量 | 必填 | 说明 |
    |---|---|---|
-   | `JUMCP_ADMIN_TOKENS` | ✅ | 管理面凭证，`id:token,id:token` 形式，每个 token 至少 16 位（如 `admin:<openssl rand -hex 24>`）。未设置或为空时 `docker stack deploy` / Portainer 会在 interpolation 阶段直接失败 |
+   | `JUMCP_ADMIN_USERNAME` | ✅ | 首个管理员账号用户名，3–32 位 `[a-z0-9._-]`（入库转小写）。只在 `admin_users` 表为空时用来播种：库非空后改它无效，改口令请走 `PATCH /admin/admins/{id}`。未设置时 `docker stack deploy` / Portainer 会在 interpolation 阶段直接失败 |
+   | `JUMCP_ADMIN_PASSWORD` | ✅ | 首个管理员账号口令，至少 12 位。同 `JUMCP_ADMIN_USERNAME`：只在空库播种时生效，落库为 Argon2id 哈希。未设置时同样在 interpolation 阶段失败 |
    | `JUMCP_AGENT_TOKENS` | — | `agent_id:role:token,agent_id:role:token`，**只在 `access_tokens` 表为空时**一次性导入（引导用）。表非空后不再生效，令牌请用管理面 `POST /admin/tokens` 生成 |
    | `JUMCP_IMAGE` | — | 覆盖镜像，默认 `ghcr.io/nnyjk/jumcp:latest`。生产填固定 tag 或 `@sha256:` digest |
    | `JUMCP_SECRET_KEY` | ✅ | 64 位 hex（`openssl rand -hex 32`）。内置 MCP 包密码字段的**落库**加密密钥；HTTP 模式缺失或不合法会直接拒绝启动。**轮换后旧密文不可解**，需在管理台重填密码 |
@@ -85,7 +86,8 @@ HttpOnly 会话 cookie 认身份——**中间没有任何反向代理注入凭�
 
   ```bash
   docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
-    -e JUMCP_ADMIN_TOKENS="admin:<至少 16 位的 token>" \
+    -e JUMCP_ADMIN_USERNAME=admin \
+    -e JUMCP_ADMIN_PASSWORD="<至少 12 位的口令>" \
     -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
     -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
     -e JUMCP_MCP_BUNDLED_BIN_DIR=/opt/jumcp/bin \
@@ -111,10 +113,12 @@ HttpOnly 会话 cookie 认身份——**中间没有任何反向代理注入凭�
 只做配置解析（不改本机 Docker 状态、不需要 Swarm）：
 
 ```bash
-JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
+JUMCP_ADMIN_USERNAME=ci-placeholder JUMCP_ADMIN_PASSWORD=ci-placeholder-password \
+  JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
   JUMCP_TRANSPORT_KEY=$(printf '0%.0s' {1..64}) \
   docker stack config -c deploy/portainer-stack.yml
-JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
+JUMCP_ADMIN_USERNAME=ci-placeholder JUMCP_ADMIN_PASSWORD=ci-placeholder-password \
+  JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
   JUMCP_TRANSPORT_KEY=$(printf '0%.0s' {1..64}) \
   docker compose -f deploy/portainer-stack.yml config
 ```
@@ -124,7 +128,7 @@ JUMCP_ADMIN_TOKENS=ci-placeholder JUMCP_SECRET_KEY=$(printf '0%.0s' {1..64}) \
 真正部署（需要已初始化的 Swarm manager）：
 
 ```bash
-JUMCP_ADMIN_TOKENS="admin:$(openssl rand -hex 24)" \
+JUMCP_ADMIN_USERNAME=admin JUMCP_ADMIN_PASSWORD="$(openssl rand -hex 12)" \
   docker stack deploy -c deploy/portainer-stack.yml jumcp
 docker service ps jumcp_jumcp          # 任务状态与调度失败原因
 docker service logs -f jumcp_jumcp     # 日志

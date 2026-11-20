@@ -71,10 +71,12 @@ COPY --from=backend-builder /out/jumcp-server /out/jumcp-connector-clickhouse /u
 COPY --from=web-builder /out/web /app/web
 COPY config/policy.toml /app/config/policy.toml
 
-# 管理面凭证（JUMCP_ADMIN_TOKENS）与两把密钥必须由运行时注入，镜像里不设默认值：
+# 管理面账号（JUMCP_ADMIN_USERNAME / JUMCP_ADMIN_PASSWORD，Argon2id 落库）与两把密钥必须由运行时注入，
+# 镜像里不设默认值：
 # - JUMCP_SECRET_KEY（64 位 hex）：落库加密，内置包密码以 enc:v1 密文存进注册表；
 # - JUMCP_TRANSPORT_KEY（64 位 hex）：请求体传输加密，管理台提交 secret 字段前用它加密。
 # 缺任一密钥（或密钥非法）时 HTTP 模式拒绝启动，避免密码明文落盘或被明文提交。
+# 空库里没有管理员时同样拒绝启动：首次部署必须显式给出初始账号与口令。
 #
 # 两个监听面（不能相同，相同即拒绝启动）：
 # - JUMCP_MCP_PORT（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent 与网关；

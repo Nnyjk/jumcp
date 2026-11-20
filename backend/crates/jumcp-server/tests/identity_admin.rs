@@ -8,14 +8,14 @@
 //! - admin 工具对非 admin 身份"看不到也调不了"（发现面与调用面同一判定）；
 //! - `review → published` 只能走 HTTP 管理面（人工审批），MCP 面不存在发布工具。
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::AuditLog;
 use jumcp_core::budget::BudgetCaps;
-use jumcp_core::config::{
-    AdminTokens, AgentTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy,
-};
+use jumcp_core::config::{AgentTokens, DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
@@ -30,8 +30,9 @@ use tower::ServiceExt;
 const ANALYST_TOKEN: &str = "tok_agent_analyst_0001";
 const ANALYST_B_TOKEN: &str = "tok_agent_analyst_0002";
 const ADMIN_TOKEN: &str = "tok_agent_admin_000001";
-const ALICE_TOKEN: &str = "tok_alice_000000000";
-const BOB_TOKEN: &str = "tok_bob_00000000000";
+// 管理面只认会话 cookie：这两个常量就是 `support::seed_admin_accounts` 建好的会话 id。
+const ALICE_TOKEN: &str = support::ALICE_TOKEN;
+const BOB_TOKEN: &str = support::BOB_TOKEN;
 
 struct FakeExecutor;
 
@@ -73,8 +74,6 @@ fn settings() -> Settings {
         },
     );
     Settings {
-        admin_tokens: AdminTokens::parse(&format!("alice:{ALICE_TOKEN},bob:{BOB_TOKEN}"))
-            .expect("admin tokens"),
         agent_tokens: AgentTokens::parse(&format!(
             "agent-analyst:analyst:{ANALYST_TOKEN},agent-analyst-b:analyst:{ANALYST_B_TOKEN},agent-admin:admin:{ADMIN_TOKEN}"
         ))
@@ -137,7 +136,7 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
         .import_bootstrap_tokens(boot.agent_tokens.principals(), &boot.policy)
         .expect("seed access tokens");
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
-    let admin_tokens = boot.admin_tokens.clone();
+    let ttl = boot.admin_session_ttl_secs;
     let mut service = Service::new(boot)
         .with_executor(Arc::new(FakeExecutor))
         .with_audit(audit.clone())
@@ -154,10 +153,10 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
         service = service.with_budget_caps(caps);
     }
     let service = Arc::new(service);
+    support::seed_admin_accounts(&store, ttl);
     let admin = AdminState {
         service: service.clone(),
         store: store.clone(),
-        tokens: admin_tokens,
         transport_key: None,
     };
     let app = jumcp_server::admin::router(admin)
@@ -201,10 +200,7 @@ async fn call(
     groups: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(token) = token {
-        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
+    let mut builder = support::attach_identity(Request::builder().method(method).uri(uri), token);
     if let Some(groups) = groups {
         builder = builder.header("x-mcp-tool-groups", groups);
     }
@@ -880,10 +876,10 @@ fn harness_without_audit() -> NoAuditHarness {
             allowed_builtin_tools: None,
         });
     let service = Arc::new(service);
+    support::seed_admin_accounts(&store, boot.admin_session_ttl_secs);
     let admin = AdminState {
         service: service.clone(),
         store: store.clone(),
-        tokens: boot.admin_tokens,
         transport_key: None,
     };
     let app = jumcp_server::admin::router(admin)

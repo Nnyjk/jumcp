@@ -1,4 +1,5 @@
-//! 预算模型：常驻 2000 / 单次 1500 / 会话累计 2500 / schema 12 / 峰值 7500，默认 fail。
+//! 预算模型：常驻 2000 / schema 12 / 会话累计 2500，峰值 7500，默认 fail；
+//! 单发结果截断见模板 `max_result_tokens`，不在本模块。
 //! 为什么累计按会话：schema/result 常驻 transcript，按轮计会先破。
 
 use crate::canonical::canonical_json;
@@ -13,7 +14,6 @@ pub const RESIDENT_OTHER: i64 = 400;
 pub const RESIDENT_TOTAL_LIMIT: i64 = 2000;
 pub const MAX_SCHEMA_COUNT: i64 = 12;
 pub const MAX_SCHEMA_TOKENS: i64 = 3000;
-pub const MAX_RESULT_SINGLE: i64 = 1500;
 pub const MAX_RESULT_CUMULATIVE: i64 = 2500;
 pub const PEAK_LIMIT: i64 = RESIDENT_TOTAL_LIMIT + MAX_SCHEMA_TOKENS + MAX_RESULT_CUMULATIVE;
 pub const MIN_VIABLE_BUDGET: i64 = 800;
@@ -28,7 +28,6 @@ pub struct BudgetCaps {
     pub resident_limit: i64,
     pub max_schema_count: i64,
     pub max_schema_tokens: i64,
-    pub max_result_single: i64,
     pub max_result_cumulative: i64,
     pub peak_limit: i64,
 }
@@ -38,7 +37,6 @@ impl Default for BudgetCaps {
             resident_limit: RESIDENT_TOTAL_LIMIT,
             max_schema_count: MAX_SCHEMA_COUNT,
             max_schema_tokens: MAX_SCHEMA_TOKENS,
-            max_result_single: MAX_RESULT_SINGLE,
             max_result_cumulative: MAX_RESULT_CUMULATIVE,
             peak_limit: PEAK_LIMIT,
         }
@@ -157,27 +155,19 @@ impl BudgetLedger {
         }
         BudgetCheckResult::ok(l.in_summary_mode())
     }
-    pub fn check_result(&mut self, session_id: &str, incoming_tokens: i64) -> BudgetCheckResult {
+    /// 结果记账后的预算状态：`summary` 决定下一次响应是否只回摘要。
+    ///
+    /// 只反映会话累计：请求侧没有"待注入结果 token"这类输入，单发截断由模板的
+    /// `max_result_tokens`（默认 1500）在结果序列化层执行，不在预算判定里。
+    pub fn summary_state(&mut self, session_id: &str) -> BudgetCheckResult {
         let l = self.ledger(session_id).clone();
-        let projected = l.result_tokens + incoming_tokens;
-        let summary = l.in_summary_mode() || projected > self.caps.max_result_cumulative;
-        if incoming_tokens > self.caps.max_result_single {
-            return BudgetCheckResult {
-                allowed: true,
-                error_code: String::new(),
-                suggestions: vec![],
-                dropped_groups: vec![],
-                summary,
-                detail: json!({"truncated": true, "single": incoming_tokens, "cumulative": l.result_tokens}),
-            };
-        }
         BudgetCheckResult {
             allowed: true,
             error_code: String::new(),
             suggestions: vec![],
             dropped_groups: vec![],
-            summary,
-            detail: json!({"single": incoming_tokens, "cumulative": l.result_tokens, "projected": projected}),
+            summary: l.in_summary_mode(),
+            detail: json!({"cumulative": l.result_tokens}),
         }
     }
     /// 超限默认抛 MCP_BUDGET_EXCEEDED；truncate 显式开启才放行。
@@ -207,7 +197,6 @@ mod tests {
     #[test]
     fn constants_match_spec() {
         assert_eq!(RESIDENT_TOTAL_LIMIT, 2000);
-        assert_eq!(MAX_RESULT_SINGLE, 1500);
         assert_eq!(MAX_RESULT_CUMULATIVE, 2500);
         assert_eq!(MAX_SCHEMA_COUNT, 12);
         assert_eq!(PEAK_LIMIT, 7500);
@@ -235,6 +224,6 @@ mod tests {
     fn summary_mode_after_cumulative() {
         let mut l = BudgetLedger::new(None);
         l.record_result("s", 2500);
-        assert!(l.check_result("s", 10).summary);
+        assert!(l.summary_state("s").summary);
     }
 }

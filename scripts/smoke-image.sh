@@ -16,9 +16,9 @@ IMAGE=""
 PORT=""
 TIMEOUT_S=120
 
-# 运行时注入的凭证：镜像本身不含任何 token（HTTP 模式没有 JUMCP_ADMIN_TOKENS 就拒绝启动）。
-ADMIN_ID="smoke"
-ADMIN_TOKEN="${JUMCP_SMOKE_ADMIN_TOKEN:-tok_smoke_admin_0001}"
+# 运行时注入的凭证：镜像本身不含任何账号或 token（HTTP 模式没有初始管理员就拒绝启动）。
+ADMIN_USERNAME="${JUMCP_SMOKE_ADMIN_USERNAME:-smoke}"
+ADMIN_PASSWORD="${JUMCP_SMOKE_ADMIN_PASSWORD:-smoke-admin-password}"
 AGENT_ID="agent-analyst"
 AGENT_ROLE="analyst"
 AGENT_TOKEN="${JUMCP_SMOKE_AGENT_TOKEN:-tok_agent_analyst_0001}"
@@ -98,7 +98,8 @@ echo "==> smoke-image: 启动容器（image=$IMAGE，/data=tmpfs）"
 docker run -d --name "$NAME" \
   "${PUBLISH_ARGS[@]}" \
   --tmpfs "/data:rw,mode=1777,size=64m" \
-  -e "JUMCP_ADMIN_TOKENS=${ADMIN_ID}:${ADMIN_TOKEN}" \
+  -e "JUMCP_ADMIN_USERNAME=${ADMIN_USERNAME}" \
+  -e "JUMCP_ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
   -e "JUMCP_AGENT_TOKENS=${AGENT_ID}:${AGENT_ROLE}:${AGENT_TOKEN}" \
   -e "JUMCP_SECRET_KEY=${JUMCP_SECRET_KEY:-3333333333333333333333333333333333333333333333333333333333333333}" \
   -e "JUMCP_TRANSPORT_KEY=${JUMCP_TRANSPORT_KEY:-4444444444444444444444444444444444444444444444444444444444444444}" \
@@ -156,10 +157,10 @@ get() {
 }
 
 patch_json() {
-  # patch_json <url> <outfile> <body> <bearer token>；结果写入 CODE
-  local url="$1" out="$2" body="$3" token="$4"
+  # patch_json <url> <outfile> <body>；管理面写请求带会话 cookie + 同源 Origin（CSRF）。结果写入 CODE
+  local url="$1" out="$2" body="$3"
   CODE="$(curl -sS --max-time 15 -o "$out" -w '%{http_code}' \
-    -X PATCH -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+    -X PATCH -H 'Content-Type: application/json' -H "Origin: $BASE" -b "$JAR" \
     --data "$body" "$url" 2>/dev/null || true)"
   CODE="${CODE%%$'\n'*}"
   case "$CODE" in
@@ -168,10 +169,17 @@ patch_json() {
 }
 
 post_json() {
-  # post_json <url> <outfile> <body> <bearer token>；结果写入 CODE
-  local url="$1" out="$2" body="$3" token="$4"
+  # post_json <url> <outfile> <body> [bearer token]；管理面用会话 cookie，MCP 面用 agent token。
+  # 结果写入 CODE
+  local url="$1" out="$2" body="$3" token="${4:-}"
+  local auth=()
+  if [ -n "$token" ]; then
+    auth=(-H "Authorization: Bearer $token")
+  else
+    auth=(-H "Origin: $BASE" -b "$JAR")
+  fi
   CODE="$(curl -sS --max-time 15 -o "$out" -w '%{http_code}' \
-    -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+    -X POST -H 'Content-Type: application/json' "${auth[@]}" \
     --data "$body" "$url" 2>/dev/null || true)"
   CODE="${CODE%%$'\n'*}"
   case "$CODE" in
@@ -213,7 +221,7 @@ get "$MCP_BASE/health" "$TMP_ROOT/health-mcp.json"
 json_is "$TMP_ROOT/health-mcp.json" '.audit_chain == "valid"' "MCP 面 /health 的 audit_chain 不是 \"valid\""
 echo "    ok: /health 探针分支 → 200 JSON 且 audit_chain=valid（两面 + 无 Accept / Accept: application/json）"
 
-# 2. /health 浏览器导航分支：同源下 UI 健康页可达（Accept 含 text/html 回退到管理台 index.html）
+# 2. /health 浏览器导航分支：Accept 含 text/html 时回退到同源静态站的 index.html
 get "$BASE/health" "$TMP_ROOT/health-page.html" -H 'Accept: text/html,application/xhtml+xml,*/*;q=0.8'
 [ "$CODE" = "200" ] || fail "GET /health（Accept: text/html）期望 200，实际 $CODE"
 case "$CTYPE" in
@@ -260,15 +268,56 @@ ASSET_BYTES="$(wc -c <"$TMP_ROOT/asset.js" | tr -d ' ')"
 [ "$ASSET_BYTES" -gt 0 ] || fail "GET $ASSET 返回空文件"
 echo "    ok: $ASSET → 200（${ASSET_BYTES} bytes）"
 
-# 6. 管理面鉴权：匿名 401，带管理 token 200 且返回 items 数组
+# 6. 管理面鉴权：匿名 401 → 用户名口令登录换会话 cookie → 账号清单走 cookie。
+#    管理面只认 cookie：脚本/CI 也一样，没有可注入的共享令牌。
 get "$BASE/admin/review-queue" "$TMP_ROOT/anon.json"
 [ "$CODE" = "401" ] || fail "匿名 GET /admin/review-queue 期望 401，实际 $CODE"
+json_is "$TMP_ROOT/anon.json" '.error.code == "MCP_UNAUTHORIZED"' '匿名访问的错误码不是 MCP_UNAUTHORIZED'
 echo "    ok: 匿名 /admin/review-queue → 401"
 
-get "$BASE/admin/review-queue" "$TMP_ROOT/queue.json" -H "Authorization: Bearer $ADMIN_TOKEN"
-[ "$CODE" = "200" ] || fail "带管理 token GET /admin/review-queue 期望 200，实际 $CODE"
+JAR="$TMP_ROOT/cookies.txt"
+LOGIN_CODE="$(curl -sS --max-time 10 -c "$JAR" -o "$TMP_ROOT/login.json" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE" \
+  --data "{\"username\":\"${ADMIN_USERNAME}\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+  "$BASE/admin/login" 2>/dev/null || true)"
+[ "$LOGIN_CODE" = "204" ] || fail "POST /admin/login 期望 204，实际 $LOGIN_CODE"
+grep -qi 'jumcp_session' "$JAR" || fail "POST /admin/login 未下发 jumcp_session cookie"
+grep -qi 'HttpOnly' "$JAR" || fail "jumcp_session cookie 缺少 HttpOnly"
+grep -qi '#HttpOnly_' "$JAR" || fail "cookie 文件未标记 HttpOnly 前缀（curl 以 #HttpOnly_ 行表示）"
+echo "    ok: POST /admin/login → 204 + jumcp_session（HttpOnly）"
+
+LOGIN_FAIL_CODE="$(curl -sS --max-time 10 -o "$TMP_ROOT/login-bad.json" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE" \
+  --data "{\"username\":\"${ADMIN_USERNAME}\",\"password\":\"wrong-password-1\"}" \
+  "$BASE/admin/login" 2>/dev/null || true)"
+[ "$LOGIN_FAIL_CODE" = "401" ] || fail "错误口令的 POST /admin/login 期望 401，实际 $LOGIN_FAIL_CODE"
+json_is "$TMP_ROOT/login-bad.json" \
+  '.error.code == "MCP_UNAUTHORIZED" and .error.message == "用户名或密码错误"' \
+  '错误口令的错误码或文案不是 MCP_UNAUTHORIZED / 用户名或密码错误'
+echo "    ok: 错误口令登录 → 401（用户名或密码错误）"
+
+get "$BASE/admin/session" "$TMP_ROOT/session.json" -b "$JAR"
+[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/session 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/session.json" \
+  ".actor.id == \"${ADMIN_USERNAME}\" and .actor.role == \"admin\" and .actor.type == \"admin\"" \
+  '/admin/session 的 actor 形状不对'
+echo "    ok: cookie 身份 GET /admin/session → 200（actor.id=${ADMIN_USERNAME}）"
+
+# 账号管理是"登录链路真的可用"的最短证据：它同时要求会话、账号表与脱敏输出。
+get "$BASE/admin/admins" "$TMP_ROOT/admins.json" -b "$JAR"
+[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/admins 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/admins.json" \
+  "((.items | type) == \"array\") and (.total >= 1)
+     and ((.items[] | select(.username == \"${ADMIN_USERNAME}\") | .state) == \"active\")
+     and ((tostring | contains(\"argon2id\")) | not)
+     and ((tostring | contains(\"${ADMIN_PASSWORD}\")) | not)" \
+  '/admin/admins 响应不合契约（缺账号、状态不是 active、或回显了哈希/口令）'
+echo "    ok: cookie 身份 GET /admin/admins → 200（含 ${ADMIN_USERNAME}，无哈希/口令）"
+
+get "$BASE/admin/review-queue" "$TMP_ROOT/queue.json" -b "$JAR"
+[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/review-queue 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/queue.json" '(.items | type) == "array"' '/admin/review-queue 响应缺少 items 数组'
-echo "    ok: 带管理 token /admin/review-queue → 200"
+echo "    ok: cookie 身份 /admin/review-queue → 200"
 
 # 6b. 分面隔离：一个面上不存在另一个面的端点（含"方法不匹配"的误报：必须是 404 而不是 405）。
 code_of() {
@@ -279,11 +328,11 @@ code_of() {
   printf '%s' "$CODE"
 }
 
-[ "$(code_of "$MCP_BASE/admin/review-queue" -H "Authorization: Bearer $ADMIN_TOKEN")" = "404" ] \
+[ "$(code_of "$MCP_BASE/admin/review-queue" -b "$JAR")" = "404" ] \
   || fail "MCP 面 GET /admin/review-queue 期望 404（管理面端点不得出现在 MCP 面）"
 [ "$(code_of "$MCP_BASE/")" = "404" ] \
   || fail "MCP 面 GET / 期望 404（MCP 面不得托管管理台页面）"
-[ "$(code_of "$BASE/admin/definitely-not-a-route" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" --data '{}')" = "404" ] \
+[ "$(code_of "$BASE/admin/definitely-not-a-route" -X POST -H "Origin: $BASE" -b "$JAR" --data '{}')" = "404" ] \
   || fail "管理面 POST /admin/definitely-not-a-route 期望 404"
 [ "$(code_of "$BASE/mcp" -X POST -H "Authorization: Bearer $AGENT_TOKEN" --data '{}')" = "404" ] \
   || fail "管理面 POST /mcp 期望 404（MCP 端点不得出现在管理面）"
@@ -291,35 +340,7 @@ code_of() {
   || fail "管理面 POST /internal/mcp/... 期望 404（内置回环口属于 MCP 面）"
 echo "    ok: 分面隔离 → MCP 面看不到 /admin/* 与首页，管理面看不到 /mcp 与 /internal/mcp/*（均为 JSON 404）"
 
-# 6c. 登录契约：token → 会话 cookie → /admin/session → 目录 → logout 后失效。
-#     浏览器不发 Authorization，登录面是它唯一的身份来源；POST 必须带同源 Origin（CSRF）。
-JAR="$TMP_ROOT/cookies.txt"
-LOGIN_CODE="$(curl -sS --max-time 10 -c "$JAR" -o "$TMP_ROOT/login.json" -w '%{http_code}' \
-  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE" \
-  --data "{\"token\":\"${ADMIN_TOKEN}\"}" "$BASE/admin/login" 2>/dev/null || true)"
-[ "$LOGIN_CODE" = "204" ] || fail "POST /admin/login 期望 204，实际 $LOGIN_CODE"
-grep -qi 'jumcp_session' "$JAR" || fail "POST /admin/login 未下发 jumcp_session cookie"
-grep -qi 'HttpOnly' "$JAR" || fail "jumcp_session cookie 缺少 HttpOnly"
-grep -qi '#HttpOnly_' "$JAR" || fail "cookie 文件未标记 HttpOnly 前缀（curl 以 #HttpOnly_ 行表示）"
-echo "    ok: POST /admin/login → 204 + jumcp_session（HttpOnly）"
-
-LOGIN_FAIL_CODE="$(curl -sS --max-time 10 -o "$TMP_ROOT/login-bad.json" -w '%{http_code}' \
-  -X POST -H 'Content-Type: application/json' --data '{"token":"tok_wrong_0000000000"}' \
-  "$BASE/admin/login" 2>/dev/null || true)"
-[ "$LOGIN_FAIL_CODE" = "401" ] || fail "错误 token 的 POST /admin/login 期望 401，实际 $LOGIN_FAIL_CODE"
-json_is "$TMP_ROOT/login-bad.json" '.error.code == "MCP_UNAUTHORIZED"' '错误 token 的错误码不是 MCP_UNAUTHORIZED'
-echo "    ok: 错误 token 登录 → 401（MCP_UNAUTHORIZED）"
-
-get "$BASE/admin/session" "$TMP_ROOT/session.json" -b "$JAR"
-[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/session 期望 200，实际 $CODE"
-json_is "$TMP_ROOT/session.json" '.actor.id == "smoke" and .actor.role == "admin" and .actor.type == "admin"' \
-  '/admin/session 的 actor 形状不对'
-echo "    ok: cookie 身份 GET /admin/session → 200（actor.id=smoke）"
-
-get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog-cookie.json" -b "$JAR"
-[ "$CODE" = "200" ] || fail "cookie 身份 GET /admin/mcp/catalog 期望 200，实际 $CODE"
-echo "    ok: cookie 身份 GET /admin/mcp/catalog → 200（管理台不再需要注入 Bearer）"
-
+# 6c. 登出：cookie 立即失效（会话吊销，而不是等 TTL）。
 LOGOUT_CODE="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
   -X POST -H "Origin: $BASE" -b "$JAR" "$BASE/admin/logout" 2>/dev/null || true)"
 [ "$LOGOUT_CODE" = "204" ] || fail "POST /admin/logout 期望 204，实际 $LOGOUT_CODE"
@@ -327,6 +348,13 @@ get "$BASE/admin/session" "$TMP_ROOT/session-after.json" -b "$JAR"
 [ "$CODE" = "401" ] || fail "logout 之后 cookie 身份 GET /admin/session 期望 401，实际 $CODE"
 json_is "$TMP_ROOT/session-after.json" '.error.code == "MCP_UNAUTHORIZED"' 'logout 后未登录的错误码不是 MCP_UNAUTHORIZED'
 echo "    ok: POST /admin/logout → 204 且旧 cookie 立即 401（会话已吊销）"
+
+# 重新登录：后面的包安装链路需要管理面会话。
+LOGIN_AGAIN="$(curl -sS --max-time 10 -c "$JAR" -o /dev/null -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' -H "Origin: $BASE" \
+  --data "{\"username\":\"${ADMIN_USERNAME}\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+  "$BASE/admin/login" 2>/dev/null || true)"
+[ "$LOGIN_AGAIN" = "204" ] || fail "再次 POST /admin/login 期望 204，实际 $LOGIN_AGAIN"
 
 # 7. /mcp：agent token 走完 initialize + tools/list
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["db.read.core"]}}}}'
@@ -348,7 +376,7 @@ echo "    ok: POST /mcp tools/list → 200 且含 search_capabilities"
 #    url 指向 127.0.0.1:8123（不可达）是对的：安装只写配置，刷新只握手 tools/list。
 PKG_ID="clickhouse-basic"
 PKG_UPSTREAM="clickhouse"
-get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog.json" -b "$JAR"
 [ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/catalog.json" \
   '(.items[] | select(.id == "clickhouse-basic"))
@@ -375,7 +403,7 @@ SMOKE_PASS_CIPHERTEXT='enc:v1:000102030405060708090a0bb87517b3dd71670b04fe6aaf42
 
 # 明文密码必须被拒：不允许"解不开就当明文用"。
 PLAINTEXT_BODY='{"group":"db.read.core","config":{"url":"http://127.0.0.1:8123","username":"default","password":"smoke-plaintext"}}'
-post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_plaintext.json" "$PLAINTEXT_BODY" "$ADMIN_TOKEN"
+post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_plaintext.json" "$PLAINTEXT_BODY"
 [ "$CODE" = "400" ] || fail "安装时提交明文 password 期望 400，实际 $CODE"
 json_is "$TMP_ROOT/pkg_plaintext.json" '.error.code == "MCP_TRANSPORT_CIPHERTEXT_REQUIRED"' \
   '明文 password 的错误码不是 MCP_TRANSPORT_CIPHERTEXT_REQUIRED'
@@ -384,7 +412,7 @@ json_is "$TMP_ROOT/pkg_plaintext.json" '((tostring | contains("smoke-plaintext")
 echo "    ok: 安装时提交明文 password → 400（MCP_TRANSPORT_CIPHERTEXT_REQUIRED，未回显明文）"
 
 INSTALL_BODY="{\"group\":\"db.read.core\",\"config\":{\"url\":\"http://127.0.0.1:8123\",\"username\":\"default\",\"password\":\"${SMOKE_PASS_CIPHERTEXT}\"}}"
-post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_install.json" "$INSTALL_BODY" "$ADMIN_TOKEN"
+post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_install.json" "$INSTALL_BODY"
 [ "$CODE" = "200" ] || fail "POST /admin/mcp/catalog/${PKG_ID}/install 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_install.json" ".upstream.id == \"${PKG_UPSTREAM}\"" \
   "安装接口返回的上游 id 不是 ${PKG_UPSTREAM}"
@@ -395,7 +423,7 @@ json_is "$TMP_ROOT/pkg_install.json" \
   '安装响应不合契约（transport 应为 http、密码应为 "***"，且不得出现明文或密文）'
 echo "    ok: POST /admin/mcp/catalog/${PKG_ID}/install → 200（上游 ${PKG_UPSTREAM}，transport=http，密码已脱敏）"
 
-post_json "$BASE/admin/upstreams/${PKG_UPSTREAM}/refresh" "$TMP_ROOT/pkg_refresh.json" '{}' "$ADMIN_TOKEN"
+post_json "$BASE/admin/upstreams/${PKG_UPSTREAM}/refresh" "$TMP_ROOT/pkg_refresh.json" '{}'
 [ "$CODE" = "200" ] || fail "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_refresh.json" '.status == "ok"' \
   "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 status 不是 \"ok\"（内嵌端点未响应或 Bearer 注入失败）"
@@ -404,7 +432,7 @@ json_is "$TMP_ROOT/pkg_refresh.json" '.tool_count == 3' \
 echo "    ok: POST /admin/upstreams/${PKG_UPSTREAM}/refresh → 200（status=ok，tool_count=3）"
 
 PATCH_BODY='{"config":{"url":"http://127.0.0.1:8124","password":""}}'
-patch_json "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config" "$TMP_ROOT/pkg_patch.json" "$PATCH_BODY" "$ADMIN_TOKEN"
+patch_json "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config" "$TMP_ROOT/pkg_patch.json" "$PATCH_BODY"
 [ "$CODE" = "200" ] || fail "PATCH /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_patch.json" \
   '(.installation.config.url == "http://127.0.0.1:8124")
@@ -423,10 +451,10 @@ json_is "$TMP_ROOT/pkg_tools.json" \
 echo "    ok: 安装后 POST /mcp tools/list → 200 且含 clickhouse__query"
 
 get "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}" "$TMP_ROOT/pkg_uninstall.json" \
-  -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN"
+  -X DELETE -H "Origin: $BASE" -b "$JAR"
 [ "$CODE" = "200" ] || fail "DELETE /admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM} 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_uninstall.json" '.deleted == true' "卸载响应缺少 deleted=true"
-get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog_after.json" -H "Authorization: Bearer $ADMIN_TOKEN"
+get "$BASE/admin/mcp/catalog" "$TMP_ROOT/catalog_after.json" -b "$JAR"
 [ "$CODE" = "200" ] || fail "GET /admin/mcp/catalog（卸载后）期望 200，实际 $CODE"
 json_is "$TMP_ROOT/catalog_after.json" \
   '(.items[] | select(.id == "clickhouse-basic") | .installations | length) == 0' \

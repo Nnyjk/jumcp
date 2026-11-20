@@ -6,12 +6,16 @@
 
 use std::process::Command;
 
+/// 与 `jumcp_core::registry::admins::BOOTSTRAP_ADMIN_REQUIRED` 逐字一致。
+const BOOTSTRAP_MESSAGE: &str = "JUMCP_ADMIN_USERNAME/JUMCP_ADMIN_PASSWORD 未设置：首次启动必须提供初始管理员账号（密码至少 12 位）";
+
 fn bin() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_jumcp-server"));
     // 显式清掉宿主可能带进来的配置，避免用例依赖运行环境。
     cmd.env_remove("JUMCP_MCP_CONFIG_FILE")
         .env_remove("JUMCP_MCP_WEB_DIR")
-        .env_remove("JUMCP_ADMIN_TOKENS")
+        .env_remove("JUMCP_ADMIN_USERNAME")
+        .env_remove("JUMCP_ADMIN_PASSWORD")
         .env_remove("JUMCP_AGENT_TOKENS")
         .env_remove("JUMCP_MCP_UPSTREAM_STDIO")
         .env_remove("JUMCP_MCP_ALLOW_WRITE_UPSTREAM")
@@ -41,7 +45,8 @@ fn startup_rejects_web_dir_without_index_html() {
             "JUMCP_MCP_REGISTRY_PATH",
             dir.path().join("registry.sqlite3"),
         )
-        .env("JUMCP_ADMIN_TOKENS", "alice:tok_alice_000000000")
+        .env("JUMCP_ADMIN_USERNAME", "alice")
+        .env("JUMCP_ADMIN_PASSWORD", "alice-correct-horse")
         .output()
         .expect("启动 jumcp-server");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -63,7 +68,8 @@ fn startup_rejects_web_dir_that_is_not_a_directory() {
             "JUMCP_MCP_REGISTRY_PATH",
             dir.path().join("registry.sqlite3"),
         )
-        .env("JUMCP_ADMIN_TOKENS", "alice:tok_alice_000000000")
+        .env("JUMCP_ADMIN_USERNAME", "alice")
+        .env("JUMCP_ADMIN_PASSWORD", "alice-correct-horse")
         .output()
         .expect("启动 jumcp-server");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -72,7 +78,7 @@ fn startup_rejects_web_dir_that_is_not_a_directory() {
 }
 
 /// 反向证明：合法目录能通过启动校验，进程继续走到下一条 fail-closed 检查
-/// （HTTP 模式没有 admin token 即拒绝启动），而不是卡在 web_dir 上。
+/// （首次启动缺初始管理员凭据即拒绝启动），而不是卡在 web_dir 上。
 #[test]
 fn valid_web_dir_passes_startup_validation() {
     let web = tempfile::tempdir().unwrap();
@@ -90,12 +96,48 @@ fn valid_web_dir_passes_startup_validation() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "无 admin token 仍须拒绝启动: {stderr}"
+        "缺初始管理员凭据仍须拒绝启动: {stderr}"
     );
-    assert!(stderr.contains("JUMCP_ADMIN_TOKENS"), "{stderr}");
+    assert!(stderr.contains(BOOTSTRAP_MESSAGE), "{stderr}");
     assert!(
         !stderr.contains("index.html"),
         "web_dir 校验不应失败: {stderr}"
     );
     assert!(!stderr.contains("不是目录"), "{stderr}");
+}
+
+/// 空库 + 缺凭据：必须按文案拒绝启动（运维照这句就知道该配哪两个变量）。
+#[test]
+fn startup_requires_bootstrap_admin_credentials() {
+    let work = tempfile::tempdir().unwrap();
+    let out = bin()
+        .env("JUMCP_MCP_AUDIT_PATH", work.path().join("audit.sqlite3"))
+        .env(
+            "JUMCP_MCP_REGISTRY_PATH",
+            work.path().join("registry.sqlite3"),
+        )
+        .output()
+        .expect("启动 jumcp-server");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains(BOOTSTRAP_MESSAGE), "{stderr}");
+}
+
+/// 口令不足 12 位同样拒绝启动：弱口令不能因为"首次启动"被放行。
+#[test]
+fn startup_rejects_short_bootstrap_password() {
+    let work = tempfile::tempdir().unwrap();
+    let out = bin()
+        .env("JUMCP_MCP_AUDIT_PATH", work.path().join("audit.sqlite3"))
+        .env(
+            "JUMCP_MCP_REGISTRY_PATH",
+            work.path().join("registry.sqlite3"),
+        )
+        .env("JUMCP_ADMIN_USERNAME", "alice")
+        .env("JUMCP_ADMIN_PASSWORD", "short")
+        .output()
+        .expect("启动 jumcp-server");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains(BOOTSTRAP_MESSAGE), "{stderr}");
 }

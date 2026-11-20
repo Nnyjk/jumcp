@@ -9,17 +9,23 @@ use crate::errors::McpError;
 use rusqlite::Connection;
 use std::sync::Mutex;
 
+mod admins;
 mod groups;
 mod lifecycle;
 mod record;
 mod sessions;
 mod upstreams;
 
+pub use admins::{
+    ADMIN_PASSWORD_MIN_CHARS, ADMIN_STATE_ACTIVE, ADMIN_STATE_DISABLED, ADMIN_USERNAME_MAX,
+    ADMIN_USERNAME_MIN, AdminUser, BOOTSTRAP_ADMIN_REQUIRED, normalize_admin_username,
+    validate_admin_password,
+};
 pub use groups::ManagedGroup;
 pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,
 };
-pub use sessions::AdminSession;
+pub use sessions::{ADMIN_SESSION_ID_BYTES, AdminSession};
 pub use upstreams::{
     EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, TOOL_WILDCARD_ALL,
     UPSTREAM_CATEGORIES, UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP,
@@ -40,8 +46,12 @@ pub const RISKS: &[&str] = &["read", "sensitive"];
 ///
 /// 单一来源：`jumcp-server` 的 `RESIDENT_TOOL_NAMES` 直接引用本常量，
 /// 因此"哪些 id 是内置"在发现面与存储层是同一份列表（重复写两份字符串必然漂移）。
-pub const RESIDENT_CAPABILITY_IDS: &[&str] =
-    &["search_capabilities", "describe_capability", "list_groups"];
+pub const RESIDENT_CAPABILITY_IDS: &[&str] = &[
+    "search_capabilities",
+    "describe_capability",
+    "list_groups",
+    "db_run_template",
+];
 
 /// 内置维护工具的能力 id：`group="admin"`，只有 scope.groups 含 admin 时才可见可调。
 ///
@@ -61,6 +71,7 @@ pub const BUILTIN_CAPABILITY_IDS: &[&str] = &[
     "search_capabilities",
     "describe_capability",
     "list_groups",
+    "db_run_template",
     "admin_register_template",
     "admin_review_queue",
     "admin_audit_queries",
@@ -131,13 +142,20 @@ CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
     upstream_id TEXT NOT NULL, tool_name TEXT NOT NULL, group_code TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (upstream_id, tool_name)
 );
--- 管理台会话：cookie 值即 id（32 字节 CSPRNG hex），身份由 token_id 指回 admin token 表。
+-- 平台管理员账号：管理台登录的唯一身份来源；口令只以 Argon2id 哈希落库。
+CREATE TABLE IF NOT EXISTS admin_users (
+    id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT
+);
+-- 管理台会话：cookie 值即 id（32 字节 CSPRNG hex），admin_user_id 指回管理员账号。
 CREATE TABLE IF NOT EXISTS admin_sessions (
-    id TEXT PRIMARY KEY, token_id TEXT NOT NULL, created_at INTEGER,
+    id TEXT PRIMARY KEY, admin_user_id TEXT NOT NULL, created_at INTEGER,
     expires_at INTEGER, last_seen_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);
 "#).map_err(|e| McpError::store(e.to_string()))?;
+        rebuild_admin_sessions_if_stale(&conn)?;
         // 已有库补列：CREATE TABLE IF NOT EXISTS 不会为已存在的表加列。
         for (table, column) in [
             ("capabilities", "updated_at"),
@@ -187,15 +205,7 @@ CREATE TRIGGER trg_ver_no_update BEFORE UPDATE OF definition_json, definition_ha
 }
 
 pub(crate) fn ensure_column(conn: &Connection, table: &str, column: &str) -> Result<(), McpError> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|e| McpError::store(e.to_string()))?;
-    let names: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(1))
-        .map_err(|e| McpError::store(e.to_string()))?
-        .filter_map(Result::ok)
-        .collect();
-    if names.iter().any(|n| n == column) {
+    if table_has_column(conn, table, column)? {
         return Ok(());
     }
     conn.execute(
@@ -204,6 +214,39 @@ pub(crate) fn ensure_column(conn: &Connection, table: &str, column: &str) -> Res
     )
     .map_err(|e| McpError::store(e.to_string()))?;
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, McpError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| McpError::store(e.to_string()))?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| McpError::store(e.to_string()))?;
+    for name in names {
+        if name.map_err(|e| McpError::store(e.to_string()))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 旧库的 `admin_sessions` 用 `token_id` 指回已删除的共享令牌；会话都是临时数据，
+/// 直接整表重建（旧 cookie 一律失效，浏览器重新登录即可）。
+/// 这是本库唯一被重建的表——审计、能力、令牌、上游一律不动。
+fn rebuild_admin_sessions_if_stale(conn: &Connection) -> Result<(), McpError> {
+    if table_has_column(conn, "admin_sessions", "admin_user_id")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"DROP TABLE IF EXISTS admin_sessions;
+CREATE TABLE admin_sessions (
+    id TEXT PRIMARY KEY, admin_user_id TEXT NOT NULL, created_at INTEGER,
+    expires_at INTEGER, last_seen_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at);"#,
+    )
+    .map_err(|e| McpError::store(e.to_string()))
 }
 
 fn now_iso() -> String {

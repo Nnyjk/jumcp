@@ -11,7 +11,7 @@
     -ResetData    启动前清空 .dev-data/（默认保留，便于连续试用）
     -NoWeb        只起后端
   两个监听面（不能相同）：MCP 面挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面挂 `/admin/*` 与管理台静态站。
-  管理台自带登录页：浏览器打开前端地址，在登录页里输入管理面 token（本脚本的 alice/bob）即可，前端不读任何 token 环境变量。
+  管理台自带登录页：浏览器打开前端地址，用本脚本播种的管理员账号登录即可，前端不读任何凭证环境变量。
   前端代理目标：管理面走 JUMCP_DEV_ADMIN_TARGET（默认 http://127.0.0.1:8080），MCP 面走 JUMCP_DEV_API_TARGET（默认 http://127.0.0.1:8000），
   两者都只存在于 Node 进程环境。
   Ctrl+C（或关窗）会同时停掉前后端子进程；日志在 .dev-data/logs/。
@@ -37,11 +37,11 @@ $DataDir = Join-Path $RepoRoot '.dev-data'
 $LogDir = Join-Path $DataDir 'logs'
 $BasePolicy = Join-Path $RepoRoot 'config/policy.toml'
 
-$AdminTokens = 'alice:tok_alice_000000000,bob:tok_bob_00000000000'
+# 首次启动播种的管理员账号（库里已有账号时后端忽略这两个变量）。
+$AdminUsername = 'alice'
+$AdminPassword = 'alice-correct-horse'
 # /mcp 的 per-request 身份：agent_id:role:token（role 必须在 config/policy.toml 的 [roles] 里）
 $AgentTokens = 'agent-analyst:analyst:tok_agent_analyst_0001,agent-admin:admin:tok_agent_admin_000001'
-$AliceToken = 'tok_alice_000000000'
-$BobToken = 'tok_bob_00000000000'
 
 $script:Children = New-Object System.Collections.ArrayList
 $script:Stopping = $false
@@ -245,7 +245,8 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   $backendEnv['JUMCP_MCP_CONFIG_FILE'] = $policyFile
   $backendEnv['JUMCP_MCP_REGISTRY_PATH'] = (Join-Path $DataDir 'registry.sqlite3')
   $backendEnv['JUMCP_MCP_AUDIT_PATH'] = (Join-Path $DataDir 'audit.sqlite3')
-  $backendEnv['JUMCP_ADMIN_TOKENS'] = $AdminTokens
+  $backendEnv['JUMCP_ADMIN_USERNAME'] = $AdminUsername
+  $backendEnv['JUMCP_ADMIN_PASSWORD'] = $AdminPassword
   $backendEnv['JUMCP_AGENT_TOKENS'] = $AgentTokens
   # 本地开发用固定密钥：HTTP 模式缺它会拒绝启动（密码字段加密用）。
   $backendEnv['JUMCP_SECRET_KEY'] = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -360,11 +361,11 @@ dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
   Write-Host ''
   Write-Host '================ 开发环境已就绪 ================'
   Write-Host $webLine
-  Write-Host '登录     打开上面的管理台地址 → 在登录页输入管理面 token（alice 或 bob）'
+  Write-Host "登录     打开上面的管理台地址 → 账号 $AdminUsername / 口令 $AdminPassword"
   Write-Host "MCP      http://127.0.0.1:$BackendPort/mcp"
-  Write-Host "管理面   http://127.0.0.1:$AdminPort/ （登录页；脚本直连 /admin/* 需 Bearer）"
+  Write-Host "管理面   http://127.0.0.1:$AdminPort/ （登录页；脚本直连 /admin/* 需先 POST /admin/login 换 cookie）"
   Write-Host "健康     http://127.0.0.1:$BackendPort/health （MCP 面） / http://127.0.0.1:$AdminPort/health （管理面）"
-  Write-Host "令牌     alice=$AliceToken （普通）  bob=$BobToken （审批）"
+  Write-Host "账号     仅 $AdminUsername（可在管理台 /admin/admins 增删改）"
   Write-Host "数据     .dev-data/{registry,audit}.sqlite3   日志  .dev-data/logs/"
   Write-Host '停止     Ctrl+C（会同时停掉前后端）'
   Write-Host '================================================='

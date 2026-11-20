@@ -9,8 +9,8 @@
 - **命名占位符只在注册期改写**：`:name` → `$n` 在模板编译时一次性完成；`db_query_readonly` 只接受位置参数数组，遇到命名占位符直接拒绝，运行期不做任何字符串替换。
 - **限制与预算语义分离**：行数/单格字符超限夹紧并回显（`effective_max_rows` / `next_offset`）；token 预算超限显式失败或进摘要模式。二者混用等于静默降级。
 - **能力指针行可更新，历史不可改**：`capabilities` 行指向当前版本；`capability_versions` 由 append-only trigger 保护。不是靠禁止指针更新来保证"编辑即新版本"。
-- **管理面身份来自凭证，而非请求头**：`JUMCP_ADMIN_TOKENS="id:token,id:token"`，token 常量时间比较后派生 actor id；`X-Admin-Actor` 仅作一致性校验（不一致 400），审计主体恒用派生 id。主体因此不可伪造：`capabilities.submitted_by` 记录提审人，publish 时把批准人（token 派生）写入 `approved_by` 与审计 `approval`。
-- **前端不持有管理面凭证**：`VITE_*` 是编译期内联，任何凭证都会随构建产物公开。管理台改为**登录页 + HttpOnly 会话 cookie**：用户把 `JUMCP_ADMIN_TOKENS` 里的某个 token 一次性 `POST /admin/login` 交给后端，此后同源请求自动带 cookie（`SameSite=Strict`，非 GET 校验同源）。**没有网关/BFF，也没有 Vite 注入**；dev 期 Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` / `JUMCP_DEV_API_TARGET` 两个地址变量）；构建期守卫在 production 模式检测到 `VITE_ADMIN_*` 直接终止构建。
+- **管理面身份来自会话，而非请求头**：管理面只认 `POST /admin/login` 下发的 HttpOnly 会话 cookie（账号在 `admin_users`，口令 Argon2id 哈希），actor id 恒为账号 `username`；`X-Admin-Actor` 仅作一致性校验（不一致 400）。主体因此不可伪造：`capabilities.submitted_by` 记录提审人，publish 时把批准人（会话账号派生）写入 `approved_by` 与审计 `approval`。共享令牌模型已被账号密码登录取代（理由见 `admin_accounts_over_tokens.md`）。
+- **前端不持有管理面凭证**：`VITE_*` 是编译期内联，任何凭证都会随构建产物公开。管理台是**登录页 + HttpOnly 会话 cookie**：用户在登录页提交 `admin_users` 里的用户名口令，此后同源请求自动带 cookie（`SameSite=Strict`，非 GET 校验同源）。**没有网关/BFF，也没有 Vite 注入**；dev 期 Vite 只做纯转发（`JUMCP_DEV_ADMIN_TARGET` / `JUMCP_DEV_API_TARGET` 两个地址变量）。
 - **数组参数本轮不启用**：`array<T>` 在注册期拒绝（`MCP_TEMPLATE_INVALID` / `rule=array_param_unsupported`），因为 `$n::T[]` 的 ANY 展开尚未实现——不留"注册放行、首次调用必炸"的中间态。
 - **null 参数必须显式 cast**：`Value::Null` 只能按 text OID 绑定，`$1 IS NULL OR col = $1` 作用在 int/date 上会得到 `operator does not exist`。绑定前校验：null 且占位符无 `::type` → `MCP_NULL_PARAM_NEEDS_CAST`（提示 `$1::int`）。
 
@@ -37,7 +37,7 @@
 - Postgres 美元引号必须自行识别，否则字符串里的分号会误切语句；`#` 只在 MySQL/MariaDB 是注释，在 Postgres 里是运算符，误判会截短被校验语句。
 - `shape_rows` 的 Rust 签名用 `usize`：负数夹紧无从表达，故未移植 Python 的负数用例（0→1 下界仍覆盖）。
 - git 基线提交前需忽略 `**/data/*.sqlite3*`：运行时审计库默认落在 `data/audit.sqlite3`，`*.db` 规则匹配不到。
-- 管理面在 stdio 模式下不启用；HTTP 模式未配置 `JUMCP_ADMIN_TOKENS` 时进程拒绝启动（fail-closed）。
+- 管理面在 stdio 模式下不启用；HTTP 模式空库首启缺 `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD`（口令至少 12 位）时进程拒绝启动（fail-closed），因为此时没有任何登录途径。令牌只服务 MCP 面，管理面不再接受 Bearer。
 - `access_tokens` 的列表列可能因旧库 `ensure_column` 补列得到空串：`groups_json` / `builtin_tools_json` 解析时空串按空集处理，否则一行坏数据会让整张列表 500。
 - 过期时间比较必须解析 RFC3339 后比 `DateTime<Utc>`；字符串字典序在带不同时区偏移时会错。解析失败按过期处理（fail-closed）。
 - 组删除的 token 引用计数与删除必须在同一把连接锁内完成；不要在持锁时调用会再次加锁的 store 方法（死锁）。

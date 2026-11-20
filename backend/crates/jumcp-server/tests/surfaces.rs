@@ -57,11 +57,11 @@ fn build(web_dir: &str) -> Surfaces {
         Some(SecretKey::parse(support::TEST_SECRET_KEY).expect("secret key")),
         Some(&endpoint),
     );
+    support::seed_admin_accounts(&store, settings.admin_session_ttl_secs);
     let admin = admin_surface(
         AdminState {
             service,
             store,
-            tokens: settings.admin_tokens,
             transport_key: None,
         },
         web_dir,

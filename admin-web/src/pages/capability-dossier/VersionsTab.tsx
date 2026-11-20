@@ -29,7 +29,7 @@ export function VersionsTab({ id }: { id: string }) {
             className="inline-link"
             onClick={() => openAudit({ objectId: id })}
           >
-            在审计查询查看
+            在审计中查看
           </button>
         </p>
       )}

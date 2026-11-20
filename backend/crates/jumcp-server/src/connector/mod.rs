@@ -109,7 +109,8 @@ impl ConnectorAgent {
         command
             .env("JUMCP_CLICKHOUSE_DSN", dsn)
             // 子进程不需要 host 的管理面/MCP 凭证；显式剔除，避免环境泄漏。
-            .env_remove("JUMCP_ADMIN_TOKENS")
+            .env_remove("JUMCP_ADMIN_USERNAME")
+            .env_remove("JUMCP_ADMIN_PASSWORD")
             .env_remove("JUMCP_AGENT_TOKENS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

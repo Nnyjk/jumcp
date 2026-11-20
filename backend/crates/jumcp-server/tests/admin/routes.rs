@@ -1,3 +1,7 @@
+use crate::support::*;
+use axum::http::StatusCode;
+use serde_json::json;
+
 #[tokio::test]
 async fn routes_are_documented() {
     let table = jumcp_server::admin::routes();
@@ -82,5 +86,43 @@ async fn routes_are_documented() {
             .iter()
             .any(|(method, path)| *method == "GET" && *path == "/admin/session")
     );
-    assert_eq!(table.len(), 43);
+    // 账号管理四条：平台不再有共享令牌，账号是唯一的管理面身份来源。
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "GET" && *path == "/admin/admins")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "POST" && *path == "/admin/admins")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "PATCH" && *path == "/admin/admins/{id}")
+    );
+    assert!(
+        table
+            .iter()
+            .any(|(method, path)| *method == "DELETE" && *path == "/admin/admins/{id}")
+    );
+    assert_eq!(table.len(), 47);
+}
+
+/// 未配置传输密钥时必须是 503 + 专用错误码：前端据此隐藏"密文提交"而不是报通用 500。
+#[tokio::test]
+async fn transport_key_endpoint_reports_missing_key_as_503() {
+    let h = harness_without_transport_key();
+    let (status, body) = send(
+        &h.app,
+        "GET",
+        "/admin/transport-key",
+        Some(ALICE_TOKEN),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], json!("MCP_TRANSPORT_KEY_MISSING"));
 }

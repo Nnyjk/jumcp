@@ -140,11 +140,12 @@ jobs:
 
       # 只解析不部署：验证 deploy/portainer-stack.yml 落在 Swarm 接受的 compose 子集内
       # （例如 `platform` 会被 stack config 拒绝，平台靠 placement constraints 表达）。
-      # dummy 值只满足 `${JUMCP_ADMIN_TOKENS:?…}` / `${JUMCP_SECRET_KEY:?…}` / `${JUMCP_TRANSPORT_KEY:?…}`
-      # 的 fail-fast，不是真实凭证。
+      # dummy 值只满足 `${JUMCP_ADMIN_USERNAME:?…}` / `${JUMCP_ADMIN_PASSWORD:?…}` /
+      # `${JUMCP_SECRET_KEY:?…}` / `${JUMCP_TRANSPORT_KEY:?…}` 的 fail-fast，不是真实凭证。
       - name: Validate stack file
         env:
-          JUMCP_ADMIN_TOKENS: ci-placeholder
+          JUMCP_ADMIN_USERNAME: ci-placeholder
+          JUMCP_ADMIN_PASSWORD: ci-placeholder-password
           JUMCP_SECRET_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
           JUMCP_TRANSPORT_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
         run: docker stack config -c deploy/portainer-stack.yml > /dev/null

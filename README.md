@@ -10,7 +10,7 @@
 
 ## 能力
 
-- **内置工具分类 + `basic` 内置组**：`basic`（`search_capabilities`、`describe_capability`、`list_groups` 三个元工具）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）是 `tools/list` / 搜索 / 统计上的**展示分类**；其中 `basic` 同时是后端合成的**不可编辑内置组**——3 个常驻元工具的 `group` 就是 `basic`，上游只读工具可逐工具加入（见下文「上游 MCP router」）。`analysis` / `admin` 仍只是分类，`admin_*` 仍需组 `admin` 在 scope 内。
+- **内置工具分类 + `basic` 内置组**：`basic`（`search_capabilities`、`describe_capability`、`list_groups` 三个元工具 + 模板执行 `db_run_template`）、`analysis`（`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（`admin_audit_queries`）是 `tools/list` / 搜索 / 统计上的**展示分类**；其中 `basic` 同时是后端合成的**不可编辑内置组**——4 个常驻内置工具的 `group` 就是 `basic`，上游只读工具可逐工具加入（见下文「上游 MCP router」）。`analysis` / `admin` 仍只是分类，`admin_*` 仍需组 `admin` 在 scope 内。
 - **动态上游 MCP server**：管理台或 `POST /admin/upstreams` 接入，工具以 `<server_id>__<tool>` 暴露在同一 `/mcp`；写成功后下一次 `tools/list` / `tools/call` 即生效，单个上游不可达只影响它自己。
 - **内置 MCP 包**：`GET /admin/mcp/catalog` 列出代码内置的静态目录（当前只有 `clickhouse-basic`，含字段定义、工具清单与已安装实例），`POST /admin/mcp/catalog/{id}/install` 按 `config` 生成一台指向内嵌端点的 HTTP 上游（`catalog_id` / `catalog_version` 记录来源），`PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config` 改配置（secret 传空串保持），`DELETE /admin/mcp/catalog/{id}/install/{upstream_id}` 只卸载该包安装的上游。安装检查顺序固定为 HTTP 模式/密钥 → 包与组 → 字段校验。管理台在「MCP 接入」页。
 - **双传输**：stdio（默认，本地 agent 直接拉起）与 streamable-http（`POST /mcp`）。
@@ -46,7 +46,7 @@ stdio 接入用 `cargo run -p jumcp-server`（默认 stdio）；HTTP 传输用 `
 
 - 后端默认起两个监听：MCP 面 `0.0.0.0:8000`、管理面 `0.0.0.0:8080`（`JUMCP_MCP_HOST` / `-BackendPort` / `-AdminPort` / `--backend-port` / `--admin-port` 可改，两个端口必须不同）；管理台（Vite）默认监听 `0.0.0.0:5173`（`-WebPort` / `--web-port` 被占用时自动 +1 顺延）。本机访问用 `http://127.0.0.1:8000`（MCP 面）/ `http://127.0.0.1:8080`（管理面）/ `http://127.0.0.1:5173`（管理台 UI），容器 / WSL / 局域网用宿主 IP。管理台的 `server.host` 固定为 `0.0.0.0`（`admin-web/vite.config.ts`），手动 `npm run dev` 也是全网卡监听。
 - 每次启动都先 `cargo build --bin jumcp-server --bin jumcp-connector-clickhouse`（增量构建，不会运行过期二进制）；启动前若后端端口**已有监听者**（多半是上次遗留的旧后端），脚本立即失败并打印端口/排查命令（`netstat -ano | findstr :<port>`、`lsof -i :<port>`），**不会自动杀进程**，也不会把旧进程的 `/health` 当成“就绪”。请先停掉旧后端或换端口。
-- **管理面凭证只存在于进程环境**：后端 `JUMCP_ADMIN_TOKENS="alice:tok_alice_000000000,bob:tok_bob_00000000000"`；浏览器打开管理台后在**登录页**里输入其中一个 token，换 HttpOnly 会话 cookie。前端不读任何 token 环境变量，也没有任何注入层。
+- **管理面是账号密码登录**：后端在空库首启时用 `JUMCP_ADMIN_USERNAME` + `JUMCP_ADMIN_PASSWORD`（≥12 位）播种第一个管理员，口令以 Argon2id 哈希落库（`admin_users` 表）；浏览器打开管理台后在**登录页**里输入用户名口令，换 HttpOnly 会话 cookie。之后增删改账号在管理台「管理员」页或 `/admin/admins`，前端不持有任何凭证，也没有任何注入层。
 - 前端代理目标由启动器设置：`/admin` 转发到管理面（`JUMCP_DEV_ADMIN_TARGET`，默认 `http://127.0.0.1:8080`）、`/mcp` 与 `/health` 转发到 MCP 面（`JUMCP_DEV_API_TARGET`，默认 `http://127.0.0.1:8000`）。两个变量只存在于 Node 进程环境；手动起前端时后端换了端口就要带上它们。
 - `-ClickHouseDsn <dsn>` / `--clickhouse-dsn <dsn>` 可选：给了就生成 `.dev-data/policy.toml`（追加只读数据源 `dev-clickhouse`，`engine = "clickhouse"`，DSN 走 `JUMCP_DEV_CLICKHOUSE_DSN`）；DSN 形如 `http://<user>:<password>@<host>:<port>[/database]`，凭证只经环境变量传递。`allowed_schemas` 对 ClickHouse 是 **database 白名单**，脚本生成的是空数组（不限制）；不给 DSN 则用 `config/policy.toml` 原样。
 - 脚本会同时构建 `jumcp-server` 与 `jumcp-connector-clickhouse`（数据源执行 agent；内置 MCP 包编译进 `jumcp-server`，没有独立二进制），并为 HTTP 模式设置固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（仅本地；生产必须 `openssl rand -hex 32`）；host 默认在可执行文件同目录查找 agent，也可用 `JUMCP_CLICKHOUSE_AGENT_BIN` 指定绝对路径。
@@ -75,26 +75,35 @@ JUMCP_MCP_TRANSPORT=streamable-http cargo run -p jumcp-server  # HTTP（POST /mc
 ```
 
 配置走 `JUMCP_MCP_*`（`JUMCP_MCP_CONFIG_FILE`、`JUMCP_MCP_AUDIT_PATH`、`JUMCP_MCP_REGISTRY_PATH`、
-`JUMCP_MCP_TEMPLATES_FILE`、`JUMCP_MCP_GROUPS_MODE`、`JUMCP_MCP_BUDGET_OVERFLOW=fail|truncate`、`JUMCP_SECRET_KEY`（HTTP 模式必需，64 位 hex，内置包密码字段的落库加密密钥）、`JUMCP_TRANSPORT_KEY`（HTTP 模式必需，64 位 hex，管理台提交 secret 字段时的传输加密密钥，见 `GET /admin/transport-key`）、`JUMCP_MCP_HOST`（默认 `0.0.0.0`）、`JUMCP_MCP_PORT`（MCP 面端口，默认 `8000`）、`JUMCP_ADMIN_PORT`（管理面端口，默认 `8080`，与 `JUMCP_MCP_PORT` 相同即拒绝启动）、`JUMCP_ADMIN_SESSION_TTL_SECS`（管理台会话 TTL，默认 `43200` = 12 小时）、`JUMCP_ADMIN_COOKIE_SECURE`（置 `1` 才给会话 cookie 加 `Secure`，HTTPS 部署才开；HTTP 下开启会导致浏览器不回传 cookie）、`JUMCP_ADMIN_TOKENS="id:token,id:token"`（管理面必需）、`JUMCP_AGENT_TOKENS="agent_id:role:token,..."`（**仅用于启动引导**：`access_tokens` 表为空时一次性导入为数据库 token，之后可移除；导入的身份工具范围为 `*`，即全部工具——实际可见性仍由授权组与上游开关决定））。
+`JUMCP_MCP_TEMPLATES_FILE`、`JUMCP_MCP_GROUPS_MODE`、`JUMCP_MCP_BUDGET_OVERFLOW=fail|truncate`、`JUMCP_SECRET_KEY`（HTTP 模式必需，64 位 hex，内置包密码字段的落库加密密钥）、`JUMCP_TRANSPORT_KEY`（HTTP 模式必需，64 位 hex，管理台提交 secret 字段时的传输加密密钥，见 `GET /admin/transport-key`）、`JUMCP_MCP_HOST`（默认 `0.0.0.0`）、`JUMCP_MCP_PORT`（MCP 面端口，默认 `8000`）、`JUMCP_ADMIN_PORT`（管理面端口，默认 `8080`，与 `JUMCP_MCP_PORT` 相同即拒绝启动）、`JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD`（空库首启的初始管理员，口令至少 12 位；库非空后不再生效，改口令走 `PATCH /admin/admins/{id}`）、`JUMCP_ADMIN_SESSION_TTL_SECS`（管理台会话 TTL，默认 `43200` = 12 小时）、`JUMCP_ADMIN_COOKIE_SECURE`（置 `1` 才给会话 cookie 加 `Secure`，HTTPS 部署才开；HTTP 下开启会导致浏览器不回传 cookie）、`JUMCP_AGENT_TOKENS="agent_id:role:token,..."`（**仅用于启动引导**：`access_tokens` 表为空时一次性导入为数据库 token，之后可移除；导入的身份工具范围为 `*`，即全部工具——实际可见性仍由授权组与上游开关决定））。
 
-HTTP 模式起**两个监听**：MCP 面（`JUMCP_MCP_PORT`）只挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面（`JUMCP_ADMIN_PORT`）只挂 `/admin/*`、`/health` 与管理台静态站。跨面访问一律 `404`（例如管理面 `POST /mcp`、MCP 面 `GET /admin/me`）。管理台自带登录页：`POST /admin/login {"token":"<admin token>"}` → `204` + HttpOnly 会话 cookie，脚本仍可用 `Authorization: Bearer`。完整契约（cookie 优先、CSRF 同源校验、登录限流、会话表）见 `docs/mcp-router.md` §9.0–9.1。
+HTTP 模式起**两个监听**：MCP 面（`JUMCP_MCP_PORT`）只挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面（`JUMCP_ADMIN_PORT`）只挂 `/admin/*`、`/health` 与管理台静态站。跨面访问一律 `404`（例如管理面 `POST /mcp`、MCP 面 `GET /admin/me`）。管理台自带登录页：`POST /admin/login {"username":"…","password":"…"}` → `204` + HttpOnly 会话 cookie；管理面**只认**这条 cookie，没有 Bearer 回落。完整契约（登录失败一律 `用户名或密码错误`、CSRF 同源校验、按用户名限流 5 次/60s、`admin_users`/`admin_sessions` 表）见 `docs/mcp-router.md` §9.0–9.1。
 
-MCP 接入令牌由管理平台生成并持久化在 registry SQLite 的 `access_tokens` 表；`/mcp` 认 `Authorization: Bearer <平台 token>`，没有该头时回落到 `?access_token=<token>`（仅此参数名，仅 MCP 面；内网用，token 会出现在 URL 里，可随时重签发轮换），缺/错/撤销/过期一律 `MCP_UNAUTHORIZED`。创建示例：
+MCP 接入令牌由管理平台生成并持久化在 registry SQLite 的 `access_tokens` 表；`/mcp` 认 `Authorization: Bearer <平台 token>`，没有该头时回落到 `?access_token=<token>`（仅此参数名，仅 MCP 面；内网用，token 会出现在 URL 里，可随时重签发轮换），缺/错/撤销/过期一律 `MCP_UNAUTHORIZED`。管理面只认会话 cookie：先 `POST /admin/login` 换 cookie，再带着同一个 cookie jar 调 `/admin/*`（两个面端口不同，但 cookie 按 host 生效，`-b`/`-c` 指同一个文件即可复用）：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/admin/tokens \
-  -H "Authorization: Bearer tok_alice_000000000" -H "Content-Type: application/json" \
+# 1) 用首启播种的管理员账号换会话 cookie
+curl -sS -o /dev/null -w '%{http_code}\n' -c admin.cookies \
+  -H "Origin: http://127.0.0.1:8080" -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<至少 12 位的口令>"}' \
+  http://127.0.0.1:8080/admin/login
+# 204
+
+# 2) 带 cookie 创建 MCP 接入令牌
+curl -X POST http://127.0.0.1:8080/admin/tokens \
+  -b admin.cookies -c admin.cookies \
+  -H "Origin: http://127.0.0.1:8080" -H "Content-Type: application/json" \
   -d '{"name":"分析只读","role":"analyst","groups":["db.read.core"],
-       "builtin_tools":["search_capabilities","describe_capability","list_groups"],
+       "builtin_tools":["search_capabilities","describe_capability","list_groups","db_run_template"],
        "source":"agent","caller":"agent-analyst","expires_at":null}'
 # 201 { "token": "jumcp_…（只出现一次）", "item": { … } }
 ```
 
 组与内置工具的双重约束：`groups` 是 token 的硬上限（header/`_meta` 只能收窄），`builtin_tools` 是工具名 allowlist（支持 `<server_id>__*` 与 `*`，安装的上游工具因此可以先授权后接入）；`admin_*` 还需 `groups` 含 `admin`。撤销用 `POST /admin/tokens/{id}/revoke`；只有已撤销或已过期的记录可用 `DELETE /admin/tokens/{id}` 硬删除（active 必须先撤销，删除写审计）。明文只在创建/重签发响应里出现一次，库里只有 hash：需要重新取回 MCP 接入配置时用 `POST /admin/tokens/{id}/reissue` 原地换钥匙（`id` 与全部授权不变，旧 token 立即失效，撤销/过期令牌 409）。完整契约见 `docs/audit-openness.md` §7.7–§7.11 与 §11。
 
-组与角色都是 **code + name 双轨**：`code` 是权限标识（token 的 `role` / `groups`、`capability.group`、审计 `actor.role`、scope 一律用 code），`name` 只是中文展示名，**不参与权限判定**。`GET /admin/roles` 返回 `{code,name,default_groups,default_budget}`；`GET /admin/groups?q=&source=&role=` 支持按 code/展示名包含、来源（policy|managed|builtin）与角色 code 过滤；`POST /admin/groups` 收 `{code,name,priority,min_budget,roles}`，`PUT /admin/groups/{code}` 改 `name/priority/min_budget/roles`（code 不可改）。`basic` 是唯一的 `source=builtin` 条目：`GET /admin/groups` 固定返回 `{code:"basic", name:"基础工具", grantable:false, roles:[], token_count:0, capability_count: 3 + 上游 basic 覆盖数}`，只读；创建/改名/删除一律 409 `MCP_GROUP_RESERVED`，配置文件 `[[groups]]` 也不得定义 `basic` 或 `builtin`。配置里组写 `[[groups]] code=… name=…`，只写 `name` 的旧配置按 name=code 兼容。
+组与角色都是 **code + name 双轨**：`code` 是权限标识（token 的 `role` / `groups`、`capability.group`、审计 `actor.role`、scope 一律用 code），`name` 只是中文展示名，**不参与权限判定**。`GET /admin/roles` 返回 `{code,name,default_groups,default_budget}`；`GET /admin/groups?q=&source=&role=` 支持按 code/展示名包含、来源（policy|managed|builtin）与角色 code 过滤；`POST /admin/groups` 收 `{code,name,priority,min_budget,roles}`，`PUT /admin/groups/{code}` 改 `name/priority/min_budget/roles`（code 不可改）。`basic` 是唯一的 `source=builtin` 条目：`GET /admin/groups` 固定返回 `{code:"basic", name:"基础工具", grantable:false, roles:[], token_count:0, capability_count: 4 + 上游 basic 覆盖数}`，只读；创建/改名/删除一律 409 `MCP_GROUP_RESERVED`，配置文件 `[[groups]]` 也不得定义 `basic` 或 `builtin`。配置里组写 `[[groups]] code=… name=…`，只写 `name` 的旧配置按 name=code 兼容。
 
-**上游 MCP router**：同一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具，上游工具名为 `<server_id>__<tool>`（无 `/mcp/<upstream>` 透传端点）。内置工具按职责分为三个**展示分类**：`basic`（基础元工具：`search_capabilities`、`describe_capability`、`list_groups`）、`analysis`（工具列表分析与变更提交审计：`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（仅审计操作：`admin_audit_queries`）；其中 `basic` 同时是代码内置组（3 个常驻元工具的 `group` 就是它，上游只读工具可逐工具加入），`analysis`/`admin` 只是分类，`admin_*` 仍需组 `admin` 在 scope 内。上游配置在管理面 `GET/POST /admin/upstreams`、`PUT/DELETE /admin/upstreams/{id}`、`POST /admin/upstreams/{id}/refresh` 维护（可安装包安装产生的是同一种上游，见 `docs/mcp-router.md` §3），写成功下一次 `tools/list` / `tools/call` 即生效（无需重启）；上游工具按注册时声明的组随 token 的 `groups` 收窄，且与内置工具共用 token 的 `builtin_tools` 名字白名单（要调用上游工具必须把 `<server_id>__<tool>` 列进去）；单个上游不可达只影响它自己。上游声明 `read_only=false` 需 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`；stdio 上游默认关闭，需 `JUMCP_MCP_UPSTREAM_STDIO=1`（只影响手工接入的 stdio 上游；内置包一律走 HTTP）。逐工具基础组：`GET /admin/upstreams/{id}/tools` 只读缓存列出每个工具的生效组（`group`、`group_source`、`basic`、`overridden`、`eligible`、`orphaned`），`PUT /admin/upstreams/{id}/tools/basic` 用 `{"tools":{"<原始工具名>":true|false|null}}` 合并式增删（幂等，无变化不写审计）；上游级 `group` 不得为 `basic`（400 `MCP_UPSTREAM_INVALID`），只能逐工具加入。加入 `basic` 的工具对所有 scope 可见/可调（`X-MCP-Tool-Groups` 收窄不能隐藏它们），但仍受 token `builtin_tools` allowlist 与上游 `enabled`/`read_only` 约束；只有只读、`category≠admin`、工具名不以 `admin_` 开头的工具可以加入，`basic` 因此不会成为绕过组 `admin` 的通道。非 basic 的上游工具仍按上游组 + allowlist 双重判定。字段、命名冲突、可安装包、脱敏与审计契约见 `docs/mcp-router.md`。
+**上游 MCP router**：同一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具，上游工具名为 `<server_id>__<tool>`（无 `/mcp/<upstream>` 透传端点）。内置工具按职责分为三个**展示分类**：`basic`（基础元工具与模板取数：`search_capabilities`、`describe_capability`、`list_groups`、`db_run_template`）、`analysis`（工具列表分析与变更提交审计：`admin_review_queue`、`admin_register_template`、`admin_set_visibility`）、`admin`（仅审计操作：`admin_audit_queries`）；其中 `basic` 同时是代码内置组（4 个常驻内置工具的 `group` 就是它，上游只读工具可逐工具加入），`analysis`/`admin` 只是分类，`admin_*` 仍需组 `admin` 在 scope 内。上游配置在管理面 `GET/POST /admin/upstreams`、`PUT/DELETE /admin/upstreams/{id}`、`POST /admin/upstreams/{id}/refresh` 维护（内置包安装产生的是同一种上游，见 `docs/mcp-router.md` §3），写成功下一次 `tools/list` / `tools/call` 即生效（无需重启）；上游工具按注册时声明的组随 token 的 `groups` 收窄，且与内置工具共用 token 的 `builtin_tools` 名字白名单（要调用上游工具必须把 `<server_id>__<tool>` 列进去）；单个上游不可达只影响它自己。上游声明 `read_only=false` 需 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`；stdio 上游默认关闭，需 `JUMCP_MCP_UPSTREAM_STDIO=1`（只影响手工接入的 stdio 上游；内置包一律走 HTTP）。逐工具基础组：`GET /admin/upstreams/{id}/tools` 只读缓存列出每个工具的生效组（`group`、`group_source`、`basic`、`overridden`、`eligible`、`orphaned`），`PUT /admin/upstreams/{id}/tools/basic` 用 `{"tools":{"<原始工具名>":true|false|null}}` 合并式增删（幂等，无变化不写审计）；上游级 `group` 不得为 `basic`（400 `MCP_UPSTREAM_INVALID`），只能逐工具加入。加入 `basic` 的工具对所有 scope 可见/可调（`X-MCP-Tool-Groups` 收窄不能隐藏它们），但仍受 token `builtin_tools` allowlist 与上游 `enabled`/`read_only` 约束；只有只读、`category≠admin`、工具名不以 `admin_` 开头的工具可以加入，`basic` 因此不会成为绕过组 `admin` 的通道。非 basic 的上游工具仍按上游组 + allowlist 双重判定。字段、命名冲突、内置包的安装、脱敏与审计契约见 `docs/mcp-router.md`。
 
 策略与 `[[datasources]]` 同文件；数据源只写
 **环境变量名**（`dsn_env`），DSN 由部署注入。非法配置、DSN 缺失或 agent 握手失败时启动即退出（非零码）；L1 只读账号由部署与巡检独立验证，启动不执行写探测（当前联调账号为超级用户）。
@@ -103,14 +112,15 @@ curl -X POST http://127.0.0.1:8000/admin/tokens \
 
 ### 容器与 CI/CD
 
-镜像 `ghcr.io/nnyjk/jumcp`，只构建 `linux/amd64`：多阶段构建（Rust release 编译后端与 connector、Node 22 构建管理台、Debian bookworm-slim 运行时），非 root（UID/GID `10001`）、`/data` 为数据卷、`JUMCP_MCP_WEB_DIR=/app/web` 把管理台作为同源静态资源提供。`JUMCP_ADMIN_TOKENS`、`JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY` **必须由运行时注入**：镜像里既没有默认值，也没有任何 token/secret（HTTP 模式缺任一把密钥都直接拒绝启动）。
+镜像 `ghcr.io/nnyjk/jumcp`，只构建 `linux/amd64`：多阶段构建（Rust release 编译后端与 connector、Node 22 构建管理台、Debian bookworm-slim 运行时），非 root（UID/GID `10001`）、`/data` 为数据卷、`JUMCP_MCP_WEB_DIR=/app/web` 把管理台作为同源静态资源提供。`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD`（空库首启）、`JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY` **必须由运行时注入**：镜像里既没有默认值，也没有任何账号/口令/secret（HTTP 模式缺任一项都直接拒绝启动）。
 
 内置 MCP 包（`clickhouse-basic`）安装后只是 `/data` 里 `registry.sqlite3` 的一条普通上游记录（带 `catalog_id` / `catalog_version`），**不需要额外卷**，也不需要任何随包二进制。容器内安装需要运行时注入两把 64 位 hex 密钥（生成方式 `openssl rand -hex 32`）：`JUMCP_SECRET_KEY` 加密落库，`JUMCP_TRANSPORT_KEY` 加密管理台提交的密码。镜像不提供默认值，缺失时 HTTP 模式直接拒绝启动，见下面 `docker run` 示例。
 
 ```bash
 docker buildx build --platform linux/amd64 -t jumcp:local --load .
 docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
-  -e JUMCP_ADMIN_TOKENS="admin:<至少 16 位的 token>" \
+  -e JUMCP_ADMIN_USERNAME=admin \
+  -e JUMCP_ADMIN_PASSWORD="<至少 12 位的口令>" \
   -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
   -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
   -v jumcp-data:/data \
@@ -127,7 +137,7 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
 
 完整的检查项、artifact 名称、tag 规则与分支保护建议见 `docs/ci-cd.md`。
 
-**Portainer / Swarm**：`deploy/portainer-stack.yml` 是可直接粘贴进 Portainer（Stacks → Add stack）或 `docker stack deploy -c` 的部署定义——单副本、`stop-first` 更新与回滚（SQLite 单写者，不能多副本）、`/data` 挂命名卷、`JUMCP_ADMIN_TOKENS`、`JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY` 必填 fail-fast、镜像与端口可用 `JUMCP_IMAGE` / `JUMCP_PORT` 覆盖。前置条件、Portainer 操作步骤、鉴权边界、备份升级与多节点限制见 `docs/portainer-swarm.md`。
+**Portainer / Swarm**：`deploy/portainer-stack.yml` 是可直接粘贴进 Portainer（Stacks → Add stack）或 `docker stack deploy -c` 的部署定义——单副本、`stop-first` 更新与回滚（SQLite 单写者，不能多副本）、`/data` 挂命名卷、`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD`、`JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY` 必填 fail-fast、镜像与端口可用 `JUMCP_IMAGE` / `JUMCP_PORT` 覆盖。前置条件、Portainer 操作步骤、鉴权边界、备份升级与多节点限制见 `docs/portainer-swarm.md`。
 
 分支模型：`main` 只做发布、不接受日常直接 push，且只接受 `dev` 的发版 PR（另有 `release source is dev` 检查来源）；`dev` 是默认分支与集成分支。日常提交走 `feature/* → dev`（PR 目标 `dev`），CI 在 `dev` 与发版 PR 上校验；发版时用 merge commit 把 `dev` 整体合到 `main`（PR 目标 `main`），合并触发 image CD 与 web CD。发版后要把 `main` 合回 `dev` 做同步，否则 `strict` 保护会挡住下一次发版 PR。流程与禁止事项见 `CONTRIBUTING.md`，目录职责见 `docs/repository-structure.md`。
 
@@ -186,7 +196,7 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 
 **审计查询**：默认**最新优先**（`desc`，可切「最旧优先」）；从令牌、能力档案或工具台账进入时在 content 视图内打开并预填筛选（token_id / object_id / event_id），URL 不变，直接访问 `/audit` 路由仍可用并兼容这些查询参数，筛选与「重置」只改页内状态；表格列为 时间 → 摘要 → 主体 → 动作 → 对象 → 操作，结果与审批单由摘要与详情弹层承载（主体里的令牌 ID 表格中截断到 12 位，完整值在 `title`/详情）。时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），完整 RFC3339 保留在 `title` 与详情。详情里对 `tool_call`、`template_run` 展示入参、执行脚本与载荷结构版本。旧格式事件（没有 `object_type` / `object_id` / `action`）界面标注「旧格式事件，仅原始载荷」，不按旧字段推断语义，也不计入工具统计。
 
-所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`（另开终端跑后端），按后端实际端口设 `JUMCP_DEV_ADMIN_TARGET=<管理面>` 与 `JUMCP_DEV_API_TARGET=<MCP 面>`，然后在 http://127.0.0.1:5173 的登录页里输入 `JUMCP_ADMIN_TOKENS="id:token,id:token"` 中的某个 token。`npm run build` 做类型检查与构建。
+所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`（另开终端跑后端），按后端实际端口设 `JUMCP_DEV_ADMIN_TARGET=<管理面>` 与 `JUMCP_DEV_API_TARGET=<MCP 面>`，然后在 http://127.0.0.1:5173 的登录页里输入首启播种的 `JUMCP_ADMIN_USERNAME` 与 `JUMCP_ADMIN_PASSWORD`。`npm run build` 做类型检查与构建。
 
 ## 文档索引
 
