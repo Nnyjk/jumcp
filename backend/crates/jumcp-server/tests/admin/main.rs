@@ -10,6 +10,7 @@ mod admins;
 mod audit;
 mod auth;
 mod capabilities;
+mod candidates;
 mod fixtures;
 mod groups;
 mod review;

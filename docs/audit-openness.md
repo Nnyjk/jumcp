@@ -244,6 +244,34 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
 - `truncated`：窗口内某类审计扫描命中上限（50,000 条）时为 `true`，表示聚合不是全量。
 - `p95_response_tokens`：对窗口内 token 样本复制后升序排序，按最近秩法取第 `ceil(0.95 × n)` 个（同值多时取该秩的值），样本为空时为 `null`。`recent_tokens` 仍按时间顺序保留最近 20 个非空样本，两者排序不同。
 
+### 7.5.1 `GET /admin/tools/candidates?window_days=&limit=`
+
+定制化 tool 候选加权评分：把窗口内的 `tool_call` 流水按**调用对象**（SQL 表 / 文件路径 /
+接口 `host+path` / 上游工具名）聚合成排名，分数越高越值得固化成定制 tool。MCP 内置工具
+`admin_tool_candidates` 与它共用同一份实现，同一窗口必得同一顺序。
+
+```
+{ window:{days,from,to},
+  weights:{segment_gap_seconds,refine_step,failure_penalty,multi_token_bonus,multi_token_cap},
+  truncated,
+  candidates:[{
+    subject, family, upstream_id, upstream_tool, score, calls,
+    longest_segment, refined_calls, failures, distinct_tokens, reasons:[…] }] }
+```
+
+- `family`：`sql` / `file` / `http` / `tool`（认不出对象参数时退到上游工具本身）。
+- 四条加权规则：同令牌对同一对象的**连续收紧**（相邻调用间隔 ≤ `segment_gap_seconds` 视为一段，
+  段内第 ⌈n/2⌉ 次之后逐次递增 `k × refine_step`）、**失败**每次 `-failure_penalty`、
+  同对象被**多令牌**访问 `min((t-1) × multi_token_bonus, multi_token_cap)`。权重随响应回显：
+  分数是加权和，不给系数就无法解释"为什么它是 9 分"。
+- 「条件收紧」按**短间隔重复调用同一对象**推断，不解析语句结构：`tool_call` 审计只留入参，
+  无法可靠判定后一次查询的范围是否更窄（先放宽再收窄同样常见），按结构判定会漏掉真实调参。
+- 分数 ≤ 0 的对象不出现（"试过但没成气候"不该占 `limit`，更不该冒充候选）；结果按分数降序。
+- `truncated`：窗口扫描命中 50,000 条上限，或候选数超过 `limit`。
+- `window_days` 默认 7、上限 30；`limit` 默认 200、上限 200。
+- 只扫 `tool_call`：`template_run` 已经是固化路径，再推荐"把它固化成 tool"是同一件事做两遍。
+- `reasons` 是分项证据（哪条规则加/减了多少），审计 agent 不必回查原始流水就能解释排名。
+
 ### 7.6 `GET /admin/tools/{id}/calls?window_days=&limit=&offset=`
 
 ```

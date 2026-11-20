@@ -1,8 +1,9 @@
 use super::*;
+use super::scoring::CallFact;
 
 /// 统计窗口默认/上限（天）：越界夹紧而不是报错。
-pub(super) const STATS_DEFAULT_WINDOW_DAYS: i64 = 7;
-pub(super) const STATS_MAX_WINDOW_DAYS: i64 = 30;
+pub(crate) const STATS_DEFAULT_WINDOW_DAYS: i64 = 7;
+pub(crate) const STATS_MAX_WINDOW_DAYS: i64 = 30;
 /// 统计列表默认条数（上限与审计查询共用 `MAX_LIMIT`）。
 pub(super) const STATS_DEFAULT_LIMIT: i64 = 200;
 /// 单次审计扫描上限：任一事件类型命中该上限即把 `truncated` 置 true（窗口过大时如实标记，不静默）。
@@ -38,6 +39,9 @@ pub(super) struct CallObservation {
     arguments: Value,
     executed_script: Option<String>,
     bound_params: Value,
+    /// 上游归属：只有上游工具调用才有，内置工具与模板调用都是 `None`。
+    upstream_id: Option<String>,
+    upstream_tool: Option<String>,
 }
 
 /// 调用对象 id：只读结构化载荷的 `object_id`（没有该字段的事件不参与台账/明细）。
@@ -106,6 +110,14 @@ pub(super) fn observation(env: &Envelope) -> Option<CallObservation> {
             .and_then(|v| v.as_str())
             .map(String::from),
         bound_params: data.get("bound_params").cloned().unwrap_or(Value::Null),
+        upstream_id: data
+            .get("upstream_id")
+            .and_then(Value::as_str)
+            .map(String::from),
+        upstream_tool: data
+            .get("upstream_tool")
+            .and_then(Value::as_str)
+            .map(String::from),
     })
 }
 
@@ -467,6 +479,158 @@ pub(super) async fn tool_stats(
         "truncated": truncated,
         "tools": tools
     })))
+}
+
+/// 一次调用事实化：缺上游归属的事件跳过，同一次调用命中多张表则逐表各记一条。
+///
+/// 为什么不给缺 `upstream_id`/`upstream_tool` 的事件补默认值：`tool_call` 里同时有内置工具
+/// 与模板（两者都没有上游），编一个上游出来会让候选表出现不存在的接口，审计 agent 照着提
+/// 定制 tool 会直接落空。JOIN 一拍多表时逐表记录是对的——同一次收紧对每张表都是证据。
+///
+/// 令牌身份取 `actor.token_id`，缺省退回 `actor.id`：前者是精确令牌，后者是 agent 身份，
+/// 同一身份换令牌仍算"同一方在反复调参"，而不同身份访问同一对象才是规则三要的广度证据。
+fn call_facts(list: &[CallObservation]) -> Vec<CallFact> {
+    let mut out: Vec<CallFact> = Vec::new();
+    for o in list {
+        let (Some(upstream_id), Some(upstream_tool)) = (&o.upstream_id, &o.upstream_tool) else {
+            continue;
+        };
+        let Some(token) = o
+            .actor
+            .get("token_id")
+            .and_then(Value::as_str)
+            .or_else(|| o.actor.get("id").and_then(Value::as_str))
+            .filter(|token| !token.is_empty())
+        else {
+            continue;
+        };
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&o.ts) else {
+            continue;
+        };
+        let ok = matches!(o.outcome.as_str(), "ok" | "summary");
+        let mut subjects = super::scoring::subjects(&o.arguments);
+        if subjects.is_empty() {
+            subjects.push((
+                super::scoring::Family::Tool,
+                format!("{upstream_id}/{upstream_tool}"),
+            ));
+        }
+        out.extend(subjects.into_iter().map(|(family, subject)| CallFact {
+            token: token.to_string(),
+            subject,
+            family,
+            upstream_id: upstream_id.clone(),
+            upstream_tool: upstream_tool.clone(),
+            ok,
+            ts: ts.timestamp(),
+        }));
+    }
+    out
+}
+
+fn candidate_json(candidate: &super::scoring::Candidate) -> Value {
+    json!({
+        "subject": candidate.subject,
+        "family": candidate.family.as_str(),
+        "upstream_id": candidate.upstream_id,
+        "upstream_tool": candidate.upstream_tool,
+        "score": round_to(candidate.score, 2),
+        "calls": candidate.calls,
+        "longest_segment": candidate.longest_segment,
+        "refined_calls": candidate.refined_calls,
+        "failures": candidate.failures,
+        "distinct_tokens": candidate.distinct_tokens,
+        "reasons": candidate.reasons,
+    })
+}
+
+/// 定制化 tool 候选评分的唯一装配点：窗口扫描 → 事实抽取 → 纯函数打分 → 响应 JSON。
+///
+/// HTTP `GET /admin/tools/candidates` 与 MCP `admin_tool_candidates` 共用它：审计 agent 在
+/// 会话里看到的排名必须与看板逐字一致，否则"为什么推荐这个"没法对照。窗口与条数在这里
+/// 夹紧（`window_days` 1..=30、`limit` 1..=200），两个入口因此不会各自漂移。
+///
+/// 只扫 `tool_call`：`template_run` 走的已经是注册表里的固化路径，再推荐"把它固化成 tool"
+/// 是同一件事做两遍。
+pub(crate) fn tool_candidates_report(
+    log: &AuditLog,
+    window_days: i64,
+    limit: i64,
+) -> Result<Value, McpError> {
+    let window_days = window_days.clamp(1, STATS_MAX_WINDOW_DAYS);
+    let limit = limit.clamp(1, MAX_LIMIT);
+    let to = Utc::now();
+    let from_iso = (to - chrono::Duration::days(window_days)).to_rfc3339();
+    let to_iso = to.to_rfc3339();
+    let (observations, mut truncated) = scan_in_window(log, "tool_call", &from_iso)?;
+    let facts = call_facts(&observations);
+    let candidates = super::scoring::score(&facts);
+    if candidates.len() > limit as usize {
+        truncated = true;
+    }
+    let items: Vec<Value> = candidates.iter().take(limit as usize).map(candidate_json).collect();
+    Ok(json!({
+        "window": {"days": window_days, "from": from_iso, "to": to_iso},
+        // 权重随结果回显：分数是加权和，不给系数就没法解释"为什么它是 9 分"。
+        "weights": {
+            "segment_gap_seconds": super::scoring::SEGMENT_GAP_SECONDS,
+            "refine_step": super::scoring::REFINE_STEP,
+            "failure_penalty": super::scoring::FAILURE_PENALTY,
+            "multi_token_bonus": super::scoring::MULTI_TOKEN_BONUS,
+            "multi_token_cap": super::scoring::MULTI_TOKEN_CAP
+        },
+        "truncated": truncated,
+        "candidates": items
+    }))
+}
+
+/// `GET /admin/tools/candidates`：定制化 tool 候选加权评分（只读，窗口/条数夹紧同统计台账）。
+pub(super) async fn tool_candidates(
+    State(state): State<AdminState>,
+    Query(raw): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    let actor = admin_actor("");
+    let mut window_days = STATS_DEFAULT_WINDOW_DAYS;
+    let mut limit = STATS_DEFAULT_LIMIT;
+    for (key, value) in raw {
+        match key.as_str() {
+            "window_days" => {
+                window_days = parse_page_param(
+                    &state,
+                    &actor,
+                    "admin/tools/candidates",
+                    "window_days",
+                    &value,
+                )?;
+            }
+            "limit" => {
+                limit =
+                    parse_page_param(&state, &actor, "admin/tools/candidates", "limit", &value)?;
+            }
+            _ => {
+                let e = McpError::new(
+                    "MCP_FILTER_UNSUPPORTED",
+                    json!({"filter": key, "supported": ["window_days", "limit"]}),
+                );
+                return Err(reject(
+                    &state,
+                    &actor,
+                    e,
+                    json!({"surface": "admin/tools/candidates", "filter": key}),
+                ));
+            }
+        }
+    }
+    let Some(log) = state.service.audit.clone() else {
+        return Err(ApiError(McpError::new(
+            "MCP_AUDIT_ERROR",
+            json!({"hint": "审计未启用"}),
+        )));
+    };
+    Ok(Json(
+        tool_candidates_report(&log, window_days, limit)
+            .map_err(|e| reject(&state, &actor, e, json!({"surface": "admin/tools/candidates"})))?,
+    ))
 }
 
 /// `GET /admin/tools/{id}/calls`：单个能力的调用明细（时间倒序，缺字段一律 null）。

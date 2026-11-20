@@ -285,6 +285,7 @@ impl McpServer {
             "admin_register_template"
             | "admin_review_queue"
             | "admin_audit_queries"
+            | "admin_tool_candidates"
             | "admin_set_visibility"
             | "admin_publish_capability" => {
                 // 拒绝路径（未授权）也走同一个收尾，管理台才能看到维护工具的失败计数。
@@ -295,10 +296,11 @@ impl McpServer {
                         "admin_register_template" => self.admin_register_template(id, &args, actor),
                         "admin_review_queue" => self.admin_review_queue(id, actor),
                         "admin_audit_queries" => self.admin_audit_queries(id, &args, actor),
+                        "admin_tool_candidates" => self.admin_tool_candidates(id, &args, actor),
                         "admin_publish_capability" => {
                             self.admin_publish_capability(id, &args, actor)
                         }
-                        // 分支已由上方 match 收窄到五个 id，这里只可能是 set_visibility。
+                        // 分支已由上方 match 收窄到六个 id，这里只可能是 set_visibility。
                         _ => self.admin_set_visibility(id, &args, actor),
                     }
                 };

@@ -60,6 +60,7 @@ pub const ADMIN_CAPABILITY_IDS: &[&str] = &[
     "admin_register_template",
     "admin_review_queue",
     "admin_audit_queries",
+    "admin_tool_candidates",
     "admin_set_visibility",
     "admin_publish_capability",
 ];
@@ -76,6 +77,7 @@ pub const BUILTIN_CAPABILITY_IDS: &[&str] = &[
     "admin_register_template",
     "admin_review_queue",
     "admin_audit_queries",
+    "admin_tool_candidates",
     "admin_set_visibility",
     "admin_publish_capability",
 ];

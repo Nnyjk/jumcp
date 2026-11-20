@@ -266,6 +266,31 @@ impl McpServer {
         )
     }
 
+    /// `admin_tool_candidates`：定制化 tool 候选加权评分（只读）。
+    ///
+    /// 与 HTTP `GET /admin/tools/candidates` 共用 `crate::admin::tool_candidates_report`：
+    /// 审计 agent 在会话里看到的排名必须与看板逐字一致，否则"为什么推荐这个"无从对照。
+    /// `window_days` 缺省 7（与统计台账同口径），窗口与条数的夹紧在报告层完成。
+    pub(super) fn admin_tool_candidates(&self, id: &Value, args: &Value, actor: &Actor) -> Value {
+        const TOOL: &str = "admin_tool_candidates";
+        let Some(log) = self.service.audit.as_ref() else {
+            return err_tool(
+                id,
+                &McpError::new("MCP_AUDIT_ERROR", json!({"hint": "审计未启用"})),
+            );
+        };
+        let window_days = args
+            .get("window_days")
+            .and_then(Value::as_i64)
+            .unwrap_or(crate::admin::STATS_DEFAULT_WINDOW_DAYS);
+        // 默认 50 而不是 HTTP 的 200：候选带着理由文本，整表塞进会话没有价值。
+        let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(50);
+        match crate::admin::tool_candidates_report(log, window_days, limit) {
+            Ok(report) => tool_result(id, report, false),
+            Err(e) => self.reject(id, actor, &e, json!({"tool": TOOL})),
+        }
+    }
+
     /// `admin_set_visibility`：只改双布尔，不改定义；`admin_change` 由 store 写入
     /// （before/after 同为当前 definition_hash，diff 记字段变更）。
     pub(super) fn admin_set_visibility(&self, id: &Value, args: &Value, actor: &Actor) -> Value {

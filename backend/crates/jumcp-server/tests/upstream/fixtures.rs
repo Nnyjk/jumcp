@@ -94,16 +94,16 @@ pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
     assemble(stdio, write, None)
 }
 
-/// 与 `harness_with(false, false)` 相同，但换成显式的 SQL 前置拦截配置：
-/// 库白名单必须能按用例切换，而 `from_env` 是进程全局的。
-pub(crate) fn harness_with_sql_guard(guard: jumcp_server::sql_guard::GuardConfig) -> Harness {
+/// 与 `harness_with(false, false)` 相同，但换成显式的前置拦截配置：
+/// 白名单与上限必须能按用例切换，而 `from_env` 是进程全局的。
+pub(crate) fn harness_with_preflight(guard: jumcp_server::preflight::PreflightConfig) -> Harness {
     assemble(false, false, Some(Arc::new(guard)))
 }
 
 fn assemble(
     stdio: bool,
     write: bool,
-    guard: Option<Arc<jumcp_server::sql_guard::GuardConfig>>,
+    guard: Option<Arc<jumcp_server::preflight::PreflightConfig>>,
 ) -> Harness {
     let audit = Arc::new(AuditLog::open(":memory:").expect("audit"));
     let store = Arc::new(CapabilityStore::open(":memory:", Some(audit.clone())).expect("store"));
@@ -126,7 +126,7 @@ fn assemble(
     };
     let mut server = McpServer::from_arc(service);
     if let Some(guard) = guard {
-        server = server.with_sql_guard(Some(guard));
+        server = server.with_preflight(Some(guard));
     }
     let app = jumcp_server::admin::router(admin).merge(http_router(Arc::new(server)));
     Harness { app, store, audit }

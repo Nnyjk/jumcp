@@ -1,29 +1,30 @@
-//! 第三方 SQL 前置拦截：10 条规则各自的拒绝形状、放行路径、非 SQL 工具不受影响、库白名单。
+//! 第三方调用前置拦截：SQL/文件/接口三族各自的拒绝形状、放行路径、无关入参不受影响。
 //!
-//! 每个拒绝用例断言三件事：上游**没有收到** `tools/call`（拦截在 `resolve` 之前）、
-//! 响应是 MCP `isError` 而不是 JSON-RPC error、`policy_decision` 里能按 `rule` 聚合。
+//! 每个拒绝用例断言四件事：上游**没有收到** `tools/call`（拦截在 `resolve` 之前）、
+//! 响应是 MCP `isError` 而不是 JSON-RPC error、错误码与审计 `surface` 按族区分、
+//! `policy_decision` 里能按 `rule` 聚合。
 
 use crate::fixtures::*;
 use crate::support::fake_upstream::{FakeUpstream, spawn_fake_named};
 use axum::http::StatusCode;
-use jumcp_server::sql_guard::GuardConfig;
+use jumcp_server::preflight::{Family, PreflightConfig};
 use serde_json::{Value, json};
 
 const TOOL: &str = "analytics__query";
 /// 被拒/放行用例共用的库白名单：与部署里 `JUMCP_SQL_ALLOWED_SCHEMAS` 同形。
 const SCHEMA: &str = "env_air";
 
-fn guard(allowed_schemas: &[&str]) -> GuardConfig {
-    GuardConfig {
+fn guard(allowed_schemas: &[&str]) -> PreflightConfig {
+    PreflightConfig {
         allowed_schemas: allowed_schemas.iter().map(|s| (*s).to_string()).collect(),
-        ..GuardConfig::default()
+        ..PreflightConfig::default()
     }
 }
 
 /// 起一个只有 `query` 工具的上游并签发只带它名字的令牌；`None` = 用默认配置（不限库）。
-async fn setup(sql_guard: Option<GuardConfig>) -> (Harness, FakeUpstream, String) {
-    let h = match sql_guard {
-        Some(guard) => harness_with_sql_guard(guard),
+async fn setup(preflight: Option<PreflightConfig>) -> (Harness, FakeUpstream, String) {
+    let h = match preflight {
+        Some(guard) => harness_with_preflight(guard),
         None => harness(),
     };
     let (url, fake) = spawn_fake_named(&["query"]).await;
@@ -39,11 +40,26 @@ fn forwarded_calls(fake: &FakeUpstream) -> usize {
 
 /// 拒绝用例的完整契约：响应形状 + 审计 + 上游零交互。
 async fn assert_blocked(sql: &str, rule: &str) {
-    assert_blocked_with(guard(&[]), json!({"sql": sql}), rule).await;
+    assert_blocked_with(guard(&[]), json!({"sql": sql}), rule, Family::Sql).await;
 }
 
-async fn assert_blocked_with(sql_guard: GuardConfig, arguments: Value, rule: &str) {
-    let (h, fake, token) = setup(Some(sql_guard)).await;
+/// 族 → (错误码, 审计 surface)。用例用字面量自证契约，不复用实现里的常量。
+fn family_contract(family: Family) -> (&'static str, &'static str) {
+    match family {
+        Family::Sql => ("MCP_SQL_BLOCKED", "mcp/sql-preflight"),
+        Family::File => ("MCP_FILE_BLOCKED", "mcp/file-preflight"),
+        Family::Http => ("MCP_HTTP_BLOCKED", "mcp/http-preflight"),
+    }
+}
+
+async fn assert_blocked_with(
+    preflight: PreflightConfig,
+    arguments: Value,
+    rule: &str,
+    family: Family,
+) {
+    let (error_code, surface) = family_contract(family);
+    let (h, fake, token) = setup(Some(preflight)).await;
     let resp = call_tool(&h.app, &token, TOOL, arguments.clone()).await;
 
     assert_eq!(
@@ -53,11 +69,7 @@ async fn assert_blocked_with(sql_guard: GuardConfig, arguments: Value, rule: &st
     );
     assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
     let structured = &resp["result"]["structuredContent"];
-    assert_eq!(
-        structured["error"]["code"],
-        json!("MCP_SQL_BLOCKED"),
-        "{resp}"
-    );
+    assert_eq!(structured["error"]["code"], json!(error_code), "{resp}");
     assert_eq!(structured["error"]["data"]["rule"], json!(rule), "{resp}");
     assert_eq!(
         structured["error"]["data"]["upstream_id"],
@@ -81,10 +93,10 @@ async fn assert_blocked_with(sql_guard: GuardConfig, arguments: Value, rule: &st
         .expect("audit query");
     let decision = events.last().expect("policy_decision 事件");
     assert_eq!(decision.payload["action"], json!("deny"));
-    assert_eq!(decision.payload["error_code"], json!("MCP_SQL_BLOCKED"));
+    assert_eq!(decision.payload["error_code"], json!(error_code));
     let detail = &decision.payload["data"]["detail"];
     assert_eq!(detail["rule"], json!(rule));
-    assert_eq!(detail["surface"], json!("mcp/sql-preflight"));
+    assert_eq!(detail["surface"], json!(surface));
     assert_eq!(detail["tool"], json!(TOOL));
     assert_eq!(detail["upstream_id"], json!("analytics"));
 
@@ -151,6 +163,7 @@ async fn out_of_scope_schema_is_blocked() {
         guard(&[SCHEMA]),
         json!({"sql": "SELECT id FROM other.t LIMIT 10"}),
         "schema_out_of_scope",
+        Family::Sql,
     )
     .await;
 }
@@ -162,6 +175,7 @@ async fn sql_aliases_are_guarded_too() {
         guard(&[]),
         json!({"query": "SELECT id FROM t LIMIT 5000"}),
         "limit_too_large",
+        Family::Sql,
     )
     .await;
 }
@@ -186,7 +200,7 @@ async fn bounded_queries_are_forwarded() {
     }
 }
 
-/// 非 SQL 工具（入参没有 sql/query/statement）完全不受拦截影响。
+/// 入参既没有查询文本、也没有路径/地址键：三族规则都不命中，原样转发。
 #[tokio::test]
 async fn non_sql_tool_is_unaffected() {
     for arguments in [json!({"msg": "hi"}), json!({"sql": 5})] {
@@ -214,4 +228,28 @@ async fn empty_allowlist_permits_any_schema() {
     .await;
     assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
     assert_eq!(forwarded_calls(&fake), 1);
+}
+
+/// 文件族：路径穿越在 `resolve` 之前被拦，错误码与审计 surface 走文件族的标识。
+#[tokio::test]
+async fn file_traversal_is_blocked() {
+    assert_blocked_with(
+        guard(&[]),
+        json!({"path": "../../etc/passwd"}),
+        "file_traversal",
+        Family::File,
+    )
+    .await;
+}
+
+/// 接口族：云元数据地址是 SSRF 的经典落点，与配置无关地拒绝。
+#[tokio::test]
+async fn metadata_endpoint_is_blocked() {
+    assert_blocked_with(
+        guard(&[]),
+        json!({"url": "http://169.254.169.254/latest/meta-data/"}),
+        "http_private_target",
+        Family::Http,
+    )
+    .await;
 }

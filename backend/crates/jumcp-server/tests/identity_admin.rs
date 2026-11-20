@@ -1092,6 +1092,82 @@ async fn admin_tool_calls_are_counted_in_stats() {
     assert_eq!(queue_call.payload["data"]["arguments"], json!({}));
 }
 
+/// 候选评分在 MCP 面与会话面同源：审计 agent 拿到的排名必须与看板一致，
+/// 否则"为什么推荐这张表"没法对照，评审只能重来一遍。
+#[tokio::test]
+async fn admin_tool_candidates_matches_the_admin_endpoint() {
+    let h = harness();
+    // 三次连续调用同一张表：后半段 1 次加权 → 1.5 分。
+    for minutes in [30, 29, 28] {
+        h.audit
+            .append(jumcp_core::audit::AuditEvent {
+                tenant: "default".into(),
+                actor: jumcp_core::audit::ActorRef {
+                    actor_type: "agent".into(),
+                    id: "agent-analyst".into(),
+                    role: "analyst".into(),
+                    token_id: Some(ANALYST_TOKEN.into()),
+                    source: None,
+                },
+                event_type: "tool_call".into(),
+                payload: json!({
+                    "object_type": "tool",
+                    "object_id": "ch__query",
+                    "action": "call",
+                    "outcome": "ok",
+                    "data": {
+                        "arguments": {"sql": "SELECT id FROM env_air.orders LIMIT 10"},
+                        "upstream_id": "ch",
+                        "upstream_tool": "query",
+                        "elapsed_ms": 4
+                    }
+                }),
+                session_id: "s-1".into(),
+                ts: (chrono::Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339(),
+                event_id: String::new(),
+            })
+            .expect("append");
+    }
+
+    let resp = call_tool(&h.app, ADMIN_TOKEN, "admin_tool_candidates", json!({})).await;
+    assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
+    let via_mcp = resp["result"]["structuredContent"].clone();
+    let (status, via_http) = call(
+        &h.app,
+        "GET",
+        "/admin/tools/candidates",
+        Some(ALICE_TOKEN),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{via_http}");
+    // `window.from/to` 是各自取的时刻，只比对可复现的部分：窗口天数、权重与候选排名。
+    assert_eq!(via_mcp["window"]["days"], via_http["window"]["days"]);
+    assert_eq!(via_mcp["weights"], via_http["weights"]);
+    assert_eq!(via_mcp["candidates"], via_http["candidates"]);
+    assert_eq!(via_mcp["candidates"][0]["subject"], json!("env_air.orders"));
+    assert_eq!(via_mcp["candidates"][0]["score"], json!(1.5));
+
+    // 管理台的这次查询本身不得变成一个候选（平台面事件不进评分）。
+    let after = call_tool(&h.app, ADMIN_TOKEN, "admin_tool_candidates", json!({})).await;
+    assert_eq!(
+        after["result"]["structuredContent"]["candidates"],
+        via_mcp["candidates"],
+        "读候选的动作不能改变候选"
+    );
+
+    // 非 admin 身份：与"不存在"同构，不泄露候选内容。
+    let denied = call_tool(
+        &h.app,
+        ANALYST_TOKEN,
+        "admin_tool_candidates",
+        json!({}),
+    )
+    .await;
+    assert_eq!(err_code(&denied), "MCP_CAPABILITY_NOT_FOUND", "{denied}");
+}
+
 /// 通用分发入口（`tools/call` 按 name 路由）产生的 `tool_call` 必须能回放原始入参。
 ///
 /// `invoke_capability` 未实现；内置 basic 组不直连数据源，

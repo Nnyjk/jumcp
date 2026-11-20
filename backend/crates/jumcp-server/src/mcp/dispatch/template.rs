@@ -69,8 +69,8 @@ impl McpServer {
         };
         let target = &record.compiled.def.target;
         // 5. 预检：注册期校验的是带占位符的形态，字面量落地后必须再过一遍运行时门禁。
-        if let Some(guard) = self.sql_guard.as_deref()
-            && let Err(rejection) = crate::sql_guard::check(&rendered.sql, guard)
+        if let Some(guard) = self.preflight.as_deref()
+            && let Err(rejection) = crate::preflight::sql::check(&rendered.sql, guard)
         {
             let e = McpError::with_message(
                 "MCP_SQL_BLOCKED",

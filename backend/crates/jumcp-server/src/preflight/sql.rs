@@ -1,81 +1,12 @@
-//! 第三方 SQL 的前置拦截：调用上游 MCP 之前的最后一道闸门。
-//!
-//! 上游 MCP 是第三方实现，是否校验 SQL 不由本服务决定；本服务是唯一收口点，
-//! 因此恶意注入与大范围扫描必须在转发前就被挡下，并把原因作为可读错误回给 agent。
+//! SQL 族的词法级前置拦截：第三方 SQL 到达上游之前的最后一道闸门。
 //!
 //! 为什么不用 `jumcp-sqlguard::validate`：那条路径面向**已知方言**的通用只读入口，
-//! 规则集（可执行注释、行锁、函数黑名单）与本层契约（固定 10 条 rule、LIMIT 上限、
+//! 规则集（可执行注释、行锁、函数黑名单）与本层契约（固定 rule 名、LIMIT 上限、
 //! 纯聚合放行、审计按 rule 聚合）不对应；且它要求先选定解析方言，而第三方工具的
 //! SQL 方言不可静态确定。这里只做与契约一一对应的词法级判定，不解析 AST。
 
+use super::{Family, PreflightConfig, Rejection, reject};
 use serde_json::Value;
-
-/// 拦截结果。`rule` 是稳定标识：管理台/告警按它聚合，不解析文案。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlRejection {
-    /// 命中的规则名（见 [`check`] 的规则表）。
-    pub rule: &'static str,
-    /// 面向调用方的一句话原因。
-    pub message: String,
-    /// 可执行的改法；agent 拿到它就能自己修正查询。
-    pub hint: String,
-}
-
-impl SqlRejection {
-    fn new(rule: &'static str, message: impl Into<String>, hint: impl Into<String>) -> Self {
-        Self {
-            rule,
-            message: message.into(),
-            hint: hint.into(),
-        }
-    }
-}
-
-/// 前置拦截配置。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GuardConfig {
-    /// 允许访问的库；空表示不做库范围限定（`schema_out_of_scope` 规则整体跳过）。
-    pub allowed_schemas: Vec<String>,
-    /// 单次查询允许的最大 LIMIT；无 LIMIT 的宽查询按 `unbounded` 拒绝。
-    pub max_limit: i64,
-}
-
-impl Default for GuardConfig {
-    fn default() -> Self {
-        Self {
-            allowed_schemas: Vec::new(),
-            max_limit: 1000,
-        }
-    }
-}
-
-impl GuardConfig {
-    /// 部署侧配置：`JUMCP_SQL_ALLOWED_SCHEMAS`（逗号分隔，空 = 不做库范围限定）。
-    ///
-    /// `max_limit` 不从 env 开放：它是"一次调用能带走多少行"的安全承诺，
-    /// 可配置就等于把它降级成运维便利项；要改必须走代码评审。
-    pub fn from_env() -> Self {
-        Self {
-            allowed_schemas: parse_allowed_schemas(
-                &std::env::var("JUMCP_SQL_ALLOWED_SCHEMAS").unwrap_or_default(),
-            ),
-            ..Self::default()
-        }
-    }
-}
-
-/// 逗号分隔的库名列表：去空白、丢空项、去重（大小写不敏感，判定时统一小写比较）。
-fn parse_allowed_schemas(raw: &str) -> Vec<String> {
-    let mut schemas: Vec<String> = Vec::new();
-    for entry in raw.split(',') {
-        let schema = entry.trim();
-        if schema.is_empty() || schemas.iter().any(|kept| kept.eq_ignore_ascii_case(schema)) {
-            continue;
-        }
-        schemas.push(schema.to_string());
-    }
-    schemas
-}
 
 /// 工具入参里代表 SQL 的字段名（按顺序取第一个非空字符串）。
 const SQL_ARGUMENT_KEYS: &[&str] = &["sql", "query", "statement"];
@@ -158,9 +89,10 @@ pub fn sql_argument(arguments: &Value) -> Option<&str> {
 ///
 /// 判定全部基于**词法**：字符串字面量先被抹成空白，因此字面量里的 `;`、`DROP`、
 /// `--` 都不会误伤；注释本身被拒绝，所以不需要在注释里做关键字判定。
-pub fn check(sql: &str, cfg: &GuardConfig) -> Result<(), SqlRejection> {
+pub fn check(sql: &str, cfg: &PreflightConfig) -> Result<(), Rejection> {
     if sql.trim().is_empty() {
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "empty",
             "SQL 为空：没有可执行的语句。",
             "传入一条 SELECT 查询后重试。",
@@ -169,7 +101,8 @@ pub fn check(sql: &str, cfg: &GuardConfig) -> Result<(), SqlRejection> {
 
     let masked = mask(sql);
     if masked.has_comment {
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "comment",
             "SQL 含注释（-- 或 /* */）：注释常用于隐藏注入片段。",
             "删除注释后重试。",
@@ -181,7 +114,8 @@ pub fn check(sql: &str, cfg: &GuardConfig) -> Result<(), SqlRejection> {
         Some(Token::Word(word))
             if word.eq_ignore_ascii_case("select") || word.eq_ignore_ascii_case("with") => {}
         _ => {
-            return Err(SqlRejection::new(
+            return Err(reject(
+                Family::Sql,
                 "not_select",
                 "只允许 SELECT / WITH 查询，当前语句不是查询。",
                 "把语句改写为 SELECT ...（或 WITH ... SELECT ...）后重试；写操作请走其他通道。",
@@ -197,6 +131,53 @@ pub fn check(sql: &str, cfg: &GuardConfig) -> Result<(), SqlRejection> {
     reject_bounded(&tokens, cfg)
 }
 
+/// 抽取 SQL 里 `FROM` / `JOIN` 引用的表名（`db.table` 形式保留库前缀，全部小写）。
+///
+/// 只服务候选评分：把"同一个令牌反复查某张表"归到同一个热点上。因此宁可少取
+/// （子查询的 `FROM` 由同一次扫描后续命中），也不做 AST 解析——下游只需要稳定的聚合键。
+pub fn table_refs(sql: &str) -> Vec<String> {
+    let masked = mask(sql);
+    let tokens = tokenize(&masked.text);
+    let mut out: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let Token::Word(keyword) = tokens[index] else {
+            index += 1;
+            continue;
+        };
+        if !(keyword.eq_ignore_ascii_case("from") || keyword.eq_ignore_ascii_case("join")) {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + 1;
+        while let Some(Token::Word(name)) = tokens.get(cursor).copied() {
+            if TABLE_CLAUSE_BOUNDARIES.contains(&name.to_ascii_lowercase().as_str()) {
+                break;
+            }
+            let mut table = name.to_ascii_lowercase();
+            cursor += 1;
+            if tokens.get(cursor) == Some(&Token::Punct('.'))
+                && let Some(Token::Word(column)) = tokens.get(cursor + 1).copied()
+            {
+                table.push('.');
+                table.push_str(&column.to_ascii_lowercase());
+                cursor += 2;
+            }
+            if !out.contains(&table) {
+                out.push(table);
+            }
+            // 逗号连接的多表：`FROM a, b`。
+            if tokens.get(cursor) == Some(&Token::Punct(',')) {
+                cursor += 1;
+                continue;
+            }
+            break;
+        }
+        index = cursor.max(index + 1);
+    }
+    out
+}
+
 /// 掩码后的 SQL：字符串字面量内容替换为空格，注释同样抹掉并只保留"出现过"的标记。
 struct Masked {
     text: String,
@@ -206,7 +187,7 @@ struct Masked {
 /// 把字符串字面量与注释从 SQL 里抹掉（保持长度无关，只用空白占位）。
 ///
 /// 为什么必须抹字符串：`WHERE name = 'a; DROP TABLE t'` 里的分号与关键字是数据，
-/// 不是语句结构；不抹就会把合法查询当成注入，也会把真正的注入藏进字面量里漏判。
+/// 不是语句结构；不抹就会把合法查询当成注入，也会让真正的注入藏进字面量里漏判。
 fn mask(sql: &str) -> Masked {
     let chars: Vec<char> = sql.chars().collect();
     let mut text = String::with_capacity(sql.len());
@@ -314,13 +295,14 @@ fn is_qualified(tokens: &[Token<'_>], index: usize) -> bool {
     previous_is_dot || next_is_dot
 }
 
-fn reject_multiple_statements(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
+fn reject_multiple_statements(tokens: &[Token<'_>]) -> Result<(), Rejection> {
     let mut body = tokens;
     if body.last() == Some(&Token::Punct(';')) {
         body = &body[..body.len() - 1];
     }
     if body.contains(&Token::Punct(';')) {
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "multiple_statements",
             "一次只允许执行一条 SQL，检测到多条语句。",
             "只保留其中一条 SELECT，去掉其它语句后重试。",
@@ -329,7 +311,7 @@ fn reject_multiple_statements(tokens: &[Token<'_>]) -> Result<(), SqlRejection> 
     Ok(())
 }
 
-fn reject_write_keywords(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
+fn reject_write_keywords(tokens: &[Token<'_>]) -> Result<(), Rejection> {
     for (index, token) in tokens.iter().enumerate() {
         let Token::Word(word) = token else {
             continue;
@@ -338,7 +320,8 @@ fn reject_write_keywords(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
         if !WRITE_KEYWORDS.contains(&upper.as_str()) || is_qualified(tokens, index) {
             continue;
         }
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "write_statement",
             format!("SQL 含写/DDL/管理关键字 {upper}，只允许只读查询。"),
             format!("去掉 {upper} 对应的语句，只保留 SELECT 后重试。"),
@@ -347,7 +330,7 @@ fn reject_write_keywords(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
     Ok(())
 }
 
-fn reject_system_tables(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
+fn reject_system_tables(tokens: &[Token<'_>]) -> Result<(), Rejection> {
     for (index, token) in tokens.iter().enumerate() {
         let Token::Word(word) = token else {
             continue;
@@ -362,7 +345,8 @@ fn reject_system_tables(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
         if tokens.get(index + 1) == Some(&Token::Punct('.'))
             && matches!(tokens.get(index + 2), Some(Token::Word(_)))
         {
-            return Err(SqlRejection::new(
+            return Err(reject(
+                Family::Sql,
                 "system_table",
                 "禁止查询 system.* 系统表。",
                 "改为查询业务库中的表，不要引用 system.*。",
@@ -372,7 +356,7 @@ fn reject_system_tables(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
     Ok(())
 }
 
-fn reject_bypass_functions(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
+fn reject_bypass_functions(tokens: &[Token<'_>]) -> Result<(), Rejection> {
     for (index, token) in tokens.iter().enumerate() {
         let Token::Word(word) = token else {
             continue;
@@ -384,7 +368,8 @@ fn reject_bypass_functions(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
         if tokens.get(index + 1) != Some(&Token::Punct('(')) {
             continue;
         }
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "bypass_function",
             format!("禁止调用 {word}：它绕过表名/库白名单校验。"),
             "改用普通 SELECT ... FROM <表> 读取同样的数据。",
@@ -397,7 +382,10 @@ fn reject_bypass_functions(tokens: &[Token<'_>]) -> Result<(), SqlRejection> {
 ///
 /// 只看表引用区而不是全句的 `x.y`：SELECT 列表与 WHERE 里的 `t.column` 是别名引用，
 /// 按它们判库名会把正常查询误杀。
-fn reject_schema_out_of_scope(tokens: &[Token<'_>], cfg: &GuardConfig) -> Result<(), SqlRejection> {
+fn reject_schema_out_of_scope(
+    tokens: &[Token<'_>],
+    cfg: &PreflightConfig,
+) -> Result<(), Rejection> {
     if cfg.allowed_schemas.is_empty() {
         return Ok(());
     }
@@ -426,7 +414,8 @@ fn reject_schema_out_of_scope(tokens: &[Token<'_>], cfg: &GuardConfig) -> Result
                 && starts_like_identifier(schema)
                 && !allowed.contains(&schema.to_ascii_lowercase())
             {
-                return Err(SqlRejection::new(
+                return Err(reject(
+                    Family::Sql,
                     "schema_out_of_scope",
                     format!("SQL 引用了允许范围外的库 {schema}。"),
                     format!(
@@ -452,7 +441,7 @@ fn starts_like_identifier(word: &str) -> bool {
 ///
 /// 这里的 `WHERE` 视为范围收敛：点查（`WHERE id = 1`）不需要 LIMIT 也不构成大范围扫描；
 /// 无 WHERE 的宽查询必须显式 LIMIT，上限由配置钉死。
-fn reject_bounded(tokens: &[Token<'_>], cfg: &GuardConfig) -> Result<(), SqlRejection> {
+fn reject_bounded(tokens: &[Token<'_>], cfg: &PreflightConfig) -> Result<(), Rejection> {
     let mut largest_limit: Option<i64> = None;
     let mut too_large: Option<i64> = None;
     for (index, token) in tokens.iter().enumerate() {
@@ -472,7 +461,8 @@ fn reject_bounded(tokens: &[Token<'_>], cfg: &GuardConfig) -> Result<(), SqlReje
     }
 
     if let Some(value) = too_large {
-        return Err(SqlRejection::new(
+        return Err(reject(
+            Family::Sql,
             "limit_too_large",
             format!("LIMIT {value} 超过单次查询上限 {}。", cfg.max_limit),
             format!(
@@ -493,7 +483,8 @@ fn reject_bounded(tokens: &[Token<'_>], cfg: &GuardConfig) -> Result<(), SqlReje
     if aggregate_only {
         return Ok(());
     }
-    Err(SqlRejection::new(
+    Err(reject(
+        Family::Sql,
         "unbounded",
         "查询既无 LIMIT 也无 WHERE，会全表/全范围扫描。",
         format!("加上 LIMIT（≤{}）或 WHERE 过滤条件后重试。", cfg.max_limit),
@@ -534,8 +525,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn allow(sql: &str) -> Result<(), SqlRejection> {
-        check(sql, &GuardConfig::default())
+    fn allow(sql: &str) -> Result<(), Rejection> {
+        check(sql, &PreflightConfig::default())
     }
 
     /// 字面量里的分号/关键字/注释都是数据：抹不干净会误杀合法查询。
@@ -573,9 +564,9 @@ mod tests {
 
     #[test]
     fn schema_rule_skips_alias_references() {
-        let cfg = GuardConfig {
+        let cfg = PreflightConfig {
             allowed_schemas: vec!["env_air".into()],
-            ..GuardConfig::default()
+            ..PreflightConfig::default()
         };
         // SELECT 列表与 WHERE 里的 `t.col` 是别名引用，不是库名。
         assert_eq!(
@@ -602,5 +593,27 @@ mod tests {
         );
         assert_eq!(sql_argument(&json!({"msg": "hi"})), None);
         assert_eq!(sql_argument(&json!({"sql": 5})), None);
+    }
+
+    /// 表引用抽取：逗号多表、JOIN、库前缀、去重；子查询里的 FROM 也各自命中。
+    #[test]
+    fn table_refs_collects_from_and_join_targets() {
+        assert_eq!(
+            table_refs("SELECT a.id FROM Env_Air.a JOIN env_air.b ON a.id = b.id LIMIT 10"),
+            vec!["env_air.a".to_string(), "env_air.b".to_string()]
+        );
+        assert_eq!(
+            table_refs("SELECT 1 FROM t1, t2 WHERE t1.id = t2.id"),
+            vec!["t1".to_string(), "t2".to_string()]
+        );
+        assert_eq!(
+            table_refs("SELECT * FROM (SELECT id FROM inner_t) x LIMIT 1"),
+            vec!["inner_t".to_string()]
+        );
+        assert!(table_refs("SELECT 1").is_empty());
+        assert!(
+            table_refs("SELECT id FROM t WHERE note = 'from fake'").len() == 1,
+            "字面量里的 from 是数据"
+        );
     }
 }

@@ -10,14 +10,14 @@
 | category | 职责 | 工具 | 可见性判定 |
 |---|---|---|---|
 | `basic` | 基础查询与计算：走查工具目录 / 取 schema / 按已发布模板取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
-| `analysis` | 工具列表分析、变更提交审计 | `admin_review_queue`、`admin_register_template`、`admin_set_visibility`、`admin_publish_capability` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
+| `analysis` | 工具列表分析、变更提交审计、定制化候选排名 | `admin_review_queue`、`admin_tool_candidates`、`admin_register_template`、`admin_set_visibility`、`admin_publish_capability` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
 | `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
 
 未知 id 落 `custom`（新增内置工具忘记归类时不会冒充 `admin`）。
 
 注解与行为一致：`admin_register_template` / `admin_set_visibility` / `admin_publish_capability`
 实际写库，声明 `readOnlyHint=false`（`destructiveHint=false`，不触碰数据源）；`admin_review_queue` /
-`admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
+`admin_tool_candidates` / `admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
 未声明时按上游 `read_only` 保守生成（`read_only=false` → `destructiveHint=true`、`readOnlyHint=false`）。
 
 维护通道的分工：`admin_register_template` 只产草案（`status=draft`，不改已发布版本）、
@@ -118,7 +118,7 @@ database = "analytics"    # 可选：透传给上游的默认库
 3. **渲染**：`CompiledTemplate::render_inline(&params)` → `RenderedSql{sql, params_hash}`。
    命名占位符在注册期已改写为 `?`，渲染期按 `bind_order` 依次替换成**转义后的字面量**
    （字符串 `\`→`\\`、`'`→`\'`；数字原样；`NULL`；`??` 是字面 `?`）。渲染完再用
-   sqlguard 前检一遍（`MCP_SQL_BLOCKED`），防止拼接产生注入。
+   `preflight::sql::check` 前检一遍（`MCP_SQL_BLOCKED`），防止拼接产生注入。
 4. **结果缓存**：键 `(template_id, version, params_hash)`，TTL 取模板的 `result_cache_ttl_s`
    （≤0 不缓存，上限 300 秒）。命中即不触达上游、不再计预算。
 5. **执行**：`UpstreamManager::resolve(scope, "{target.upstream}__{target.tool}")`，解析不到
