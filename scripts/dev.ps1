@@ -6,8 +6,8 @@
     -BackendPort  后端 MCP 面端口（默认 8000）
     -AdminPort    后端管理面端口（默认 8080，必须与 MCP 面不同）
     -WebPort      前端 Vite 端口（默认 5173，被占用时自动 +1 顺延）
-    -ClickHouseDsn 可选。给了就生成 .dev-data/policy.toml（追加 dev-clickhouse 数据源）并注入 JUMCP_DEV_CLICKHOUSE_DSN；
-                  形如 http://<user>:<password>@<host>:<port>，凭证只经环境变量传递
+    -ClickHouseDsn 已废弃：ClickHouse 只能作为上游 MCP 接入（在管理面注册，模板用 target 指向它），
+                  服务进程自己不再持有任何 DSN；传了这个参数会直接报错退出
     -ResetData    启动前清空 .dev-data/（默认保留，便于连续试用）
     -NoWeb        只起后端
   两个监听面（不能相同）：MCP 面挂 `/mcp`、`/internal/mcp/*`、`/health`；管理面挂 `/admin/*` 与管理台静态站。
@@ -173,27 +173,12 @@ try {
     exit 1
   }
 
-  # 配置：可选 ClickHouse 数据源
+  # 配置：ClickHouse 只经上游 MCP 接入，服务进程不持有任何 DSN，策略文件里也没有数据源段。
   $policyFile = $BasePolicy
   $backendEnv = @{}
   if ($ClickHouseDsn -ne '') {
-    $policyFile = Join-Path $DataDir 'policy.toml'
-    Copy-Item $BasePolicy $policyFile -Force
-    $dsnBlock = @"
-
-[[datasources]]
-name = "dev-clickhouse"
-engine = "clickhouse"
-readonly = true
-allowed_schemas = []
-statement_timeout_ms = 15000
-dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
-"@
-    Add-Content -Path $policyFile -Value $dsnBlock -Encoding utf8
-    $backendEnv['JUMCP_DEV_CLICKHOUSE_DSN'] = $ClickHouseDsn
-    Write-Host "==> 已生成临时数据源配置：$policyFile（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
-  } else {
-    Write-Host '==> 未提供 -ClickHouseDsn：使用 config/policy.toml 原样（内置查询工具不接 ClickHouse，ClickHouse 需通过上游 MCP 接入）'
+    Write-Host '错误：-ClickHouseDsn 已废弃：ClickHouse 需作为上游 MCP 接入（POST /admin/upstreams 注册，模板用 target 指向该上游）。' -ForegroundColor Red
+    exit 1
   }
 
   # 后端

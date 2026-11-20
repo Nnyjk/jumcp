@@ -156,6 +156,7 @@ pub(crate) fn template_definition(id: &str) -> Value {
         "risk": "read",
         "description": "人工登记的模板",
         "sql": "SELECT day FROM public.orders WHERE created_at >= :start_date",
+        "target": {"upstream": "ch", "tool": "query"},
         "params": [{"name":"start_date","type":"timestamp","required":true,"nullable":false}],
         "constraints": {
             "allowed_schemas": ["public"],

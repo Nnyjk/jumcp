@@ -242,6 +242,7 @@ pub(super) fn builtin_label(id: &str) -> &'static str {
         "admin_review_queue" => "审核队列",
         "admin_audit_queries" => "审计查询",
         "admin_set_visibility" => "改可见性",
+        "admin_publish_capability" => "发布能力",
         _ => "内置工具",
     }
 }

@@ -34,7 +34,7 @@ pub fn default_message(code: &str) -> &str {
         "MCP_FORBIDDEN" => "拒绝执行：cookie 身份的非 GET 请求必须同源",
         "MCP_RATE_LIMITED" => "请求过于频繁：请稍后重试",
         "MCP_BAD_REQUEST" => "请求体不合法",
-        "MCP_PREFLIGHT_REQUIRED" => "发布前必须完成 EXPLAIN 预检",
+        "MCP_PREFLIGHT_REQUIRED" => "发布前必须完成模板预检：回执指纹与待发布定义一致",
         "MCP_GROUP_CONFLICT" => "组已存在或由配置维护，管理面不可重复创建",
         "MCP_GROUP_NOT_FOUND" => "组不存在",
         "MCP_GROUP_RESERVED" => "保留组名（builtin/admin）不可创建、修改或删除",

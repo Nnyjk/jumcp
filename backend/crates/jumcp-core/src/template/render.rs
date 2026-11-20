@@ -11,8 +11,12 @@ use std::collections::{HashMap, HashSet};
 
 /// 注册期门禁：结构变体白名单 → 命名占位符改写 → 渲染 → sqlguard 复核。
 ///
-/// 保留默认入口（PostgreSQL）供既有调用方/测试使用；生产入口必须按数据源方言调用
-/// [`compile_with_dialect`]，否则 ClickHouse 会拿到 `$n` 占位符。
+/// 保留默认入口（PostgreSQL）供既有调用方/测试使用；生产入口必须按**上游 SQL 方言**
+/// 调用 [`compile_with_dialect`]，否则 ClickHouse 会拿到 `$n` 占位符。
+///
+/// 方言不是"本服务的数据库方言"——本进程不持有任何连接；它只决定占位符改写与渲染期
+/// sqlguard 复核按哪套词法走，因此必须与模板 `target` 指向的上游一致（当前生产固定
+/// ClickHouse，见 `docs/mcp-router.md` 的 `db_run_template` 小节）。
 pub fn compile(def: TemplateDef) -> Result<CompiledTemplate, McpError> {
     compile_with_dialect(def, Dialect::Postgres)
 }
@@ -220,6 +224,22 @@ impl CompiledTemplate {
         })
     }
 
+    /// 内联渲染：把位置占位符换成转义后的字面量，得到可直接发给上游 MCP 的一段 SQL。
+    ///
+    /// 上游 `query` 工具只收 SQL 文本（无参数数组），绑定值必须在本地落地；
+    /// 字面量由 `render` 校验过的参数派生，落地后再过一遍 sqlguard，防拼接引入的新结构。
+    pub fn render_inline(&self, params: &Value) -> Result<RenderedSql, McpError> {
+        let prepared = self.render(params)?;
+        let sql = inline_values(&prepared.sql, &prepared.values)?;
+        validate_rendered(&sql, &self.def.constraints.allowed_schemas, self.dialect)?;
+        self.check_forbidden_columns(&sql)?;
+        Ok(RenderedSql {
+            sql,
+            params_hash: prepared.params_hash,
+            variant_id: prepared.variant_id,
+        })
+    }
+
     fn select_variant(&self, resolved: &HashMap<&str, Value>) -> Option<&CompiledVariant> {
         self.variants.iter().find(|v| {
             v.when
@@ -244,6 +264,69 @@ pub struct PreparedQuery {
     pub values: Vec<Value>,
     pub params_hash: String,
     pub variant_id: Option<String>,
+}
+
+/// 内联渲染产物：`sql` 已不含占位符，只带上游需要的文本与缓存键。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedSql {
+    pub sql: String,
+    pub params_hash: String,
+    /// 命中的变体 id：响应里要能说明"这次用的是哪条变体"。
+    pub variant_id: Option<String>,
+}
+
+/// 把 `?` 占位符按序替换为转义后的字面量。
+///
+/// `??` 是字面 `?` 的转义（与 `check_placeholders` 同一约定），原样保留；
+/// 数量不符即报错——多一个或少一个都说明绑定序列与 SQL 已经错位。
+fn inline_values(sql: &str, values: &[Value]) -> Result<String, McpError> {
+    let mut out = String::with_capacity(sql.len() + values.len() * 8);
+    let mut next = values.iter();
+    let mut used = 0usize;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '?' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'?') {
+            chars.next();
+            out.push('?');
+            continue;
+        }
+        let value = next.next().ok_or_else(|| {
+            McpError::new(
+                "MCP_PARAM_COUNT_MISMATCH",
+                json!({"expected": values.len(), "provided": used + 1}),
+            )
+        })?;
+        out.push_str(&literal(value)?);
+        used += 1;
+    }
+    if used != values.len() {
+        return Err(McpError::new(
+            "MCP_PARAM_COUNT_MISMATCH",
+            json!({"expected": values.len(), "provided": used}),
+        ));
+    }
+    Ok(out)
+}
+
+/// 单个绑定值的 SQL 字面量。类型闭集来自 `validate_scalar`：字符串/数值/布尔/NULL。
+fn literal(value: &Value) -> Result<String, McpError> {
+    match value {
+        Value::String(s) => Ok(format!(
+            "'{}'",
+            s.replace('\\', "\\\\").replace('\'', "\\'")
+        )),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(if *b { "TRUE" } else { "FALSE" }.to_string()),
+        Value::Null => Ok("NULL".to_string()),
+        other => Err(McpError::new(
+            "MCP_VALIDATION_ERROR",
+            json!({"fields": [{"field": "params", "rule": "scalar_required", "message": format!("绑定值必须标量，实际是 {other}")}]}),
+        )),
+    }
 }
 
 /// 标识符引用：只对白名单里的合法标识符加双引号，绝不拼值。

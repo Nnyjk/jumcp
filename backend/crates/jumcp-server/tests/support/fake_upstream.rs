@@ -20,9 +20,16 @@ pub struct FakeUpstream {
     pub tool_names: Arc<Mutex<Option<Vec<String>>>>,
     pub requests: Arc<Mutex<Vec<Value>>>,
     pub auth: Arc<Mutex<Option<String>>>,
+    /// `query` 工具的结构化结果；`None` = 与内置 clickhouse 包同形的默认结果。
+    pub query_result: Arc<Mutex<Option<Value>>>,
 }
 
 impl FakeUpstream {
+    /// 替换 `query` 工具的 structuredContent（用于构造超预算/异常形状的结果）。
+    pub fn set_query_result(&self, payload: Value) {
+        *self.query_result.lock().expect("lock") = Some(payload);
+    }
+
     pub fn set_tools(&self, names: &[&str]) {
         *self.tool_names.lock().expect("lock") =
             Some(names.iter().map(|n| (*n).to_string()).collect());
@@ -67,6 +74,34 @@ fn fake_envelope(fake: &FakeUpstream, request: &Value) -> Value {
         "tools/call" => {
             let tool = request["params"]["name"].as_str().unwrap_or("");
             fake.requests.lock().expect("lock").push(request.clone());
+            if tool == "query" {
+                // 形状与内置 clickhouse 包一致；收到的 arguments 由 `requests` 全量记录供断言。
+                let payload = fake
+                    .query_result
+                    .lock()
+                    .expect("lock")
+                    .clone()
+                    .unwrap_or_else(|| {
+                        json!({
+                            "columns": [
+                                {"name": "day", "type": "String"},
+                                {"name": "orders", "type": "UInt64"}
+                            ],
+                            "rows": [["2026-11-18", 3]],
+                            "row_count": 1,
+                            "truncated": false,
+                            "elapsed_ms": 7
+                        })
+                    });
+                return json!({
+                    "jsonrpc":"2.0","id":id,
+                    "result":{
+                        "content":[{"type":"text","text":payload.to_string()}],
+                        "structuredContent": payload,
+                        "isError": false
+                    }
+                });
+            }
             if tool == "explode" {
                 json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"boom"}})
             } else {

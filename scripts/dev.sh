@@ -5,8 +5,8 @@
 #   --backend-port  后端 MCP 面端口（默认 8000）
 #   --admin-port    后端管理面端口（默认 8080，必须与 MCP 面不同）
 #   --web-port      前端 Vite 端口（默认 5173，被占用时自动 +1 顺延）
-#   --clickhouse-dsn 可选。给了就生成 .dev-data/policy.toml（追加 dev-clickhouse 数据源）并注入 JUMCP_DEV_CLICKHOUSE_DSN；
-#                   形如 http://<user>:<password>@<host>:<port>，凭证只经环境变量传递
+#   --clickhouse-dsn 已废弃：ClickHouse 只能作为上游 MCP 接入（在管理面注册，模板用 target 指向它），
+#                   服务进程自己不再持有任何 DSN；传了这个参数会直接报错退出
 #   --reset-data    启动前清空 .dev-data/（默认保留，便于连续试用）
 #   --no-web        只起后端
 #
@@ -179,26 +179,12 @@ if [ "$RESET_DATA" = "1" ] && [ -d "$DATA_DIR" ]; then
 fi
 mkdir -p "$LOG_DIR"
 
-# 配置：可选 ClickHouse 数据源
+# 配置：ClickHouse 只经上游 MCP 接入，服务进程不持有任何 DSN，策略文件里也没有数据源段。
 POLICY_FILE="$BASE_POLICY"
 BACKEND_ENV=(env)
 if [ -n "$CLICKHOUSE_DSN" ]; then
-  POLICY_FILE="$DATA_DIR/policy.toml"
-  cp "$BASE_POLICY" "$POLICY_FILE"
-  cat >>"$POLICY_FILE" <<'EOF'
-
-[[datasources]]
-name = "dev-clickhouse"
-engine = "clickhouse"
-readonly = true
-allowed_schemas = []
-statement_timeout_ms = 15000
-dsn_env = "JUMCP_DEV_CLICKHOUSE_DSN"
-EOF
-  BACKEND_ENV+=(JUMCP_DEV_CLICKHOUSE_DSN="$CLICKHOUSE_DSN")
-  echo "==> 已生成临时数据源配置：$POLICY_FILE（数据源 dev-clickhouse，DSN 走 JUMCP_DEV_CLICKHOUSE_DSN）"
-else
-  echo "==> 未提供 --clickhouse-dsn：使用 config/policy.toml 原样（内置查询工具不接 ClickHouse，ClickHouse 需通过上游 MCP 接入）"
+  echo "错误：--clickhouse-dsn 已废弃：ClickHouse 需作为上游 MCP 接入（POST /admin/upstreams 注册，模板用 target 指向该上游）。" >&2
+  exit 1
 fi
 
 # 后端

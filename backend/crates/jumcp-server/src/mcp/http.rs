@@ -176,6 +176,7 @@ mod category_tests {
             "admin_review_queue",
             "admin_register_template",
             "admin_set_visibility",
+            "admin_publish_capability",
         ] {
             assert_eq!(
                 builtin_category(id),

@@ -36,7 +36,7 @@
 | `from_status` | string \| null | 生命周期迁移前状态；无状态对象为 `null` |
 | `to_status` | string \| null | 迁移后状态 |
 | `changes` | array | 字段级真实前后值 `[{field, before, after}]`；无变化为 `[]` |
-| `approval` | object \| null | 外部审批引用（见 §5） |
+| `approval` | object \| null | 审批引用（两种来源，见 §5） |
 | `reason` | string \| null | 退回等动作的说明 |
 | `correlation_id` | string \| null | 关联事件 id：`policy_decision` 指向同一次失败先写入的 `tool_call.event_id` |
 | `data` | object | 事件专属明细（入参、脚本、token、哈希、版本等） |
@@ -125,10 +125,11 @@ approval: { id, source, verified, submitted_by, approved_by, approved_at } | nul
 ```
 
 - `publish` 与已发布定义的 `update_definition` 携带 `approval`；草稿阶段的 `update_definition`、`create`/`submit`/`reject`/`visibility`/`deprecate` 为 `null`。
-- `source` 恒为 `"external"`：本系统没有接入外部审批系统，只留痕。
-- `verified` 恒为 `false`：单号真伪不由本系统校验，如实标注。
-- `id` 来自发布或已发布定义修订请求体的 `approval_id`，格式不受约束。
+- 两种来源，按**谁批准**区分：
+  - `source="external"`：人走 HTTP 管理面（`POST /admin/capabilities/{id}/publish`、已发布定义的 `PUT .../definition`），必带请求体里的 `approval_id`，缺则 `MCP_APPROVAL_REQUIRED`。`verified=false`——单号真伪不由本系统校验，如实标注；`id` 格式不受约束。
+  - `source="agent"`：admin agent 走 MCP `admin_publish_capability`。`verified=true`——批准人身份不是自述，而是已鉴权的 agent token（`access_tokens` 查表 + 常量时间比较）派生出的身份。`id` 由服务端生成 `agent:<actor_id>:<rfc3339>`，或由调用方在 `approval_id` 里给出（仍记 `source="agent"`，因为批准人是 agent）。
 - `submitted_by` 取提审时的鉴权派生身份；`approved_by` 取发布或定义修订请求的鉴权派生身份（表单不能自述批准人）。两者如实记录，当前不限制二者相同。
+- `admin_publish_capability` 对 `draft` 能力由服务端先提审（提审人 = 当前 agent）再发布，两步都留痕：`submit` 事件的 `approval` 为 `null`，`publish` 事件带上述 `agent` 载荷。
 
 ## 6. 审计查询
 
@@ -392,7 +393,7 @@ DELETE /admin/groups/{code}
 
 ## 8. 发布与可见性是两步
 
-1. `POST /admin/capabilities/{id}/publish`：`review → published`，必须带外部审批单号 `approval_id`；批准人取当前 token 派生身份并记入 `approval.approved_by`。
+1. `POST /admin/capabilities/{id}/publish`：`review → published`，必须带外部审批单号 `approval_id`；批准人取当前 token 派生身份并记入 `approval.approved_by`（`source="external"`、`verified=false`）。MCP 侧对应 `admin_publish_capability`：admin agent 自审发布，`source="agent"`、`verified=true`，可同一次调用顺带设置可见性；它同样要求能力处于提审态（`draft` 会先由服务端提审，`deprecated` 直接拒绝），且不能改定义。
 2. `POST /admin/capabilities/{id}/visibility`：设置 `discoverable` / `callable`。
 
 **发布 ≠ 对调用方开放**：只有两个开关都打开、且调用方属于该能力所在组，才既出现在 `tools/list`/`search` 又能 `tools/call`。管理台「审批」分栏把两步合并为一次操作，但仍是两次独立请求；第二步失败不会回滚已发布状态，界面会明确提示「已发布但可见性保存失败」。

@@ -2,12 +2,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use jumcp_core::audit::AuditLog;
-use jumcp_core::config::{DatasourceRef, GroupDef, RoleDef, Settings, TenantPolicy};
+use jumcp_core::config::{GroupDef, RoleDef, Settings, TenantPolicy};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::registry::CapabilityStore;
 use jumcp_core::template::TemplateRegistry;
 use jumcp_server::admin::AdminState;
-use jumcp_server::executor::{ExecFuture, QueryExecutor, QueryParams};
 use jumcp_server::mcp::{McpServer, http_router};
 use jumcp_server::service::Service;
 use jumcp_server::upstream::UpstreamManager;
@@ -17,14 +16,6 @@ use tower::ServiceExt;
 
 // 管理面只认会话 cookie：这就是 `seed_admin_accounts` 建好的 alice 会话 id。
 pub(crate) const ALICE_TOKEN: &str = crate::support::ALICE_TOKEN;
-
-struct FakeExecutor;
-
-impl QueryExecutor for FakeExecutor {
-    fn execute<'a>(&'a self, _scope: &'a EffectiveScope, _q: &'a QueryParams) -> ExecFuture<'a> {
-        Box::pin(async { Ok(json!({"rows": [], "row_count": 0, "tokens": 1})) })
-    }
-}
 
 pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
     let mut roles = std::collections::HashMap::new();
@@ -85,14 +76,6 @@ pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
         budget_overflow: "fail".into(),
         upstream_stdio: stdio,
         upstream_write: write,
-        datasources: vec![DatasourceRef {
-            name: "main".into(),
-            dsn_env: "JUMCP_TEST_MAIN_DSN".into(),
-            engine: "clickhouse".into(),
-            readonly: true,
-            allowed_schemas: vec![],
-            statement_timeout_ms: 5000,
-        }],
         ..Default::default()
     }
 }
@@ -108,6 +91,20 @@ pub(crate) fn harness() -> Harness {
 }
 
 pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
+    assemble(stdio, write, None)
+}
+
+/// 与 `harness_with(false, false)` 相同，但换成显式的 SQL 前置拦截配置：
+/// 库白名单必须能按用例切换，而 `from_env` 是进程全局的。
+pub(crate) fn harness_with_sql_guard(guard: jumcp_server::sql_guard::GuardConfig) -> Harness {
+    assemble(false, false, Some(Arc::new(guard)))
+}
+
+fn assemble(
+    stdio: bool,
+    write: bool,
+    guard: Option<Arc<jumcp_server::sql_guard::GuardConfig>>,
+) -> Harness {
     let audit = Arc::new(AuditLog::open(":memory:").expect("audit"));
     let store = Arc::new(CapabilityStore::open(":memory:", Some(audit.clone())).expect("store"));
     let boot = settings(stdio, write);
@@ -116,7 +113,6 @@ pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
     let ttl = boot.admin_session_ttl_secs;
     let service = Arc::new(
         Service::new(boot)
-            .with_executor(Arc::new(FakeExecutor))
             .with_audit(audit.clone())
             .with_templates(registry)
             .with_upstreams(manager)
@@ -128,8 +124,11 @@ pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
         store: store.clone(),
         transport_key: Some(crate::support::transport_key()),
     };
-    let app = jumcp_server::admin::router(admin)
-        .merge(http_router(Arc::new(McpServer::from_arc(service))));
+    let mut server = McpServer::from_arc(service);
+    if let Some(guard) = guard {
+        server = server.with_sql_guard(Some(guard));
+    }
+    let app = jumcp_server::admin::router(admin).merge(http_router(Arc::new(server)));
     Harness { app, store, audit }
 }
 

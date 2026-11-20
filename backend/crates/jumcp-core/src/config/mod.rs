@@ -7,12 +7,9 @@ use crate::budget::OverflowPolicy;
 use crate::secret::SecretKey;
 use std::path::Path;
 
-mod datasource;
 mod principals;
 mod tenant;
 
-use datasource::DatasourceFile;
-pub use datasource::DatasourceRef;
 pub use principals::{AgentPrincipal, AgentTokens, constant_time_eq, is_principal_id};
 pub use tenant::{GroupDef, RoleDef, TenantPolicy};
 
@@ -117,7 +114,6 @@ pub struct Settings {
     /// 用途分离（传输 vs 落库），泄露一把不会连带另一把。
     pub transport_key: Option<SecretKey>,
     pub policy: TenantPolicy,
-    pub datasources: Vec<DatasourceRef>,
 }
 
 impl Default for Settings {
@@ -143,7 +139,6 @@ impl Default for Settings {
             secret_key: None,
             transport_key: None,
             policy: TenantPolicy::default(),
-            datasources: vec![],
         }
     }
 }
@@ -208,9 +203,6 @@ impl Settings {
         if Path::new(&s.config_file).exists() {
             let text = std::fs::read_to_string(&s.config_file).map_err(|e| e.to_string())?;
             s.policy = toml::from_str(&text).map_err(|e| format!("TOML 解析失败: {e}"))?;
-            let extra: DatasourceFile =
-                toml::from_str(&text).map_err(|e| format!("TOML datasources 解析失败: {e}"))?;
-            s.datasources = extra.datasources;
         }
         s.validate()?;
         Ok(s)
@@ -283,32 +275,6 @@ impl Settings {
                 ));
             }
         }
-        for ds in &self.datasources {
-            ds.validate()?;
-        }
-        // fail-closed：声明了数据源就必须恰好一个 readonly；非 readonly 数据源不允许静默忽略。
-        if !self.datasources.is_empty() {
-            let mutable: Vec<&str> = self
-                .datasources
-                .iter()
-                .filter(|ds| !ds.readonly)
-                .map(|ds| ds.name.as_str())
-                .collect();
-            if !mutable.is_empty() {
-                return Err(format!(
-                    "数据源必须全部 readonly，当前非只读声明: {}",
-                    mutable.join(",")
-                ));
-            }
-            if self.datasources.len() != 1 {
-                let names: Vec<&str> = self.datasources.iter().map(|ds| ds.name.as_str()).collect();
-                return Err(format!(
-                    "必须恰好一个 readonly 数据源，当前声明了 {} 个: {}",
-                    self.datasources.len(),
-                    names.join(",")
-                ));
-            }
-        }
         // intersect 须租户开关开启（与 Python validator 一致）。
         if self.groups_mode == "intersect" && !self.policy.allow_intersect {
             return Err("groups_mode=intersect 但租户未开 allow_intersect".to_string());
@@ -322,13 +288,6 @@ impl Settings {
         } else {
             OverflowPolicy::Fail
         }
-    }
-    /// 唯一主数据源：第一个 readonly 声明。
-    ///
-    /// 执行面只支持一个主数据源，多个 readonly 声明由启动入口显式拒绝；
-    /// 引擎是否已实现同样在启动入口按 `engine` 分发时判定（fail-closed）。
-    pub fn primary_datasource(&self) -> Option<&DatasourceRef> {
-        self.datasources.iter().find(|d| d.readonly)
     }
     /// 供测试注入已校验策略。
     pub fn with_policy(mut self, policy: TenantPolicy) -> Result<Self, String> {

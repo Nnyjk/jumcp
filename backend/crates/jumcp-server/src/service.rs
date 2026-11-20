@@ -1,9 +1,8 @@
-//! 服务聚合：配置、catalog、执行委托、审计与按会话预算。
+//! 服务聚合：配置、catalog、审计与按会话预算。
 //! 为什么预算放在 Service 而不是每个 handler：schema/result 累计必须跨调用共享。
 
 use crate::catalog::{Capability, Catalog};
 use crate::discovery;
-use crate::executor::{DefaultQueryExecutor, QueryExecutor};
 use crate::upstream::UpstreamManager;
 use jumcp_core::audit::{ActorRef, AuditEvent, AuditLog, ChainVerdict};
 use jumcp_core::budget::{
@@ -53,7 +52,6 @@ pub struct Service {
     pub catalog: Catalog,
     /// 能力注册表：发现面每次请求从这里按 scope 现查，因此管理面发布即时可见。
     pub store: Option<Arc<CapabilityStore>>,
-    pub executor: Arc<dyn QueryExecutor>,
     pub audit: Option<Arc<AuditLog>>,
     pub scope: Option<EffectiveScope>,
     pub budget: Mutex<BudgetLedger>,
@@ -72,7 +70,6 @@ impl Service {
             settings,
             catalog: Catalog::default(),
             store: None,
-            executor: Arc::new(DefaultQueryExecutor),
             audit: None,
             scope,
             budget: Mutex::new(BudgetLedger::new(None)),
@@ -80,10 +77,6 @@ impl Service {
             upstreams: None,
             session_id: "default".to_string(),
         }
-    }
-    pub fn with_executor(mut self, executor: Arc<dyn QueryExecutor>) -> Self {
-        self.executor = executor;
-        self
     }
     pub fn with_catalog(mut self, catalog: Catalog) -> Self {
         self.catalog = catalog;
@@ -151,20 +144,6 @@ impl Service {
             Some(store) => store.authenticate_access_token(presented),
             None => Ok(None),
         }
-    }
-
-    /// 连接声明的 schema 白名单（请求只能收窄，不能扩大）。
-    pub fn connection_schemas(&self) -> Vec<String> {
-        self.settings
-            .primary_datasource()
-            .map(|d| d.allowed_schemas.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn statement_timeout_ms(&self) -> i64 {
-        self.settings
-            .primary_datasource()
-            .map_or(15_000, |d| d.statement_timeout_ms)
     }
 
     /// 发现面唯一可见集：builtin 常驻工具 ∪ 注册表可见行 ∪ 内存目录可见条目。
@@ -383,32 +362,17 @@ impl Service {
 }
 
 pub fn health(settings: &Settings) -> Value {
-    let datasource = settings.primary_datasource().map(|ds| {
-        json!({
-            "name": ds.name,
-            "engine": ds.engine,
-            "readonly": ds.readonly,
-            "allowed_schemas": ds.allowed_schemas
-        })
-    });
     json!({
         "status": "ok",
-        "groups": settings.policy.group_codes().len(),
-        "datasource": datasource
+        "groups": settings.policy.group_codes().len()
     })
 }
 
 /// `/health` 的报告体：两个监听面共用同一份口径（各自挂一次，但内容一致）。
 ///
 /// 为什么两面都要有：healthcheck 可能打管理口也可能打 MCP 口，只在一个面应答会让
-/// 另一半的探针永远失败。报告里只有版本、数据源名与审计链判定，不含任何凭据。
+/// 另一半的探针永远失败。报告里只有版本与审计链判定，不含任何凭据。
 pub fn health_report(service: &Service) -> Value {
-    let settings = &service.settings;
-    let datasources: Vec<Value> = settings
-        .datasources
-        .iter()
-        .map(|d| json!({"name": d.name, "engine": d.engine, "readonly": d.readonly}))
-        .collect();
     // 链被篡改时 status 仍是 200（服务确实在跑），但 audit_chain 显式报警，供看板直接着色。
     let (chain, detail) = match &service.audit {
         Some(log) => match log.verify_chain() {
@@ -422,7 +386,6 @@ pub fn health_report(service: &Service) -> Value {
     let mut body = json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "datasources": datasources,
         "audit_chain": chain
     });
     if !detail.is_null() {

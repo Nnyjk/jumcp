@@ -62,6 +62,9 @@ fn with_audit_context(mut payload: Value, context: &Value) -> Value {
 
 pub struct McpServer {
     service: Arc<Service>,
+    /// 第三方 SQL 前置拦截配置：`None` 表示关闭拦截（排障/对照测试用），
+    /// 生产从 `JUMCP_SQL_ALLOWED_SCHEMAS` 构造，见 [`McpServer::with_sql_guard`]。
+    sql_guard: Option<Arc<crate::sql_guard::GuardConfig>>,
     /// `initialize` 的 `_meta` 通道解析出的会话 scope（低于 HTTP 的 `X-MCP-Tool-Groups`）。
     /// 按 actor_id 分桶：多身份共用同一进程时，一个 agent 声明的收窄 scope 不能套到另一个身上。
     session_scope: Mutex<HashMap<String, EffectiveScope>>,
@@ -74,8 +77,14 @@ impl McpServer {
     pub fn from_arc(service: Arc<Service>) -> Self {
         Self {
             service,
+            sql_guard: Some(Arc::new(crate::sql_guard::GuardConfig::from_env())),
             session_scope: Mutex::new(HashMap::new()),
         }
+    }
+    /// 替换 SQL 前置拦截配置：测试按用例切换库白名单，`None` 关闭拦截。
+    pub fn with_sql_guard(mut self, sql_guard: Option<Arc<crate::sql_guard::GuardConfig>>) -> Self {
+        self.sql_guard = sql_guard;
+        self
     }
     pub fn service(&self) -> &Service {
         &self.service

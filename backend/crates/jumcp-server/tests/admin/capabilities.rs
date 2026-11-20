@@ -141,6 +141,7 @@ fn daily_template_definition() -> Value {
         "risk": "read",
         "description": "按日汇总订单",
         "sql": "SELECT day FROM public.orders WHERE day >= :day",
+        "target": {"upstream": "ch", "tool": "query"},
         "params": [{"name":"day","type":"date","required":true,"nullable":false}],
         "constraints": {"allowed_schemas": ["public"]}
     })
