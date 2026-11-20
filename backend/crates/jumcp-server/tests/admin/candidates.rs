@@ -228,7 +228,11 @@ async fn distinct_tokens_add_a_small_capped_bonus() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         candidates_of(&body),
-        vec![json!("env.crowded"), json!("env.shared"), json!("env.single")],
+        vec![
+            json!("env.crowded"),
+            json!("env.shared"),
+            json!("env.single")
+        ],
         "多令牌对象越过单令牌对象；广度加分封顶后不会无限膨胀"
     );
 
@@ -344,11 +348,7 @@ async fn window_and_limit_are_clamped() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["window"]["days"], json!(1), "下界夹紧到 1");
 
-    let (status, body) = call(
-        &h.app,
-        Req::get("/admin/tools/candidates?window_days=999"),
-    )
-    .await;
+    let (status, body) = call(&h.app, Req::get("/admin/tools/candidates?window_days=999")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["window"]["days"], json!(30), "上界夹紧到 30");
 

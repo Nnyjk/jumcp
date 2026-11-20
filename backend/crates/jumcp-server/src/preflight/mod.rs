@@ -180,8 +180,11 @@ mod tests {
         assert_eq!(blocked.family, Family::File);
         assert_eq!(blocked.rule, "file_traversal");
 
-        let blocked = check_call(&json!({"url": "http://169.254.169.254/latest/meta-data/"}), &cfg)
-            .expect("应拦截");
+        let blocked = check_call(
+            &json!({"url": "http://169.254.169.254/latest/meta-data/"}),
+            &cfg,
+        )
+        .expect("应拦截");
         assert_eq!(blocked.family, Family::Http);
         assert_eq!(blocked.rule, "http_private_target");
 

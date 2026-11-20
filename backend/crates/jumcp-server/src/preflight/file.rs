@@ -171,7 +171,10 @@ fn is_absolute(path: &str) -> bool {
 }
 
 fn is_secret_path(path: &str) -> bool {
-    if SECRET_FRAGMENTS.iter().any(|fragment| path.contains(fragment)) {
+    if SECRET_FRAGMENTS
+        .iter()
+        .any(|fragment| path.contains(fragment))
+    {
         return true;
     }
     let file_name = path.rsplit('/').next().unwrap_or(path);
@@ -238,9 +241,7 @@ mod tests {
             "C:\\Windows\\System32\\config\\SAM",
         ] {
             assert_eq!(
-                check_args(json!({"path": path}))
-                    .expect_err(path)
-                    .rule,
+                check_args(json!({"path": path})).expect_err(path).rule,
                 "file_secret_path",
                 "{path}"
             );
@@ -255,14 +256,22 @@ mod tests {
         };
         assert_eq!(check(&json!({"path": "/data/a/b.csv"}), &cfg), Ok(()));
         assert_eq!(check(&json!({"path": "C:/exports/x.csv"}), &cfg), Ok(()));
-        assert_eq!(check(&json!({"path": "/database/secret.csv"}), &cfg).expect_err("越界").rule, "file_out_of_scope");
+        assert_eq!(
+            check(&json!({"path": "/database/secret.csv"}), &cfg)
+                .expect_err("越界")
+                .rule,
+            "file_out_of_scope"
+        );
         // 相对路径不受根目录约束（上游按自己的根解释）。
         assert_eq!(check(&json!({"path": "reports/a.csv"}), &cfg), Ok(()));
     }
 
     #[test]
     fn non_path_arguments_are_not_file_calls() {
-        assert_eq!(check_args(json!({"table": "t", "filter": {"a": 1}})), Ok(()));
+        assert_eq!(
+            check_args(json!({"table": "t", "filter": {"a": 1}})),
+            Ok(())
+        );
         assert_eq!(check_args(json!({"path": 5})), Ok(()));
     }
 }

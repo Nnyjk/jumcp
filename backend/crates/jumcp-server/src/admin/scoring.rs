@@ -154,9 +154,7 @@ fn first_string<'a>(map: &'a serde_json::Map<String, Value>, keys: &[&str]) -> O
 /// 把它们留在键里会让同一个接口的每次调参都变成一个新对象，规则一永远攒不出连续段。
 fn url_subject(url: &str) -> Option<String> {
     let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let rest = rest
-        .find(['?', '#'])
-        .map_or(rest, |end| &rest[..end]);
+    let rest = rest.find(['?', '#']).map_or(rest, |end| &rest[..end]);
     let (authority, path) = match rest.find('/') {
         Some(index) => (&rest[..index], &rest[index..]),
         None => (rest, "/"),

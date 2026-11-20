@@ -1152,19 +1152,12 @@ async fn admin_tool_candidates_matches_the_admin_endpoint() {
     // 管理台的这次查询本身不得变成一个候选（平台面事件不进评分）。
     let after = call_tool(&h.app, ADMIN_TOKEN, "admin_tool_candidates", json!({})).await;
     assert_eq!(
-        after["result"]["structuredContent"]["candidates"],
-        via_mcp["candidates"],
+        after["result"]["structuredContent"]["candidates"], via_mcp["candidates"],
         "读候选的动作不能改变候选"
     );
 
     // 非 admin 身份：与"不存在"同构，不泄露候选内容。
-    let denied = call_tool(
-        &h.app,
-        ANALYST_TOKEN,
-        "admin_tool_candidates",
-        json!({}),
-    )
-    .await;
+    let denied = call_tool(&h.app, ANALYST_TOKEN, "admin_tool_candidates", json!({})).await;
     assert_eq!(err_code(&denied), "MCP_CAPABILITY_NOT_FOUND", "{denied}");
 }
 

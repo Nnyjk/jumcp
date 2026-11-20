@@ -1,5 +1,5 @@
-use super::*;
 use super::scoring::CallFact;
+use super::*;
 
 /// 统计窗口默认/上限（天）：越界夹紧而不是报错。
 pub(crate) const STATS_DEFAULT_WINDOW_DAYS: i64 = 7;
@@ -568,7 +568,11 @@ pub(crate) fn tool_candidates_report(
     if candidates.len() > limit as usize {
         truncated = true;
     }
-    let items: Vec<Value> = candidates.iter().take(limit as usize).map(candidate_json).collect();
+    let items: Vec<Value> = candidates
+        .iter()
+        .take(limit as usize)
+        .map(candidate_json)
+        .collect();
     Ok(json!({
         "window": {"days": window_days, "from": from_iso, "to": to_iso},
         // 权重随结果回显：分数是加权和，不给系数就没法解释"为什么它是 9 分"。
@@ -628,8 +632,14 @@ pub(super) async fn tool_candidates(
         )));
     };
     Ok(Json(
-        tool_candidates_report(&log, window_days, limit)
-            .map_err(|e| reject(&state, &actor, e, json!({"surface": "admin/tools/candidates"})))?,
+        tool_candidates_report(&log, window_days, limit).map_err(|e| {
+            reject(
+                &state,
+                &actor,
+                e,
+                json!({"surface": "admin/tools/candidates"}),
+            )
+        })?,
     ))
 }
 

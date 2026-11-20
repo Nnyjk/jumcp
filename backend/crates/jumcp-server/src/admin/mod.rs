@@ -59,8 +59,8 @@ use self::capabilities::{capabilities, capability_detail, capability_versions};
 use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
 use self::packages::{install_package, list_catalog, uninstall_package, update_package_config};
 use self::session::{login, logout, session_info};
-use self::stats::{tool_calls, tool_candidates, tool_stats};
 pub(crate) use self::stats::{STATS_DEFAULT_WINDOW_DAYS, tool_candidates_report};
+use self::stats::{tool_calls, tool_candidates, tool_stats};
 pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
 use self::tokens::{

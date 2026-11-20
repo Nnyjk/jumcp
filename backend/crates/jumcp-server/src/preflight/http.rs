@@ -132,10 +132,7 @@ pub(super) fn check(arguments: &Value, cfg: &PreflightConfig) -> Result<(), Reje
             Family::Http,
             "http_page_size_too_large",
             format!("分页大小 {value} 超过单次上限 {}。", cfg.max_page_size),
-            format!(
-                "把 {key} 改为 ≤{} 并分页取数后重试。",
-                cfg.max_page_size
-            ),
+            format!("把 {key} 改为 ≤{} 并分页取数后重试。", cfg.max_page_size),
         ));
     }
     for (start_key, end_key) in RANGE_PAIRS {
@@ -188,10 +185,7 @@ struct UrlParts {
 fn parse_url(url: &str) -> Option<UrlParts> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.trim().to_ascii_lowercase();
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let (userinfo, authority) = match authority.rsplit_once('@') {
         Some((userinfo, host)) => (Some(userinfo), host),
         None => (None, authority),
@@ -290,7 +284,12 @@ fn time_point(value: &Value) -> Option<i64> {
     }
     chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
         .ok()
-        .map(|date| date.and_hms_opt(0, 0, 0).expect("00:00 合法").and_utc().timestamp())
+        .map(|date| {
+            date.and_hms_opt(0, 0, 0)
+                .expect("00:00 合法")
+                .and_utc()
+                .timestamp()
+        })
 }
 
 /// epoch 秒与毫秒都接受：13 位以上按毫秒处理。
@@ -358,14 +357,19 @@ mod tests {
     #[test]
     fn private_targets_follow_the_config_switch() {
         assert_eq!(
-            check_args(json!({"url": "http://192.168.12.81:8123/"})).expect_err("默认拒绝").rule,
+            check_args(json!({"url": "http://192.168.12.81:8123/"}))
+                .expect_err("默认拒绝")
+                .rule,
             "http_private_target"
         );
         let cfg = PreflightConfig {
             allow_private_hosts: true,
             ..PreflightConfig::default()
         };
-        assert_eq!(check(&json!({"url": "http://192.168.12.81:8123/"}), &cfg), Ok(()));
+        assert_eq!(
+            check(&json!({"url": "http://192.168.12.81:8123/"}), &cfg),
+            Ok(())
+        );
         // 内网开关不放行元数据地址。
         assert!(check(&json!({"url": "http://169.254.169.254/"}), &cfg).is_err());
     }
@@ -373,7 +377,9 @@ mod tests {
     #[test]
     fn schemes_and_embedded_credentials_are_rejected() {
         assert_eq!(
-            check_args(json!({"url": "file:///etc/passwd"})).expect_err("协议").rule,
+            check_args(json!({"url": "file:///etc/passwd"}))
+                .expect_err("协议")
+                .rule,
             "http_scheme"
         );
         assert_eq!(
