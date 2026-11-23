@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { fetchAuditEvents } from '../../api/admin'
 import { groupLabel, roleLabel, useGroupIndex, useRoleIndex, useRolesQuery } from '../../api/queries'
 import type { AuditEnvelope, AuditQuery, GroupItem } from '../../api/types'
@@ -11,6 +11,8 @@ import { DataTable, type DataTableColumn } from '../../components/DataTable'
 import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState, Pagination } from '../../components/PageShell'
 import { formatDateTime } from '../../format'
+import { gsap } from 'gsap'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { ACTION_LABEL, EVENT_TYPE_LABEL, OBJECT_TYPE_LABEL } from '../../labels'
 import {
   EMPTY_FILTER,
@@ -71,7 +73,22 @@ export function AuditEventsPanel({ initial }: { initial?: AuditInitialFilter | u
   const { data, error, isPending, isError } = useQuery({
     queryKey: ['audit-events', filter, offset],
     queryFn: ({ signal }) => fetchAuditEvents(filter, offset, signal),
+    // 动机约束：翻页或变更查询条件时保持上一页数据可见，防止表格与分页容器坍塌为骨架屏导致视口晃动与高度抖动。
+    placeholderData: keepPreviousData,
   })
+
+  /* 结果区在数据到达后淡入一次；同一批数据重渲染（轮询/刷新）签名不变，不会闪。 */
+  const resultKey =
+    data === undefined ? 'pending' : `${data.offset}:${data.events.length}:${data.events[0]?.event_id ?? ''}`
+  const resultRef = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [resultKey])
 
   /**
    * 列顺序按首屏可见性排：768 下冻结操作列左侧约 600px，
@@ -192,33 +209,50 @@ export function AuditEventsPanel({ initial }: { initial?: AuditInitialFilter | u
           data !== undefined && data.total > 0 ? (
             <Pagination
               total={data.total}
-              offset={data.offset}
+              // 约束：绑定发起请求的本地 offset 而非旧响应数据的 data.offset，确保配合 keepPreviousData 时翻页页码即时响应，防止回跳。
+              offset={offset}
               limit={data.limit}
               onChange={setOffset}
             />
           ) : undefined
         }
       >
-        {isPending && <LoadingState rows={8} label="正在查询审计事件" />}
-        {isError && <ErrorState error={error} />}
-        {data !== undefined && data.events.length === 0 && (
-          <EmptyState
-            hint={
-              data.total > 0
-                ? '当前页没有记录（数据可能在翻页后发生了变化），请用下方的上一页返回。'
-                : '没有符合条件的审计事件。放宽时间范围/对象/主体过滤后重试。'
-            }
-          />
-        )}
-        {data !== undefined && data.events.length > 0 && (
-          <DataTable
-            label="审计事件"
-            columns={columns}
-            rows={data.events}
-            rowKey={(row) => row.event_id}
-            minWidth="1064px"
-          />
-        )}
+        {/* 约束：.result-region 施加最小高度以在加载、空态、错误态与实际数据间切换时维持容器高度稳定，防止视口与卡片高度塌陷 */}
+        <div className="result-region" ref={resultRef}>
+          {isPending && <LoadingState rows={8} label="正在加载审计事件" />}
+          {isError && <ErrorState error={error} />}
+          {data !== undefined && data.events.length === 0 && (
+            <EmptyState
+              hint={
+                data.total > 0
+                  ? '暂无当前页记录（数据在翻页后可能发生变动），请返回上一页。'
+                  : '暂无符合条件的审计事件。清空筛选或放宽时间范围后重试。'
+              }
+              action={
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={
+                    data.total > 0
+                      ? () => setOffset(Math.max(0, offset - (data.limit || 50)))
+                      : reset
+                  }
+                >
+                  {data.total > 0 ? '返回上一页' : '清空筛选'}
+                </button>
+              }
+            />
+          )}
+          {data !== undefined && data.events.length > 0 && (
+            <DataTable
+              label="审计事件"
+              columns={columns}
+              rows={data.events}
+              rowKey={(row) => row.event_id}
+              minWidth="1064px"
+            />
+          )}
+        </div>
       </Card>
 
       {selected !== null && (

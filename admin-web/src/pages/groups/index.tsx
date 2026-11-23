@@ -5,9 +5,10 @@ import { GROUPS_KEY, indexRoles, useRolesQuery } from '../../api/queries'
 import type { GroupItem, GroupSource } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { Card } from '../../components/Card'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { DataTable, type DataTableColumn } from '../../components/DataTable'
+import { Field } from '../../components/Field'
 import { InfoBar } from '../../components/InfoBar'
-import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
 import type { Notice } from '../../notice'
 import { GROUP_SOURCE_LABEL } from '../../labels'
@@ -17,7 +18,7 @@ import {
   EMPTY_FILTER,
   SOURCE_OPTIONS,
   filterToQuery,
-  groupDeleteError,
+  groupDeleteMessage,
   type EditorTarget,
   type GroupFilter,
 } from './groupFilter'
@@ -27,7 +28,7 @@ export default function GroupsPage() {
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [editor, setEditor] = useState<EditorTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<GroupItem | null>(null)
-  const [deleteError, setDeleteError] = useState<Notice | undefined>(undefined)
+  const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
   const [draftFilter, setDraftFilter] = useState<GroupFilter>(EMPTY_FILTER)
   const [filter, setFilter] = useState<GroupFilter>(EMPTY_FILTER)
 
@@ -35,8 +36,8 @@ export default function GroupsPage() {
   const hasFilter = filter.q.trim() !== '' || filter.source !== '' || filter.role !== ''
   const appliedQuery = filterToQuery(filter)
   /**
-   * 无筛选时复用共享的 ['groups'] 缓存（其他页面也在用），有筛选才单独取一页；
-   * 两者都以 ['groups'] 为前缀，写操作失效一次即可覆盖。
+   * 缓存隔离约束：无筛选时复用全局共享的 ['groups'] 查询缓存，有筛选条件时以 appliedQuery 区分独立缓存项；
+   * 两者统一以 ['groups'] 作为键前缀，任何写操作只需整体使 ['groups'] 失效即可保证数据一致性。
    */
   const groupsQuery = useQuery({
     queryKey: hasFilter ? ['groups', appliedQuery] : GROUPS_KEY,
@@ -60,8 +61,8 @@ export default function GroupsPage() {
   }, [rolesQuery.data, filter.role])
 
   /**
-   * 组写操作会改变工具台账的 group 归属；managed 组的 roles 还会反查进角色默认组，
-   * 因此角色清单与令牌选项（默认组/组来源）也一起失效，避免令牌表单读到旧的默认组。
+   * 拓扑联动失效约束：受管组写操作会直接影响受管能力的所属组归属；且受管组所含 roles 会反查写入角色的默认组拓扑，
+   * 因此必须联动使角色清单（roles）、令牌配置项（token-options）及工具统计（tool-stats）全量失效，避免关联表单读取脏数据。
    */
   const refreshAfterWrite = () => {
     void queryClient.invalidateQueries({ queryKey: ['groups'] })
@@ -70,6 +71,10 @@ export default function GroupsPage() {
     void queryClient.invalidateQueries({ queryKey: ['tool-stats'] })
   }
 
+  /**
+   * 删除流程约束：采用自定义 ConfirmDialog 代替原生 window.confirm，
+   * 支持异步提交中的 pending 加载态锁定，并在 409 等依赖冲突时将错误原因与引用计数呈现在弹窗内部。
+   */
   const deleteMutation = useMutation({
     mutationFn: (group: GroupItem) => deleteGroup(group.code),
     onSuccess: (_result, group) => {
@@ -83,12 +88,12 @@ export default function GroupsPage() {
       })
       refreshAfterWrite()
     },
-    onError: (error) => setDeleteError(groupDeleteError(error)),
+    onError: (error) => setDeleteError(groupDeleteMessage(error)),
   })
 
   /**
-   * 列宽合计 1120px（190+104+80+96+314+76+76+184），与表格 minWidth 一致：
-   * 1440 下 content 区正好容纳，表格不再被拉伸，冻结操作列实际渲染 184px；768 下仍横向滚动。
+   * 布局与滚动约束：列宽合计 1136px（190+104+80+96+314+84+84+184），严格与 DataTable minWidth 对齐；
+   * 确保 1440px 桌面视口下内容区域自然契合不被异常拉伸，冻结操作列固定 184px，同时在小屏幕下保持横向滚动。
    */
   const columns: Array<DataTableColumn<GroupItem>> = [
     {
@@ -112,10 +117,10 @@ export default function GroupsPage() {
           tone={row.source === 'managed' ? 'neutral' : 'accent'}
           title={
             row.source === 'policy'
-              ? '策略组：由 config/policy.toml 维护，不可在此编辑'
+              ? '策略组：由 config/policy.toml 静态配置，不可在管理台编辑'
               : row.source === 'builtin'
                 ? '内置组：后端合成的只读组，不可编辑或删除'
-                : '受管组：可在管理台编辑或删除'
+                : '受管组：由管理台维护，可编辑或删除'
           }
         >
           {GROUP_SOURCE_LABEL[row.source]}
@@ -157,16 +162,22 @@ export default function GroupsPage() {
     {
       key: 'capability_count',
       header: '能力数',
-      numeric: true,
-      width: '76px',
-      cell: (row) => row.capability_count,
+      width: '84px',
+      cell: (row) => (
+        <Badge tone="neutral" title={`该组被 ${row.capability_count} 个受管能力引用`}>
+          {row.capability_count}
+        </Badge>
+      ),
     },
     {
       key: 'token_count',
       header: '令牌数',
-      numeric: true,
-      width: '76px',
-      cell: (row) => row.token_count,
+      width: '84px',
+      cell: (row) => (
+        <Badge tone="neutral" title={`该组被 ${row.token_count} 个访问令牌引用`}>
+          {row.token_count}
+        </Badge>
+      ),
     },
     {
       key: 'actions',
@@ -178,13 +189,13 @@ export default function GroupsPage() {
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            title={`查看 ${row.name} 的组能力`}
-            aria-label={`查看 ${row.name} 的组能力`}
+            title={`查看 ${row.name} 的受管能力`}
+            aria-label={`查看 ${row.name} 的受管能力`}
             onClick={() => openTools({ group: row.code })}
           >
             查看
           </button>
-          {/* 策略组/内置组只读：不给禁用按钮，只用短提示与来源徽标说明，避免每行重复一段文字。 */}
+          {/* 策略与内置组只读约束：后端拒绝变更或删除，界面直接以说明标签提示，不呈现无效的操作按钮。 */}
           {row.source === 'builtin' && (
             <span className="row-note" title="内置组由后端合成，grantable=false">
               不可编辑
@@ -221,7 +232,7 @@ export default function GroupsPage() {
       ? groupsQuery.isError
         ? '查询失败'
         : '查询中'
-      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，内置组由后端合成；受管组可在此维护`
+      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，内置组由后端合成；受管组由管理台维护`
 
   const clearFilter = () => {
     setDraftFilter(EMPTY_FILTER)
@@ -251,8 +262,7 @@ export default function GroupsPage() {
             setFilter(draftFilter)
           }}
         >
-          <label className="field field-grow">
-            <span>搜索</span>
+          <Field label="搜索">
             <input
               className="input"
               type="search"
@@ -260,9 +270,8 @@ export default function GroupsPage() {
               onChange={(event) => setDraftFilter({ ...draftFilter, q: event.target.value })}
               placeholder="组 code 或中文名"
             />
-          </label>
-          <label className="field">
-            <span>来源</span>
+          </Field>
+          <Field label="来源">
             <select
               className="select"
               value={draftFilter.source}
@@ -276,9 +285,8 @@ export default function GroupsPage() {
                 </option>
               ))}
             </select>
-          </label>
-          <label className="field">
-            <span>角色</span>
+          </Field>
+          <Field label="角色">
             <select
               className="select"
               value={draftFilter.role}
@@ -291,7 +299,7 @@ export default function GroupsPage() {
                 </option>
               ))}
             </select>
-          </label>
+          </Field>
           <div className="filter-actions">
             <button type="submit" className="btn btn-primary">
               查询
@@ -336,7 +344,7 @@ export default function GroupsPage() {
         )}
         {groupsQuery.data !== undefined && groups.length === 0 && hasFilter && (
           <EmptyState
-            hint="没有符合搜索/来源/角色条件的组。清空筛选后可看到全部组。"
+            hint="暂无符合筛选条件的组。清空筛选后可查看全部组。"
             action={
               <button type="button" className="btn btn-secondary" onClick={clearFilter}>
                 清空筛选
@@ -346,7 +354,7 @@ export default function GroupsPage() {
         )}
         {groupsQuery.data !== undefined && groups.length === 0 && !hasFilter && (
           <EmptyState
-            hint="还没有组定义。policy 组来自 config/policy.toml；内置组由后端合成；managed 组可用右上角「新建组」创建。"
+            hint="暂无组定义。策略组由 config/policy.toml 配置，内置组由后端合成；受管组可点击右上角「新建组」创建。"
             action={
               <button
                 type="button"
@@ -364,84 +372,54 @@ export default function GroupsPage() {
             columns={columns}
             rows={groups}
             rowKey={(row) => row.code}
-            minWidth="1120px"
+            minWidth="1136px"
           />
         )}
       </Card>
 
       {editor !== null && (
-        <Modal
-          size="lg"
-          title={
-            editor.mode === 'create'
-              ? '新建组'
-              : `编辑组 · ${editor.group.name}`
-          }
-          subtitle={editor.mode === 'edit' ? `组 code 不可修改：${editor.group.code}` : undefined}
+        <GroupForm
+          target={editor}
+          roles={roles}
+          rolesLoading={rolesQuery.isPending}
           onClose={() => setEditor(null)}
-        >
-          <GroupForm
-            target={editor}
-            roles={roles}
-            rolesLoading={rolesQuery.isPending}
-            onSaved={(item) => {
-              const created = editor.mode === 'create'
-              setEditor(null)
-              setNotice({
-                severity: 'success',
-                title: created ? '组已创建' : '组已更新',
-                description: `${created ? '受管组' : '组'} ${item.name}（${item.code}）已保存。`,
-                meta: `优先级 ${item.priority} · 最小预算 ${item.min_budget} · 角色 ${item.roles
-                  .map((code) => roleIndex.get(code)?.name ?? code)
-                  .join('、')}`,
-              })
-              refreshAfterWrite()
-            }}
-            onError={setNotice}
-          />
-        </Modal>
+          onSaved={(item) => {
+            const created = editor.mode === 'create'
+            setEditor(null)
+            setNotice({
+              severity: 'success',
+              title: created ? '组已创建' : '组已更新',
+              description: `${created ? '受管组' : '组'} ${item.name}（${item.code}）已保存。`,
+              meta: `优先级 ${item.priority} · 最小预算 ${item.min_budget} · 角色 ${item.roles
+                .map((code) => roleIndex.get(code)?.name ?? code)
+                .join('、')}`,
+            })
+            refreshAfterWrite()
+          }}
+        />
       )}
 
       {deleteTarget !== null && (
-        <Modal
-          size="md"
+        <ConfirmDialog
           title={`删除组 · ${deleteTarget.name}`}
-          onClose={() => setDeleteTarget(null)}
-          footer={
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={deleteMutation.isPending}
-                onClick={() => setDeleteTarget(null)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate(deleteTarget)}
-              >
-                {deleteMutation.isPending ? '删除中…' : '确认删除'}
-              </button>
-            </>
-          }
+          subtitle="删除后不可恢复；若仍被受管能力或访问令牌引用，删除操作将被后端拦截拒绝。"
+          confirmLabel="确认删除"
+          pendingLabel="删除中…"
+          tone="danger"
+          pending={deleteMutation.isPending}
+          error={deleteError}
+          errorTitle="删除组失败"
+          onClose={() => {
+            setDeleteTarget(null)
+            setDeleteError(undefined)
+          }}
+          onConfirm={() => deleteMutation.mutate(deleteTarget)}
         >
           <p className="hint">
-            将删除受管组 {deleteTarget.name}（{deleteTarget.code}）。当前被{' '}
-            {deleteTarget.capability_count} 个能力、{deleteTarget.token_count} 个令牌引用。
-            删除后不可恢复；仍被引用时删除会被拒绝。
+            即将删除受管组 {deleteTarget.name}（{deleteTarget.code}）。当前被{' '}
+            {deleteTarget.capability_count} 个受管能力、{deleteTarget.token_count} 个访问令牌引用。
           </p>
-          {deleteError !== undefined && (
-            <InfoBar
-              severity={deleteError.severity}
-              title={deleteError.title}
-              description={deleteError.description}
-              meta={deleteError.meta}
-            />
-          )}
-        </Modal>
+        </ConfirmDialog>
       )}
     </PageShell>
   )

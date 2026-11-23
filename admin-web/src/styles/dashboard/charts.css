@@ -45,6 +45,14 @@
   fill: var(--accent);
   stroke: var(--surface-opaque);
   stroke-width: 1.5;
+  /* 悬停强调只动 transform，不改几何，避免指针移动时图形位移。 */
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+
+.trend-chart:hover .trend-dot {
+  transform: scale(1.35);
 }
 
 /* 环形图 */
@@ -71,6 +79,11 @@
 .donut-seg {
   fill: none;
   stroke-width: 14;
+  transition: stroke-width var(--motion-fast) var(--ease-standard);
+}
+
+.donut-svg:hover .donut-seg {
+  stroke-width: 16;
 }
 
 .donut-seg-ok {

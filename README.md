@@ -16,12 +16,12 @@
 - **双传输**：stdio（默认，本地 agent 直接拉起）与 streamable-http（`POST /mcp`）。
 - **组 + token allowlist 双重约束**：`groups` 是 token 的硬上限（header / `_meta` 只能收窄），`builtin_tools` 是工具名 allowlist（内置 id、上游暴露名 `<server_id>__<tool>`、`<server_id>__*` 整台上游、`*` 全部工具）；`admin_*` 另需组 `admin` 在 scope 内；`basic` 成员不要求 token `groups` 含 `basic` 或上游组，但仍受 `builtin_tools` allowlist 与上游 `enabled`/`read_only` 约束——`basic` 不是授权组，不能写进令牌 `groups`。管理台访问令牌卡片提供「MCP 接入」一键复制 HTTP MCP JSON 配置：服务名 `jumcp`、URL 为页面同源 `/mcp`、`headers.Authorization = Bearer <token>`；明文只在创建/重签发的响应里出现一次，已有 active 令牌需先重新签发（`POST /admin/tokens/{id}/reissue`，旧 token 立即失效）才能复制配置。
 - **治理审计**：写操作与调用统一落哈希链审计（`admin_change` / `policy_decision`），管理台可按令牌 / 对象 / 事件检索并查看详情。
-- **管理台**：工作台看板、审核队列、工具台账与能力档案、组维护（内置 `basic` 只读不可编辑）、访问令牌、MCP 接入（单页两页签：「接入清单」维护 router 上游，含「基础工具」逐工具开关/刷新/失效覆盖清理；「安装目录」列出内置包并安装/编辑配置/卸载，产物是 HTTP 上游）、审计查询、例外与可见性、健康检查。
+- **管理台**：工作台看板、审核队列、工具台账与能力档案、组维护（内置 `basic` 只读不可编辑）、访问令牌、MCP 接入（单页两页签：「接入清单」维护 router 上游，含「基础工具」逐工具开关/刷新/失效覆盖清理；「安装目录」列出内置包并安装/编辑配置/卸载，产物是 HTTP 上游）、审计查询、例外与可见性；健康状态来自工作台卡头与两个面的 `/health`，侧栏没有独立健康页。
 - **只读边界**：本进程不持有数据库连接，取数只经上游 MCP 工具。上游工具默认 `read_only=true`，只有部署显式开启 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 才允许写上游（默认关闭）；带 `sql`/`query`/`statement`、路径、URL/分页/时间范围的调用在转发前还要过一层前置拦截（SQL：只允许单条 `SELECT`/`WITH`、禁写/DDL/注释/`system.*`、LIMIT ≤ 1000、库白名单；文件：禁写访问/穿越/凭证路径、根目录白名单；接口：禁回环与元数据地址、分页与时间跨度上限、注入片段。见 `docs/preflight.md`）。内置包 `clickhouse-basic` 自身固定 `readonly=1` 并再过 `jumcp-sqlguard`。agent 可修改的只有**本项目自有数据**（能力注册表：`admin_register_template` 产草案、`admin_set_visibility` 改可见性、`admin_publish_capability` 发布——发布是 agent 自审，审批留痕 `source="agent"`、`verified=true`；人发布仍走 HTTP 管理面带外部单号，`source="external"`），**不能改数据源**。
 
 ## 快速开始
 
-一条命令拉起「后端（streamable-http）+ 管理台（Vite dev）」，打开 http://127.0.0.1:5173 即可试用（两端都监听 `0.0.0.0`，容器/WSL/局域网可用宿主 IP 访问）。
+一条命令拉起「后端（streamable-http）+ 管理台（Vite dev）」，打开 http://127.0.0.1:5173 即可试用（前后端都监听 `0.0.0.0`，容器/WSL/局域网可用宿主 IP 访问）。
 
 ```
 pwsh scripts/dev.ps1            # Windows / PowerShell 7+
@@ -46,8 +46,8 @@ stdio 接入用 `cargo run -p jumcp-server`（默认 stdio）；HTTP 传输用 `
 
 - 后端默认起两个监听：MCP 面 `0.0.0.0:8000`、管理面 `0.0.0.0:8080`（`JUMCP_MCP_HOST` / `-BackendPort` / `-AdminPort` / `--backend-port` / `--admin-port` 可改，两个端口必须不同）；管理台（Vite）默认监听 `0.0.0.0:5173`（`-WebPort` / `--web-port` 被占用时自动 +1 顺延）。本机访问用 `http://127.0.0.1:8000`（MCP 面）/ `http://127.0.0.1:8080`（管理面）/ `http://127.0.0.1:5173`（管理台 UI），容器 / WSL / 局域网用宿主 IP。管理台的 `server.host` 固定为 `0.0.0.0`（`admin-web/vite.config.ts`），手动 `npm run dev` 也是全网卡监听。
 - 每次启动都先 `cargo build --bin jumcp-server --bin jumcp-connector-clickhouse`（增量构建，不会运行过期二进制）；启动前若后端端口**已有监听者**（多半是上次遗留的旧后端），脚本立即失败并打印端口/排查命令（`netstat -ano | findstr :<port>`、`lsof -i :<port>`），**不会自动杀进程**，也不会把旧进程的 `/health` 当成“就绪”。请先停掉旧后端或换端口。
-- **管理面是账号密码登录**：后端在空库首启时用 `JUMCP_ADMIN_USERNAME` + `JUMCP_ADMIN_PASSWORD`（≥12 位）播种第一个管理员，口令以 Argon2id 哈希落库（`admin_users` 表）；浏览器打开管理台后在**登录页**里输入用户名口令，换 HttpOnly 会话 cookie。之后增删改账号在管理台「管理员」页或 `/admin/admins`，前端不持有任何凭证，也没有任何注入层。
-- 前端代理目标由启动器设置：`/admin` 转发到管理面（`JUMCP_DEV_ADMIN_TARGET`，默认 `http://127.0.0.1:8080`）、`/mcp` 与 `/health` 转发到 MCP 面（`JUMCP_DEV_API_TARGET`，默认 `http://127.0.0.1:8000`）。两个变量只存在于 Node 进程环境；手动起前端时后端换了端口就要带上它们。
+- **管理面是账号密码登录**：后端在空库首启时用 `JUMCP_ADMIN_USERNAME` + `JUMCP_ADMIN_PASSWORD`（≥12 位）播种第一个管理员，口令以 Argon2id 哈希落库（`admin_users` 表）；浏览器打开管理台后在**登录页**里输入用户名口令，换 HttpOnly 会话 cookie。之后增删改账号在管理台「账户管理」页或 `/admin/admins`；浏览器不持有任何管理面凭证，也没有任何注入层。
+- 管理台代理目标由启动器设置：`/admin` 转发到管理面（`JUMCP_DEV_ADMIN_TARGET`，默认 `http://127.0.0.1:8080`）、`/mcp` 与 `/health` 转发到 MCP 面（`JUMCP_DEV_API_TARGET`，默认 `http://127.0.0.1:8000`）。两个变量只存在于 Node 进程环境；手动起管理台时后端换了端口就要带上它们。
 - `-ClickHouseDsn` / `--clickhouse-dsn` 已废弃：服务进程不持有任何 DSN，ClickHouse 只能作为上游 MCP 接入（管理台「MCP 接入」页或 `POST /admin/upstreams`），模板用 `target` 指向该上游；传这个参数脚本直接报错退出。
 - 脚本会同时构建 `jumcp-server` 与 `jumcp-connector-clickhouse`（被内置包 `clickhouse-basic` 复用的连接/执行库，内置包本身编译进 `jumcp-server`，没有独立二进制），并为 HTTP 模式设置固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（仅本地；生产必须 `openssl rand -hex 32`）。
 - `-ResetData` / `--reset-data` 启动前清空 `.dev-data/`（默认保留，便于连续试用）；`-NoWeb` / `--no-web` 只起后端。
@@ -124,12 +124,12 @@ docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
   -e JUMCP_TRANSPORT_KEY="$(openssl rand -hex 32)" \
   -v jumcp-data:/data \
   jumcp:local
-# 管理台 http://127.0.0.1:8080/ （登录页），健康检查 GET /health （两个面都有），MCP POST http://127.0.0.1:8000/mcp
+# 管理台 UI http://127.0.0.1:8080/ （管理面同源提供，登录页），健康检查 GET /health （两个面都有），MCP POST http://127.0.0.1:8000/mcp
 ```
 
 - `/data` 存 `registry.sqlite3` 与 `audit.sqlite3`（管理台会话也在 `registry.sqlite3` 的 `admin_sessions` 表）：容器重建不丢治理、会话与审计数据，必须挂卷（`-v` 或 `--tmpfs`）。
 - 管理台是薄前端，浏览器不发 `Authorization`：镜像只保证「同源静态资源 + API」可用，鉴权靠 `POST /admin/login` 换来的 HttpOnly 会话 cookie。没有网关/BFF，也没有镜像内的 token 注入后门。
-- CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`build` + 无头 Web 冒烟；脚本 `bash -n` 与发布 tag 解析用例；`linux/amd64` 镜像构建 + 容器冒烟 + Swarm stack 配置校验（`docker stack config`）；PR 额外跑依赖审查（高危阻断）。CI 只读、不登录也不推送 GHCR。
+- CI（`.github/workflows/ci.yml`）：在 `dev` 上跑日常校验——后端 `fmt`/`clippy -D warnings`/`cargo test --workspace --locked`；管理台 `lint`/`typecheck`/`test:transport`/`build` + 无头 Web 冒烟；脚本 `bash -n` 与发布 tag 解析用例；`linux/amd64` 镜像构建 + 容器冒烟 + Swarm stack 配置校验（`docker stack config`）；PR 额外跑依赖审查（高危阻断）。CI 不登录也不推送 GHCR。
 - image CD（`.github/workflows/image-cd.yml`）：由 `dev` push（快照）、`main` push（正式）、`v*` tag 或手动触发，推 `ghcr.io/<owner>/jumcp`。tag 与 `VERSION` 由 `scripts/release-tags.sh` 确定性算出：`dev` 给 `dev`/`sha-<短 sha>`，`main` 给 `latest`/`main`/`sha-<短 sha>`，版本 tag 给精确版本与兼容 tag（`latest` 只给 `main`），带 provenance 与 SBOM，push 后按 digest 回拉再冒烟。`publish` job 限定 `refs/heads/dev`、`refs/heads/main` 与 `refs/tags/v*`：对 feature 分支手动 dispatch 会整 job 跳过；`v*` tag 还必须指向 `main` 历史（`merge-base --is-ancestor` 校验）。
 - web CD（`.github/workflows/web-cd.yml`）：触发面与 image CD 相同，构建 `jumcp-admin-web-<version>.tar.gz`（`admin-web/dist` 打包）并上传 artifact（保留 30 天）；`v*` tag 时再把同一份包挂到该 tag 的 GitHub Release（只有这一步需要 `contents: write`）。
 - 本地复现：`bash scripts/smoke-headless-web.sh` 校验 `admin-web/dist` 能当静态站点跑；`bash scripts/smoke-image.sh jumcp:local` 起容器跑完整断言（`/health` 探针 JSON 与 `Accept: text/html` 的 UI 页面两条分支、管理台静态资源、401/200 鉴权、`/mcp`、内置包链路：目录 `transport` → 安装（密码以传输密文提交）→ refresh 拉到 3 个工具 → 改配置（不回显密文）→ 卸载）。
@@ -159,7 +159,7 @@ cargo test -p jumcp-server -- --ignored
 
 ## 一键测试
 
-一条命令跑完「后端 fmt/clippy/测试 + 前端 typecheck/build/lint + E2E 冒烟」并输出 PASS/FAIL 汇总表。
+一条命令跑完「后端 fmt/clippy/测试 + 管理台 typecheck/build/lint + E2E 冒烟」并输出 PASS/FAIL 汇总表。
 
 ```
 pwsh scripts/test-all.ps1      # Windows / PowerShell 7+
@@ -191,15 +191,16 @@ Fluent 2 风格管理台，首页是**工作台 / 数据看板**：KPI（总调�
 
 **能力档案 `/capabilities/:id`**：可从工具台账、审核队列、例外与可见性点「详情」，在 content 视图栈内打开（URL 不变），也可直接访问 `/capabilities/:id`；「返回」回到来源列表，切侧栏即清空视图。它是单个能力的唯一工作面，分六个栏——概览（生效范围：组→角色；状态与可见性；治理时间线与窗口指标）、定义（结构化字段视图）、版本（版本行与定义哈希）、审批（提交 / 批准发布 + 第二步可见性 / 退回）、调用（最近 1 / 7 / 30 天的调用记录）、审计（该对象的事件流）。内置工具没有受管定义，只有「概览」与「调用」两栏；审核队列进入时直接落在「审批」栏。草稿「提交审核」（审核队列与档案内一致）走二次确认弹层，展示能力 ID / 版本 / 草稿→待审 / 提交后不可自行撤回。
 
-**工具台账**：按受管能力 / 内置工具分段，列顺序按首屏可见性排：工具 ID（第二行类型/版本）→ 调用/失败 → 成功率 → 健康 → 生命周期 → 风险 → 可见性 → 组 → 分类 → 最近调用 → 操作；组显示中文名（内置工具显示「内置」），分类列只显示中文名（基础 / 分析 / 审计 / 自定义），筛选同样是中文分类；点「详情」在 content 视图内打开能力档案，URL 不变。**新建草案**是独立弹层（打开即聚焦第一个输入，组为必选），创建后进入草稿，需到「审批」栏提交审核。
+**工具台账**：按受管能力 / 内置工具分段，列顺序按首屏可见性排：工具 ID（第二行类型/版本）→ 调用/失败 → 成功率 → 健康 → 生命周期 → 风险 → 可见性 → 组 → 分类 → 最近调用 → 操作；组显示中文名（`basic` 显示「基础」，旧数据残留的 `builtin` 显示「内置」），分类列只显示中文名（基础 / 分析 / 审计 / 自定义），筛选同样是中文分类；点「详情」在 content 视图内打开能力档案，URL 不变。**新建草案**是独立弹层（打开即聚焦第一个输入，组为必选），创建后进入草稿，需到「审批」栏提交审核。
 
 **审计查询**：默认**最新优先**（`desc`，可切「最旧优先」）；从令牌、能力档案或工具台账进入时在 content 视图内打开并预填筛选（token_id / object_id / event_id），URL 不变，直接访问 `/audit` 路由仍可用并兼容这些查询参数，筛选与「重置」只改页内状态；表格列为 时间 → 摘要 → 主体 → 动作 → 对象 → 操作，结果与审批单由摘要与详情弹层承载（主体里的令牌 ID 表格中截断到 12 位，完整值在 `title`/详情）。时间统一显示 `YYYY-MM-DD HH:mm:ss`（本地时区，到秒），完整 RFC3339 保留在 `title` 与详情。详情里对 `tool_call`、`template_run` 展示入参、执行脚本与载荷结构版本。旧格式事件（没有 `object_type` / `object_id` / `action`）界面标注「旧格式事件，仅原始载荷」，不按旧字段推断语义，也不计入工具统计。
 
-所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），前端不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`（另开终端跑后端），按后端实际端口设 `JUMCP_DEV_ADMIN_TARGET=<管理面>` 与 `JUMCP_DEV_API_TARGET=<MCP 面>`，然后在 http://127.0.0.1:5173 的登录页里输入首启播种的 `JUMCP_ADMIN_USERNAME` 与 `JUMCP_ADMIN_PASSWORD`。`npm run build` 做类型检查与构建。
+所有写操作经 admin API 落审计（`admin_change` / `policy_decision`），管理台不直连数据库、不持有管理面凭证。审计事件结构、管理面字段与统计口径见 `docs/audit-openness.md`。本地试用请直接用上面的「快速开始」；手动起法是 `cd admin-web && npm install && npm run dev`（另开终端跑后端），按后端实际端口设 `JUMCP_DEV_ADMIN_TARGET=<管理面>` 与 `JUMCP_DEV_API_TARGET=<MCP 面>`，然后在 http://127.0.0.1:5173 的登录页里输入首启播种的 `JUMCP_ADMIN_USERNAME` 与 `JUMCP_ADMIN_PASSWORD`。`npm run build` 做类型检查与构建。
 
 ## 文档索引
 
 - `docs/mcp-router.md`：架构与 router 模型——内置工具分类与 `basic` 组、上游配置与逐工具基础组、内置 MCP 包（`/admin/mcp/catalog*`：目录、安装、配置编辑、卸载）。
+- `docs/builtin-mcp.md`：内置 MCP 插件标准——trait 契约、内嵌 HTTP 端点与协议、配置与两把密钥、生命周期、新增包的步骤。
 - `docs/preflight.md`：第三方调用前置拦截——拦截点与顺序、SQL/文件/接口三族规则（`rule` 稳定标识）、错误形状与审计载荷、环境变量与上限常量、与 `jumcp-sqlguard` 的分工。
 - `docs/audit-openness.md`：审计事件契约、管理面接口字段与统计口径（§7.7–§7.11、§11 令牌契约）。
 - `docs/ci-cd.md`：CI 检查项、artifact、镜像 tag 规则、分支模型与发布流程、分支保护。

@@ -5,10 +5,11 @@
 //! router 对外把工具暴露成 `<server_id>__<tool>`，所以这里只用短名
 //! `query` / `list_databases` / `list_tables`。
 //!
-//! 只读语义三层都在，任何一层都不因本 crate 而削弱：
+//! 只读语义四层都在，任何一层都不因本 crate 而削弱：
 //!
 //! - L1：连接账号权限（部署侧只给只读账号）；
-//! - L2：connector agent 固定 `readonly=1`、`max_execution_time`、`max_result_rows`、
+//! - L2：请求级 `readonly=1`（connector agent 内固定）；
+//! - L3：connector agent 的 `max_execution_time`、`max_result_rows`、
 //!   `result_overflow_mode=break`、`max_threads=1`；
 //! - L4：[`jumcp_sqlguard::validate`] 的单语句 / 根查询 / 函数黑名单 / schema 范围校验。
 //!

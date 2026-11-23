@@ -34,16 +34,20 @@ export function KpiGrid({
   chain: AuditChainState | undefined
   chainHint: string
 }) {
-  const kpiRef = useGsapScope<HTMLDivElement>((scope) => {
-    gsap.from(scope.children, {
-      opacity: 0,
-      y: 10,
-      duration: MOTION_DURATION.enter,
-      ease: MOTION_EASE,
-      stagger: 0.045,
-      clearProps: 'opacity,transform',
-    })
-  }, [stats !== undefined])
+  // 依赖 stats 是否已到达：只在首次拿到数据时播一次，轮询刷新不重播。
+  const kpiRef = useGsapScope<HTMLDivElement>(
+    (scope) => {
+      gsap.from(scope.children, {
+        opacity: 0,
+        y: 10,
+        duration: MOTION_DURATION.enter,
+        ease: MOTION_EASE,
+        stagger: 0.02,
+        clearProps: 'opacity,transform',
+      })
+    },
+    [stats !== undefined],
+  )
 
   const totalCalls = rows.reduce((sum, row) => sum + row.calls, 0)
   const totalSuccess = rows.reduce((sum, row) => sum + row.success, 0)
@@ -61,95 +65,99 @@ export function KpiGrid({
             : `窗口 ${formatDateTime(stats.window.from)} → ${formatDateTime(stats.window.to)}`
         }
       >
-        {statsPending && <LoadingState rows={3} label="正在加载关键指标" />}
-        {statsError !== undefined && <ErrorState error={statsError} />}
-        {stats !== undefined && rows.length === 0 && (
-          <EmptyState hint={`最近 ${windowDays} 天没有工具统计行，无法计算调用量与成功率。`} />
-        )}
-        {stats !== undefined && rows.length > 0 && (
-          <>
-            <div className="kpi-grid" ref={kpiRef}>
-              <div className="kpi">
-                <span className="kpi-label">总调用</span>
-                <div className="kpi-value">
-                  <span className="mono">{formatCount(totalCalls)}</span>
+        <div className="dash-panel dash-panel-kpi">
+          {statsPending && <LoadingState rows={3} label="正在加载关键指标" />}
+          {statsError !== undefined && <ErrorState error={statsError} />}
+          {stats !== undefined && rows.length === 0 && (
+            <EmptyState
+              hint={`最近 ${windowDays} 天没有工具统计行，无法计算调用量与成功率。`}
+            />
+          )}
+          {stats !== undefined && rows.length > 0 && (
+            <>
+              <div className="kpi-grid" ref={kpiRef}>
+                <div className="kpi">
+                  <span className="kpi-label">总调用</span>
+                  <div className="kpi-value">
+                    <span className="mono">{formatCount(totalCalls)}</span>
+                  </div>
+                  <span className="kpi-hint">
+                    时间窗 {windowDays} 天 · {formatCount(rows.length)} 个工具
+                  </span>
                 </div>
-                <span className="kpi-hint">
-                  时间窗 {windowDays} 天 · {formatCount(rows.length)} 个工具
-                </span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">成功率</span>
-                <div className="kpi-value">
-                  <span className="mono">{formatPercent(successRate)}</span>
+                <div className="kpi">
+                  <span className="kpi-label">成功率</span>
+                  <div className="kpi-value">
+                    <span className="mono">{formatPercent(successRate)}</span>
+                  </div>
+                  <span className="kpi-hint">
+                    成功 {formatCount(totalSuccess)} / 调用 {formatCount(totalCalls)}
+                  </span>
                 </div>
-                <span className="kpi-hint">
-                  成功 {formatCount(totalSuccess)} / 调用 {formatCount(totalCalls)}
-                </span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">失败数</span>
-                <div className="kpi-value">
-                  <span className="mono">{formatCount(totalFailure)}</span>
+                <div className="kpi">
+                  <span className="kpi-label">失败数</span>
+                  <div className="kpi-value">
+                    <span className="mono">{formatCount(totalFailure)}</span>
+                  </div>
+                  <span className="kpi-hint">
+                    失败率 {formatPercent(totalCalls > 0 ? totalFailure / totalCalls : null)}
+                  </span>
                 </div>
-                <span className="kpi-hint">
-                  失败率 {formatPercent(totalCalls > 0 ? totalFailure / totalCalls : null)}
-                </span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">活跃工具</span>
-                <div className="kpi-value">
-                  <span className="mono">{formatCount(activeTools)}</span>
+                <div className="kpi">
+                  <span className="kpi-label">活跃工具</span>
+                  <div className="kpi-value">
+                    <span className="mono">{formatCount(activeTools)}</span>
+                  </div>
+                  <span className="kpi-hint">调用 &gt; 0 · 共 {formatCount(rows.length)} 个</span>
                 </div>
-                <span className="kpi-hint">调用 &gt; 0 · 共 {formatCount(rows.length)} 个</span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">待审批</span>
-                <div className="kpi-value">
-                  {reviewPending ? (
-                    <span className="kpi-muted">…</span>
-                  ) : reviewError ? (
-                    <span className="kpi-muted">—</span>
-                  ) : (
-                    <span className="mono">{formatCount(reviewCount)}</span>
-                  )}
+                <div className="kpi">
+                  <span className="kpi-label">待审批</span>
+                  <div className="kpi-value">
+                    {reviewPending ? (
+                      <span className="kpi-muted">…</span>
+                    ) : reviewError ? (
+                      <span className="kpi-muted">—</span>
+                    ) : (
+                      <span className="mono">{formatCount(reviewCount)}</span>
+                    )}
+                  </div>
+                  <span className="kpi-hint">队列全量，不受时间窗限制</span>
                 </div>
-                <span className="kpi-hint">队列全量，不受时间窗限制</span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">未提交草稿</span>
-                <div className="kpi-value">
-                  {reviewPending ? (
-                    <span className="kpi-muted">…</span>
-                  ) : reviewError ? (
-                    <span className="kpi-muted">—</span>
-                  ) : (
-                    <span className="mono">{formatCount(draftCount)}</span>
-                  )}
+                <div className="kpi">
+                  <span className="kpi-label">未提交草稿</span>
+                  <div className="kpi-value">
+                    {reviewPending ? (
+                      <span className="kpi-muted">…</span>
+                    ) : reviewError ? (
+                      <span className="kpi-muted">—</span>
+                    ) : (
+                      <span className="mono">{formatCount(draftCount)}</span>
+                    )}
+                  </div>
+                  <span className="kpi-hint">队列全量，不受时间窗限制</span>
                 </div>
-                <span className="kpi-hint">队列全量，不受时间窗限制</span>
-              </div>
-              <div className="kpi kpi-wide">
-                <span className="kpi-label">审计链</span>
-                <div className="kpi-value">
-                  {chain === undefined ? (
-                    <span className="kpi-muted">—</span>
-                  ) : (
-                    <Badge tone={CHAIN_TONE[chain]} dot>
-                      {CHAIN_LABEL[chain]}
-                    </Badge>
-                  )}
+                <div className="kpi kpi-wide">
+                  <span className="kpi-label">审计链</span>
+                  <div className="kpi-value">
+                    {chain === undefined ? (
+                      <span className="kpi-muted">—</span>
+                    ) : (
+                      <Badge tone={CHAIN_TONE[chain]} dot>
+                        {CHAIN_LABEL[chain]}
+                      </Badge>
+                    )}
+                  </div>
+                  <span className="kpi-hint">{chainHint}</span>
                 </div>
-                <span className="kpi-hint">{chainHint}</span>
               </div>
-            </div>
-            {stats.truncated && (
-              <p className="hint dash-card-note">
-                统计返回已截断：仅覆盖后端返回的工具行，总调用与成功率不是全量口径。
-              </p>
-            )}
-          </>
-        )}
+              {stats.truncated && (
+                <p className="hint dash-card-note">
+                  统计返回已截断：仅覆盖后端返回的工具行，总调用与成功率不是全量口径。
+                </p>
+              )}
+            </>
+          )}
+        </div>
       </Card>
     </div>
   )

@@ -16,11 +16,13 @@ export function EditConfigForm({
   installation,
   onSaved,
   onError,
+  onCancel,
 }: {
   entry: McpCatalogEntry
   installation: McpCatalogInstallation
   onSaved: (installation: McpCatalogInstallation) => void
   onError: (notice: Notice) => void
+  onCancel: () => void
 }) {
   const [config, setConfig] = useState<Record<string, string>>(() =>
     Object.fromEntries(
@@ -114,6 +116,9 @@ export function EditConfigForm({
         </p>
       )}
       <div className="form-actions">
+        <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={mutation.isPending}>
+          取消
+        </button>
         <button
           type="submit"
           className="btn btn-primary"

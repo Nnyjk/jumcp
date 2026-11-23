@@ -4,8 +4,8 @@
 //! 改写 → 渲染期 sqlguard（ClickHouse 方言）复核。ClickHouse 没有 PG 那种 EXPLAIN 预演，
 //! 因此不再有额外的 EXPLAIN 步骤。
 //!
-//! 为什么由部署文件携带 approval 字段：审批主体属于治理记录，配置里显式写明提交人/批准人；
-//! 服务端只记录这两个事实身份，不允许"启动即自动发布"的隐式路径。
+//! 为什么由部署文件携带 approval 字段：审批主体属于治理记录，必须由配置写明提交人/批准人；
+//! 服务端只落库这两个事实身份，不会替模板编造一个审批人。
 
 use jumcp_core::errors::McpError;
 use jumcp_core::template::TemplateRegistry;
@@ -52,16 +52,19 @@ pub fn load_template_seeds(path: &str) -> Result<Vec<TemplateSeed>, McpError> {
     Ok(seeds)
 }
 
-/// 预置发布：注册草案（= 预检）→ 提审 → 发布 → 开放。
+/// 预置发布：提审（draft→review）→ 发布（review→published）→ 写可见性。
 ///
-/// `compiled` 由调用方在注册时拿到；这里作为参数传入，避免二次编译与二次门禁。
+/// 注册草案与预检是 [`register_seed`]；`compiled` 由调用方在注册时拿到，这里作为参数传入，
+/// 避免二次编译与二次门禁。
 pub fn publish_seed(
     registry: &TemplateRegistry,
     seed: &TemplateSeed,
     compiled: &jumcp_core::template::CompiledTemplate,
 ) -> Result<(), McpError> {
     let id = compiled.def.template_id.clone();
-    // 只有"已发布"才算预置完成：draft/review 必须继续走完审批，否则启动就把半成品当成品。
+    // 只有"已发布"算预置完成：其余状态一律重新提审+发布。register 之后正常只会是
+    // draft（首个版本或改定义后的新版本），因此这里是"补齐上次没走完的发布"；
+    // 若停在 review/deprecated（上次提审后中断、或被人为下架），提审会显式失败而不是被当成成品。
     if let Ok(current) = registry.current(&id)
         && current.status == "published"
     {

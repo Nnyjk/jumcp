@@ -123,7 +123,8 @@ impl Service {
     }
 
     /// 进程默认身份：**只**用于 stdio（逐行 JSON-RPC，没有 HTTP 头可派生 per-request 身份）。
-    /// HTTP 面的身份一律来自 `JUMCP_AGENT_TOKENS`，不存在回落到这里的路径。
+    /// HTTP 面的身份一律来自数据库 access token（`access_tokens` 为空时由
+    /// `JUMCP_AGENT_TOKENS` 一次性引导导入），不存在回落到这里的路径。
     pub fn process_actor(&self) -> Actor {
         Actor::new("default", &default_role(&self.settings).unwrap_or_default())
     }

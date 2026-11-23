@@ -16,9 +16,10 @@ pub(super) const CALLS_MAX_WINDOW_DAYS: i64 = 90;
 
 /// 一条审计事件归一化成"一次能力调用"。
 ///
-/// `tool_call` 的能力 id 取 `payload.tool`（任意非空工具名：常驻工具、维护工具以及未来扩展的
-/// 内置工具都自动纳入台账），`template_run` 取 `payload.template_id`；其它事件类型与缺 id 的
-/// 行直接丢弃。`capability_search` / `capability_describe` 是独立事件类型，不算能力调用。
+/// 能力 id 一律取 `payload.object_id`：`tool_call` 记工具名（常驻/维护/内置工具不维护名单，
+/// 任何非空工具名都入台账），`template_run` 记模板 id。其它事件类型、缺 `object_id` 或
+/// `object_id` 为空的行直接丢弃。`capability_search` / `capability_describe` 是独立事件类型，
+/// 不算能力调用。
 /// 能力统计与单 id 明细共用这一处解析，避免两个接口对同一批事件给出不同结论。
 #[derive(Debug, Clone)]
 pub(super) struct CallObservation {
@@ -168,7 +169,7 @@ pub(super) fn scan_by_id(
     }
 }
 
-/// 统计对象的元信息：注册表全部行 + 全部 builtin（含 admin_*）+ 仅出现在审计里的 id。
+/// 统计台账里一行的元信息（注册表行、builtin 与"只在审计里出现过"的 id 共用）。
 pub(super) struct ToolMeta {
     kind: String,
     group: String,
@@ -183,6 +184,10 @@ pub(super) struct ToolMeta {
     source: String,
 }
 
+/// 统计口径的对象全集：全部 builtin（含 `admin_*`）与注册表全部行。
+///
+/// 只出现在审计里的 id 不在这里补——`tool_stats` 聚合时另加一行 `kind=unknown`，
+/// 因为全集的来源不同（代码常量 vs 审计事实）。
 pub(super) fn tool_universe(
     store: &CapabilityStore,
 ) -> Result<HashMap<String, ToolMeta>, McpError> {
@@ -643,10 +648,6 @@ pub(super) async fn tool_candidates(
     ))
 }
 
-/// `GET /admin/tools/{id}/calls`：单个能力的调用明细（时间倒序，缺字段一律 null）。
-///
-/// `window_days` 默认 30、夹紧 1..=90：响应结构不变，但 `total` 的语义是
-/// "窗口内该 id 的调用数"（审计表只追加，明细查询必须带时间边界才不会越跑越慢）。
 /// 调用明细的主体投影：`id`/`role` 恒有；审计 actor 里带 `source`/`token_id` 时原样带出。
 ///
 /// 没有 token 归属的事件不带这两个键，投影时直接省略（消费方按可选字段处理）。
@@ -665,6 +666,10 @@ pub(super) fn call_actor_json(actor: &Value) -> Value {
     out
 }
 
+/// `GET /admin/tools/{id}/calls`：单个能力的调用明细（时间倒序，缺字段一律 null）。
+///
+/// `window_days` 默认 30、夹紧 1..=90：响应结构不变，但 `total` 的语义是
+/// "窗口内该 id 的调用数"（审计表只追加，明细查询必须带时间边界才不会越跑越慢）。
 pub(super) async fn tool_calls(
     State(state): State<AdminState>,
     Path(id): Path<String>,

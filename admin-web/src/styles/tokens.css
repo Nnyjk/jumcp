@@ -106,6 +106,13 @@
   --nav-width: 260px;
   --nav-width-collapsed: 48px;
 
+  /* 动效：JS（motion/useGsap.ts）与 CSS 共用同一组时长/缓动，避免两套节奏。 */
+  --motion-fast: 120ms;
+  --motion-enter: 280ms;
+  --motion-slow: 400ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0.9, 0.1, 1);
+
   /* 内容区铺满窗口；仅长文本段落用可读行宽兜底。 */
   --measure: 92ch;
 }

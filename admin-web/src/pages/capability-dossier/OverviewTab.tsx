@@ -23,7 +23,9 @@ import { InfoBar } from '../../components/InfoBar'
 import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState } from '../../components/PageShell'
 import { AuditDetail } from '../../components/AuditDetail'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { WINDOW_OPTIONS } from '../../constants'
+import { gsap } from 'gsap'
 
 export function OverviewTab({
   detail,
@@ -60,9 +62,53 @@ export function OverviewTab({
 }) {
   const [selected, setSelected] = useState<AuditEnvelope | null>(null)
 
+  /* 概览首屏卡片网格：进入时按列顺序淡入，stagger 0.05 足够区分又不拖尾。 */
+  const gridRef = useGsapScope<HTMLDivElement>((scope) => {
+    const cards = Array.from(scope.querySelectorAll<HTMLElement>(':scope > .card'))
+    if (cards.length === 0) return
+    gsap.from(cards, {
+      opacity: 0,
+      y: 12,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      stagger: 0.05,
+      clearProps: 'opacity,transform',
+    })
+  }, [])
+
+  /* 统计行随时间窗到达后淡入；只在「有无数据」翻转时重播，翻页不闪。 */
+  const statsKey = row === undefined ? 'empty' : 'data'
+  const statsRef = useGsapScope<HTMLDivElement>((scope) => {
+    const stats = Array.from(scope.querySelectorAll<HTMLElement>(':scope > .stat'))
+    if (stats.length === 0) return
+    gsap.from(stats, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      stagger: 0.04,
+      clearProps: 'opacity,transform',
+    })
+  }, [statsKey])
+
+  /* 动效约束：仅对前 20 条时间线记录应用入场交错动效，避免长事件历史触发大量并行补间导致渲染拖尾。 */
+  const timelineKey = timeline.map((event) => event.event_id).join('|')
+  const timelineRef = useGsapScope<HTMLOListElement>((scope) => {
+    const items = Array.from(scope.children).slice(0, 20)
+    if (items.length === 0) return
+    gsap.from(items, {
+      opacity: 0,
+      x: -6,
+      duration: MOTION_DURATION.row,
+      ease: MOTION_EASE,
+      stagger: 0.01,
+      clearProps: 'opacity,transform',
+    })
+  }, [timelineKey])
+
   return (
     <>
-      <div className="dossier-columns">
+      <div className="dossier-columns" ref={gridRef}>
         <Card title="生效范围">
           {group === '' ? (
             <p className="muted">该对象没有组归属。</p>
@@ -183,9 +229,9 @@ export function OverviewTab({
         }
       >
         {row === undefined ? (
-          <EmptyState hint={`最近 ${windowDays} 天没有该对象的统计行（可能没有任何调用）。`} />
+          <EmptyState hint={`暂无最近 ${windowDays} 天调用统计。该能力在此时间窗内未产生调用记录。`} />
         ) : (
-          <div className="stat-grid">
+          <div className="stat-grid" ref={statsRef}>
             <div className="stat">
               <span className="stat-label">调用 / 成功 / 失败</span>
               <span className="stat-value stat-value-sm">
@@ -251,10 +297,10 @@ export function OverviewTab({
         {timelinePending && <LoadingState rows={4} label="正在加载时间线" />}
         {timelineError !== null && timelineError !== undefined && <ErrorState error={timelineError} />}
         {!timelinePending && timeline.length === 0 && (
-          <EmptyState hint="该对象还没有治理事件。提交审核、发布或调整可见性后会出现在这里。" />
+          <EmptyState hint="暂无治理事件记录。提交审核、批准发布或调整可见性后将在此展示。" />
         )}
         {timeline.length > 0 && (
-          <ol className="timeline">
+          <ol className="timeline" ref={timelineRef}>
             {timeline.map((event) => (
               <li key={event.event_id} className="timeline-item">
                 <span className="timeline-time mono" title={event.ts}>
@@ -269,6 +315,7 @@ export function OverviewTab({
                   type="button"
                   className="btn btn-subtle btn-sm"
                   onClick={() => setSelected(event)}
+                  aria-label={`查看事件 ${event.event_id} 详情`}
                 >
                   详情
                 </button>

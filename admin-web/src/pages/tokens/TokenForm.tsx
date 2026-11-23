@@ -40,7 +40,7 @@ export function TokenForm({
       .map((tool) => tool.name),
   )
   const [expiresAt, setExpiresAt] = useState('')
-  /** 上游工具授权：`*`、`<id>__*` 或精确暴露名，统一写进 builtin_tools。 */
+  /** 上游受管工具授权白名单：`*`、`<id>__*` 或具体工具暴露名，提交时与内置工具合并写入 builtin_tools。 */
   const [grants, setGrants] = useState<string[]>([])
   const [formError, setFormError] = useState<string | undefined>(undefined)
 
@@ -51,14 +51,14 @@ export function TokenForm({
 
   const selectedRole = roles.find((item) => item.code === role)
   const adminSelected = groups.includes('admin')
-  /** basic 等 grantable=false 组是内置通道，不能写进令牌 groups；UI 不提供勾选。 */
+  /** 内置通道隔离约束：basic 等 grantable=false 的组为系统内置保留通道，禁止绑定给访问令牌，UI 过滤不予提供勾选。 */
   const selectableGroups = groupOptions.filter((group) => group.grantable !== false)
 
   const mutation = useMutation({
     mutationFn: (input: AccessTokenCreateInput) => createAccessToken(input),
     onSuccess: onCreated,
     onError: (error) => {
-      const failure = noticeFromError(error, '生成令牌失败')
+      const failure = noticeFromError(error, '生成访问令牌失败')
       setFormError(`${failure.description}${failure.meta === undefined ? '' : `（${failure.meta}）`}`)
     },
   })
@@ -82,8 +82,8 @@ export function TokenForm({
   }
 
   /**
-   * `*` 是互斥的全量授权：勾选时清空其他条目，取消勾选后从空清单重新开始；
-   * 其余通配/精确名按普通多选处理。
+   * 授权互斥约束：`*` 代表全局所有工具白名单，勾选时清空其余细粒度授权项；
+   * 取消勾选时重置为清空状态，避免通配符与精确子项产生冗余配置。
    */
   const toggleGrant = (value: string, checked: boolean) => {
     if (value === '*') {
@@ -253,7 +253,7 @@ export function TokenForm({
       <fieldset className="check-fieldset">
         <legend>上游工具</legend>
         {wildcards.length === 0 && upstreams.length === 0 && (
-          <p className="hint">暂无可授予的上游工具；先在 MCP 接入页安装并刷新上游。</p>
+          <p className="hint">暂无可授予的上游工具。请先在「上游」页面配置并刷新上游工具。</p>
         )}
         {wildcards.length > 0 && (
           <div className="check-grid">
@@ -296,7 +296,7 @@ export function TokenForm({
                   {tools.length === 0 ? (
                     <p className="upstream-grant-hint">
                       {upstream.tool_count === 0
-                        ? '尚未刷新，先授予通配或到上游页刷新后再按工具授予。'
+                        ? '尚未刷新，先授予通配或到「上游」页面刷新后再按工具授予。'
                         : '该上游暂无暴露工具。'}
                     </p>
                   ) : (
@@ -325,7 +325,7 @@ export function TokenForm({
           </div>
         )}
         <p className="hint">
-          通配 `*` 与单台上游 `&lt;id&gt;__*` 会同时覆盖后续新安装/新刷新的工具；与上方勾选的内置工具合并提交。
+          通配 `*` 与单台上游 `&lt;id&gt;__*` 会同时覆盖后续新安装或新刷新的工具；与上方勾选的内置工具合并提交。
         </p>
       </fieldset>
 
@@ -336,7 +336,7 @@ export function TokenForm({
       )}
       <div className="form-actions">
         <button type="submit" className="btn btn-primary" disabled={mutation.isPending}>
-          {mutation.isPending ? '生成中…' : '生成令牌'}
+          {mutation.isPending ? '生成中…' : '生成访问令牌'}
         </button>
       </div>
     </form>

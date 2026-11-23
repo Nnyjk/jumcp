@@ -40,7 +40,7 @@
 | 不带扩展名的其他 GET 路径 | SPA 深链，回退到 `index.html` |
 | 带扩展名的其他路径 | 对应静态文件；文件不存在即 404 |
 
-两条硬边界：
+硬边界：
 
 - 未知的 API 路径（如 `GET /admin/unknown`）返回 `404` + JSON
   `{"error":{"code":"MCP_NOT_FOUND","message":"未找到该路径","data":{"path":"..."}}}`，
@@ -49,13 +49,13 @@
   避免浏览器把 HTML 当脚本执行、把真正的 404 掩盖成语法错误。
 - 非 `GET`/`HEAD` 的静态请求返回 `405`（响应头 `Allow: GET, HEAD`）。
 
-前端路由不占用 `/health`。启用静态托管时，`GET`/`HEAD /health` 且 `Accept` 含 `text/html`
-（浏览器地址栏导航、刷新）返回静态站的 `index.html` 外壳；不带 `text/html` 的请求
-（监控探针、`curl`、前端 XHR）仍返回后端 JSON。
+`/health` 没有独立的管理台路由。启用静态托管时，`GET`/`HEAD /health` 且 `Accept` 含 `text/html`
+（浏览器地址栏导航、刷新）返回静态站的 `index.html` 外壳，客户端路由把它落到工作台；不带 `text/html` 的请求
+（监控探针、`curl`、管理台 XHR）仍返回后端 JSON。
 这与开发期 Vite 代理的 `bypass` 规则完全一致，dev 与生产同源行为相同。
 拦截只作用于精确路径 `/health`，`/health/*` 与 `POST /health` 不受影响。
 
-两条分支都有容器级回归：`scripts/smoke-image.sh` 在镜像里分别断言「无 `Accept` / `Accept: application/json` → 200 `application/json` 且 `audit_chain == "valid"`」与「`Accept: text/html` → 200 `text/html` 且含 `id="root"`」，既保证浏览器导航能拿到静态站，也保证监控探针不会被前端劫持。
+两条分支都有容器级回归：`scripts/smoke-image.sh` 在镜像里分别断言「无 `Accept` / `Accept: application/json` → 200 `application/json` 且 `audit_chain == "valid"`」与「`Accept: text/html` → 200 `text/html` 且含 `id="root"`」，既保证浏览器导航能拿到静态站，也保证监控探针不会被管理台路由劫持。
 
 ## 静态文件与缓存
 
@@ -75,6 +75,6 @@
 - 静态资源免鉴权，不含任何业务数据；静态站挂在**管理面**端口（`JUMCP_ADMIN_PORT`，默认 8080）。
 - `/admin/*` 只认 `POST /admin/login` 下发的 HttpOnly 会话 cookie：登录提交 `admin_users` 里的
   用户名口令，成功后 cookie 优先于一切、无效即 401（不回落 Bearer）。脚本与浏览器走同一条链路。
-- 后端**不**向静态响应注入 `Authorization`，也不下发任何凭证：管理台前端不持有凭证，
+- 后端**不**向静态响应注入 `Authorization`，也不下发任何凭证：管理台不持有凭证，
   用户只在登录页里把用户名口令交一次，此后由同源请求自动带 cookie。**没有网关/BFF 参与**，
   开发期同理（Vite 只做纯转发，`JUMCP_DEV_ADMIN_TARGET` 指管理面端口）。

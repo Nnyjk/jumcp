@@ -413,7 +413,8 @@ fn bind_value(
     })
 }
 
-/// ClickHouse 异常文本 → 稳定错误码。`Code: N` 是服务端异常码，159 表示超时。
+/// ClickHouse 异常文本 → 稳定错误码：超时按消息里的 `Timeout exceeded`/`TIMEOUT_EXCEEDED`
+/// 识别，只读拒绝另加 `readonly` 标记；其余一律 `MCP_STORE_ERROR`。
 fn classify(err: clickhouse::error::Error) -> AgentError {
     match &err {
         clickhouse::error::Error::TimedOut => {

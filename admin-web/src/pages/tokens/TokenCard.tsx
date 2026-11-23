@@ -84,7 +84,7 @@ export function TokenCard({
           </dd>
         </div>
         <div className="token-field token-field-wide">
-          <dt>工具 allowlist</dt>
+          <dt>工具白名单</dt>
           <dd>
             {builtinTools.length === 0 ? (
               DASH
@@ -112,12 +112,12 @@ export function TokenCard({
         {item.status === 'revoked' && (
           <span className="hint">
             {item.revoked_at === null ? '已撤销' : `撤销于 ${formatDateTime(item.revoked_at)}`}
-            ，不能接入 MCP
+            ，禁止接入 MCP 面(8000)
           </span>
         )}
         {item.status === 'expired' && (
           <span className="hint">
-            已过期，{formatDateTime(item.expires_at)} 之后不再接受请求，不能接入 MCP
+            已过期，{formatDateTime(item.expires_at)} 起不再接受请求，禁止接入 MCP 面(8000)
           </span>
         )}
         <div className="row-actions">
@@ -127,10 +127,10 @@ export function TokenCard({
             disabled={item.status !== 'active'}
             title={
               item.status !== 'active'
-                ? '已撤销或已过期的令牌不能接入 MCP'
+                ? '已撤销或已过期的访问令牌无法接入 MCP 面(8000)'
                 : secretKnown
                   ? '复制 HTTP 协议的 MCP JSON 配置'
-                  : '明文仅保存哈希、无法回读：将先重新签发该令牌再复制配置'
+                  : '后端仅保存哈希、无法回显明文：将先重新签发该访问令牌再复制配置'
             }
             onClick={onMcp}
           >
@@ -149,7 +149,7 @@ export function TokenCard({
             </button>
           ) : (
             <button type="button" className="btn btn-danger btn-sm" onClick={onDelete}>
-              删除记录
+              删除
             </button>
           )}
         </div>

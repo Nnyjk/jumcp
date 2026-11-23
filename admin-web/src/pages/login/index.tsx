@@ -6,9 +6,11 @@
  */
 import { useState } from 'react'
 import type { FormEvent } from 'react'
+import { gsap } from 'gsap'
 import { ApiError } from '../../api/client'
 import { useAuth } from '../../auth/session'
 import { Icon } from '../../components/Icon'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import '../../styles/login.css'
 
 /** 把 ApiError 翻成登录页文案：401/429/网络错误各自固定措辞，其余沿用后端消息。 */
@@ -55,9 +57,19 @@ export default function LoginPage() {
     }
   }
 
+  const cardRef = useGsapScope<HTMLElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 12,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  })
+
   return (
     <div className="login-shell">
-      <main className="login-card" aria-labelledby="login-title">
+      <main className="login-card" aria-labelledby="login-title" ref={cardRef}>
         <div className="login-brand">
           <span className="login-mark">
             <Icon name="logo" size={22} />

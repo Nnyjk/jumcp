@@ -17,9 +17,9 @@ export function upstreamToolsQueryKey(id: string) {
   return [...UPSTREAM_TOOLS_KEY, id] as const
 }
 
-/** 全量组清单：名称映射、下拉选项与审计对象名都取这一份。
- * 传 `limit` 时用独立 query key（同一 ['groups'] 前缀，写操作失效一次即可覆盖），
- * 供需要一次取全的下拉使用，避免默认分页截断。 */
+/** 全量组清单：名称映射、下拉选项与审计对象名都取这一份，后端不分页、一次返回全部。
+ * 传 `limit` 只换一个独立 query key（同一 ['groups'] 前缀，写操作失效一次即可覆盖）；
+ * 该参数后端不参与过滤，清单内容与不传时相同。 */
 export function useGroupsQuery(limit?: number) {
   return useQuery({
     queryKey: limit === undefined ? GROUPS_KEY : [...GROUPS_KEY, { limit }],
@@ -44,8 +44,8 @@ export function useUpstreamsQuery() {
 }
 
 /**
- * 上游工具缓存：只读后端缓存，GET 不触网。
- * `id` 为空时不发请求（弹层关闭），刷新按钮负责触发探测并失效该 key。
+ * 上游工具缓存：只读后端缓存（status=unknown、tools=[]），GET 不触网。
+ * `id` 为 null 时不发请求（弹层关闭），刷新按钮负责触发探测并失效该 key。
  */
 export function useUpstreamToolsQuery(id: string | null) {
   return useQuery({

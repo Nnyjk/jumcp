@@ -13,6 +13,8 @@ import { DASH, formatDateTime, formatWaitSince } from '../../format'
 import { TOOL_KIND_LABEL } from '../../labels'
 import { noticeFromError, type Notice } from '../../notice'
 import { useAdminView } from '../../viewStack'
+import { gsap } from 'gsap'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { PublishDialog } from './PublishDialog'
 import { RejectDialog } from './RejectDialog'
 
@@ -85,6 +87,18 @@ export function ReviewQueuePanel() {
   const draftItems = items.filter((item) => item.status === 'draft')
   const current = tab === 'review' ? reviewItems : draftItems
 
+  /* 队列表格在数据到达后淡入一次；切换待审/草稿时签名变化才重播。 */
+  const tableKey = `${tab}:${current.length}:${current[0]?.id ?? ''}:${current[0]?.version ?? ''}`
+  const tableRef = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [tableKey])
+
   const reviewColumns: Array<DataTableColumn<ReviewQueueItem>> = [
     { key: 'id', header: '能力 ID', mono: true, width: '190px', cell: (row) => row.id },
     {
@@ -144,6 +158,7 @@ export function ReviewQueuePanel() {
             type="button"
             className="btn btn-secondary btn-sm"
             onClick={() => openDossier({ id: row.id, tab: 'approval' })}
+            aria-label={`查看 ${row.id} v${row.version} 的审批详情`}
           >
             详情
           </button>
@@ -153,6 +168,7 @@ export function ReviewQueuePanel() {
             disabled={meQuery.isPending}
             title={meQuery.isPending ? '正在读取当前主体' : undefined}
             onClick={() => setDialog({ kind: 'publish', row })}
+            aria-label={`批准发布 ${row.id} v${row.version}`}
           >
             批准发布
           </button>
@@ -160,6 +176,7 @@ export function ReviewQueuePanel() {
             type="button"
             className="btn btn-danger btn-sm"
             onClick={() => setDialog({ kind: 'reject', row })}
+            aria-label={`退回 ${row.id} v${row.version}`}
           >
             退回
           </button>
@@ -209,6 +226,7 @@ export function ReviewQueuePanel() {
             type="button"
             className="btn btn-secondary btn-sm"
             onClick={() => openDossier({ id: row.id, tab: 'approval' })}
+            aria-label={`查看 ${row.id} v${row.version} 的审批详情`}
           >
             详情
           </button>
@@ -216,6 +234,7 @@ export function ReviewQueuePanel() {
             type="button"
             className="btn btn-primary btn-sm"
             onClick={() => setDialog({ kind: 'submit', row })}
+            aria-label={`提交审核 ${row.id} v${row.version}`}
           >
             提交审核
           </button>
@@ -260,35 +279,38 @@ export function ReviewQueuePanel() {
         }
         flush
       >
-        {queueQuery.isPending && <LoadingState rows={6} label="正在加载审核队列" />}
-        {queueQuery.isError && <ErrorState error={queueQuery.error} />}
-        {queueQuery.data !== undefined && current.length === 0 && (
-          <EmptyState
-            hint={
-              tab === 'review'
-                ? '当前没有待审批条目。草稿提交后才会出现在这里。'
-                : '没有未提交的草稿。'
-            }
-          />
-        )}
-        {current.length > 0 && tab === 'review' && (
-          <DataTable
-            label="待审批能力版本"
-            columns={reviewColumns}
-            rows={current}
-            rowKey={(row) => `${row.id}@${row.version}`}
-            minWidth="1210px"
-          />
-        )}
-        {current.length > 0 && tab === 'draft' && (
-          <DataTable
-            label="未提交草稿"
-            columns={draftColumns}
-            rows={current}
-            rowKey={(row) => `${row.id}@${row.version}`}
-            minWidth="1050px"
-          />
-        )}
+        {/* 约束：.result-region 施加最小高度以维持待审批与未提交草稿切栏或空态与表格切换时的容器高度稳定，防止塌高晃动 */}
+        <div className="result-region" ref={tableRef}>
+          {queueQuery.isPending && <LoadingState rows={6} label="正在加载审核队列" />}
+          {queueQuery.isError && <ErrorState error={queueQuery.error} />}
+          {queueQuery.data !== undefined && current.length === 0 && (
+            <EmptyState
+              hint={
+                tab === 'review'
+                  ? '暂无待审批条目。能力草稿提交审核后将在此进入队列。'
+                  : '暂无未提交草稿。可在工具台账中新建草案。'
+              }
+            />
+          )}
+          {current.length > 0 && tab === 'review' && (
+            <DataTable
+              label="待审批能力版本"
+              columns={reviewColumns}
+              rows={current}
+              rowKey={(row) => `${row.id}@${row.version}`}
+              minWidth="1210px"
+            />
+          )}
+          {current.length > 0 && tab === 'draft' && (
+            <DataTable
+              label="未提交草稿"
+              columns={draftColumns}
+              rows={current}
+              rowKey={(row) => `${row.id}@${row.version}`}
+              minWidth="1050px"
+            />
+          )}
+        </div>
       </Card>
 
       {dialog !== null && dialog.kind === 'submit' && (

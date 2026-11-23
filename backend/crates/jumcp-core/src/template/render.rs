@@ -386,7 +386,6 @@ fn find_forbidden_columns(sql: &str, forbidden: &[String]) -> Vec<String> {
 }
 
 /// 结构变体白名单 + 命名占位符改写。
-///
 fn rewrite(
     sql: &str,
     params: &[ParamSpec],

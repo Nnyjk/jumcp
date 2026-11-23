@@ -240,3 +240,20 @@
   }
 }
 
+
+/* 状态块（空/错）出现时轻微淡入：数据到达后由骨架切到结果，避免硬切。 */
+@keyframes state-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.state,
+.empty-state {
+  animation: state-enter var(--motion-enter) var(--ease-standard);
+}

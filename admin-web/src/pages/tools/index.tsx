@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { gsap } from 'gsap'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchToolStats } from '../../api/admin'
@@ -19,6 +20,7 @@ import { AuditScopeNote } from '../../components/ScopeNote'
 import { InfoBar } from '../../components/InfoBar'
 import { noticeFromError, type Notice } from '../../notice'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { DASH, formatDateTime, formatPercent } from '../../format'
 import {
   TOOL_KIND_LABEL,
@@ -28,7 +30,7 @@ import {
 import { useAdminView } from '../../viewStack'
 import { CreateCapabilityForm } from './CreateCapabilityForm'
 import { ToolFilterBar } from './ToolFilterBar'
-import { filterTools } from './toolFormat'
+import { SOURCE_OPTIONS, filterTools } from './toolFormat'
 
 
 export default function ToolsPage({
@@ -71,6 +73,43 @@ export default function ToolsPage({
   const rows = useMemo(
     () => filterTools(allTools, { source: tab, health, risk, category, group: groupFilter, q }, groupIndex),
     [allTools, tab, health, risk, category, q, groupFilter, groupIndex],
+  )
+
+  /** 清空筛选：筛选条按钮与空态里的「清空筛选」共用同一份重置动作。 */
+  const clearFilters = () => {
+    setHealth('')
+    setRisk('')
+    setCategory('')
+    setQ('')
+    setGroupFilter('')
+  }
+
+  /**
+   * 内容区重播：筛选签名变化后延迟 160ms（输入过程中不打断）再重放一次淡入。
+   * contentKey 初始为 undefined：首屏不重播，避免与 PageShell 的页面入场动画叠加。
+   */
+  const filterSignature = `${tab}|${windowDays}|${health}|${risk}|${category}|${groupFilter}|${q}`
+  const lastSignature = useRef(filterSignature)
+  const [contentKey, setContentKey] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (lastSignature.current === filterSignature) return
+    lastSignature.current = filterSignature
+    const timer = window.setTimeout(() => setContentKey(filterSignature), 160)
+    return () => window.clearTimeout(timer)
+  }, [filterSignature])
+
+  const contentRef = useGsapScope<HTMLDivElement>(
+    (scope) => {
+      if (contentKey === undefined) return
+      gsap.from(scope, {
+        opacity: 0,
+        y: 6,
+        duration: MOTION_DURATION.fast,
+        ease: MOTION_EASE,
+        clearProps: 'opacity,transform',
+      })
+    },
+    [contentKey],
   )
 
   /**
@@ -242,13 +281,7 @@ export default function ToolsPage({
         groupsError={groupsQuery.isError}
         refreshing={statsQuery.isFetching}
         onRefresh={() => void statsQuery.refetch()}
-        onClear={() => {
-          setHealth('')
-          setRisk('')
-          setCategory('')
-          setQ('')
-          setGroupFilter('')
-        }}
+        onClear={clearFilters}
       />
 
       {statsQuery.data?.truncated === true && (
@@ -261,16 +294,29 @@ export default function ToolsPage({
 
       <Card
         title={tab === 'builtin' ? '内置工具清单' : '受管能力清单'}
-        subtitle={statsQuery.data === undefined ? (statsQuery.isError ? '查询失败' : '查询中') : `最近 ${windowDays} 天`}
+        subtitle={
+          statsQuery.data === undefined
+            ? statsQuery.isError
+              ? '查询失败'
+              : '查询中'
+            : `最近 ${windowDays} 天`
+        }
         actions={
           <>
             <div className="segmented" role="group" aria-label="工具来源">
-              <button type="button" aria-pressed={tab === 'managed'} onClick={() => setTab('managed')}>
-                受管能力 <span className="segmented-count">{managedCount}</span>
-              </button>
-              <button type="button" aria-pressed={tab === 'builtin'} onClick={() => setTab('builtin')}>
-                内置工具 <span className="segmented-count">{builtinCount}</span>
-              </button>
+              {SOURCE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={tab === option.value}
+                  onClick={() => setTab(option.value)}
+                >
+                  {option.label}{' '}
+                  <span className="segmented-count">
+                    {option.value === 'builtin' ? builtinCount : managedCount}
+                  </span>
+                </button>
+              ))}
             </div>
             <button
               type="button"
@@ -283,54 +329,51 @@ export default function ToolsPage({
         }
         flush
       >
-        <AuditScopeNote />
-        {statsQuery.isPending && <LoadingState rows={8} label="正在加载工具统计" />}
-        {statsQuery.isError && (
-          <div className="state-wrap">
-            <ErrorState error={statsQuery.error} />
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => statsQuery.refetch()}
-              disabled={statsQuery.isFetching}
-            >
-              重试
-            </button>
-          </div>
-        )}
-        {statsQuery.data !== undefined && allTools.length === 0 && (
-          <EmptyState hint="时间窗内没有任何工具调用记录。可先「新建草案」，或放宽时间窗后刷新。" />
-        )}
-        {allTools.length > 0 && rows.length === 0 && (
-          <EmptyState
-            hint={`「${tab === 'builtin' ? '内置工具' : '受管能力'}」下没有符合健康/风险/组/搜索条件的记录。`}
-            action={
+        {/* 内容区：筛选条件变化后重播一次淡入，切换数据源/筛选时读起来是「换了一张表」。 */}
+        <div ref={contentRef}>
+          <AuditScopeNote />
+          {statsQuery.isPending && <LoadingState rows={8} label="正在加载工具统计" />}
+          {statsQuery.isError && (
+            <div className="state-wrap">
+              <ErrorState error={statsQuery.error} />
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => {
-                  setHealth('')
-                  setRisk('')
-                  setCategory('')
-                  setQ('')
-                  setGroupFilter('')
-                }}
+                onClick={() => statsQuery.refetch()}
+                disabled={statsQuery.isFetching}
               >
-                清空筛选
+                重试
               </button>
-            }
-          />
-        )}
-        {rows.length > 0 && (
-          <DataTable
-            label={`${tab === 'builtin' ? '内置工具' : '受管能力'}台账`}
-            meta={`共 ${rows.length} 行 · 按调用次数降序`}
-            columns={columns}
-            rows={rows}
-            rowKey={(row) => row.id}
-            minWidth="1212px"
-          />
-        )}
+            </div>
+          )}
+          {statsQuery.data !== undefined && allTools.length === 0 && (
+            <EmptyState hint="时间窗内没有任何工具调用记录。可先「新建草案」，或放宽时间窗后刷新。" />
+          )}
+          {allTools.length > 0 && rows.length === 0 && (
+            <EmptyState
+              hint={`「${tab === 'builtin' ? '内置工具' : '受管能力'}」下没有符合健康/风险/组/搜索条件的记录。`}
+              action={
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={clearFilters}
+                >
+                  清空筛选
+                </button>
+              }
+            />
+          )}
+          {rows.length > 0 && (
+            <DataTable
+              label={`${tab === 'builtin' ? '内置工具' : '受管能力'}台账`}
+              meta={`共 ${rows.length} 行 · 按调用次数降序`}
+              columns={columns}
+              rows={rows}
+              rowKey={(row) => row.id}
+              minWidth="1212px"
+            />
+          )}
+        </div>
       </Card>
 
       {createOpen && (

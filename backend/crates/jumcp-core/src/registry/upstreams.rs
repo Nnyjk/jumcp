@@ -59,7 +59,7 @@ pub struct McpUpstream {
     pub timeout_ms: i64,
     /// 安装来源：内置包的 id（`None` = 手工创建）。安装语义只读这两列，运行时一律按普通上游。
     pub catalog_id: Option<String>,
-    /// 安装来源的包版本：管理台据此提示"包已升级、可重装"。
+    /// 安装来源的包版本：只记录登记时的版本，运行时不读（不因来源不同而改变行为）。
     pub catalog_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -76,7 +76,7 @@ pub struct UpstreamTool {
 
 /// 逐工具组覆盖：**只存显式覆盖**，无行 = 继承 `mcp_upstreams.group_code`。
 ///
-/// 目前只允许 `group_code = basic`：单工具进公共基础通道是"开放一个只读工具"，
+/// 只允许 `group_code = basic`（其它组值在写入时被拒）：单工具进公共基础通道是"开放一个只读工具"，
 /// 其他组仍按整台上游授权，避免出现"逐工具拆授权组"的第二套模型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamToolGroup {
@@ -608,7 +608,7 @@ impl CapabilityStore {
 
     /// 全部逐工具组覆盖（按 `upstream_id, tool_name` 升序，输出稳定）。
     ///
-    /// 目前只有 `basic` 一种取值：投影阶段用 `(upstream_id, tool_name) → group_code` 决定
+    /// `group_code` 只有 `basic` 一种取值：投影阶段用 `(upstream_id, tool_name) → group_code` 决定
     /// 单个上游工具的生效组（无行 = 继承上游组）。
     pub fn upstream_tool_groups(&self) -> Result<Vec<UpstreamToolGroup>, McpError> {
         let conn = self.conn.lock().map_err(|_| McpError::lock())?;

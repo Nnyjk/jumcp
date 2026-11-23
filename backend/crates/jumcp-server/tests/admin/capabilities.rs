@@ -305,7 +305,7 @@ async fn published_definition_edit_allows_self_approval() {
     assert_eq!(v2.approved_by, "alice");
     assert_eq!(v2.approval_id, "ap-2");
     assert!(!v2.approved_at.is_empty());
-    // 审批审计对象是外部票号 + token 派生批准人。
+    // 审批审计对象是外部票号 + 会话账号派生的批准人。
     let changes = h
         .audit
         .query(Some(&json!({"event_type": "admin_change"})))

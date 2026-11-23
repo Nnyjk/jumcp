@@ -12,7 +12,7 @@
 | 字段 | 说明 |
 |---|---|
 | `event_id` | 32 位无连字符 UUID，追加时生成 |
-| `ts` | RFC3339，UTC，纳秒或微秒小数位；管理台按本地时区显示到毫秒并标注 UTC 偏移，同一秒内的事件可据此排序 |
+| `ts` | RFC3339，UTC，小数位由 chrono `to_rfc3339` 自动裁到毫秒/微秒/纳秒；管理台按本地时区显示 `YYYY-MM-DD HH:mm:ss`（到秒，不标注 UTC 偏移），完整值保留在 `title` 与详情，排序仍按 RFC3339 |
 | `actor` | `type`∈{`admin`,`agent`}，`id` 为凭证派生主体（admin 由管理员账号的 `username` 派生，agent 由数据库 access token 的 `caller` 派生），`role` 为角色名。可选键 `token_id`（数据库 token id）与 `source`（MCP token 配置的 `source` / 管理面固定 `admin-api`）只在有值时出现；stdio 与管理员账号都不写 `token_id`。未认证失败会留下 `id` 为空串的记录 |
 | `event_type` | 闭集：`tools_list_served`、`capability_search`、`capability_describe`、`tool_call`、`template_run`、`policy_decision`、`admin_change` |
 | `prev_hash` / `hash` | 哈希链；`hash = sha256(canonical(envelope 去 hash) + prev_hash)`，SHA-256 64 位小写 hex。首条 `prev_hash` 为空串 |
@@ -174,10 +174,10 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
 ### 7.1 `GET /admin/me`
 
 ```
-{ id, role, type }
+{ id, user_id, role, type }
 ```
 
-即当前账号的 `username`，与审计信封 `actor` 同义，用于前端确认当前操作主体，并把主体写进审批记录与审计。
+`id` 是当前账号的 `username`，与审计信封 `actor` 同义；`user_id` 是账号主键（32 位 hex，改自己账号时按它定位）；`role` / `type` 固定为 `admin`。管理台用它确认当前操作主体，并把主体写进审批记录与审计。
 
 ### 7.1.1 管理员账号
 
@@ -327,7 +327,7 @@ body: { name, role, groups: string[], builtin_tools: string[],
 ### 7.9 `POST /admin/tokens/{id}/revoke`
 
 ```
-200: AccessTokenItem          // 直接返回条目（与前端 `revokeAccessToken` 对齐）
+200: AccessTokenItem          // 直接返回条目（与管理台 `revokeAccessToken` 对齐）
 ```
 
 - 只置 `enabled=0` + `revoked_at`，不删除行；已撤销再撤销返回 409 `MCP_TOKEN_ALREADY_REVOKED`，且不重复写审计。
@@ -368,10 +368,10 @@ body: { name, role, groups: string[], builtin_tools: string[],
 ```
 
 - 角色与组都返回 `code` + `name`：`code` 是权限标识（token.role、token.groups、审计 actor.role 一律用它），`name` 只是中文展示名，**不参与**任何权限判定；
-- `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；旧的「name=code」语义已删除；
+- `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；
 - `groups` 是配置组 + 管理组合并（`Service::effective_policy`）后的结果，`token_count` 是该组被多少个**未撤销** token 引用；
-- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/登记模板草案/审核队列/审计查询/改可见性）；
-- `tool_wildcards` 是 allowlist 的两档通配（`*`），`upstreams[].wildcard` 是 `<id>__*` 形态，前端据此提供"整台上游"授权；
+- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/模板执行/登记模板草案/审核队列/审计查询/定制化候选评分/改可见性/发布能力）；
+- `tool_wildcards` 是 allowlist 的两档通配（`*`），`upstreams[].wildcard` 是 `<id>__*` 形态，管理台据此提供"整台上游"授权；
 - `upstreams` 列出全部已注册上游（未 refresh 的也在，`tool_count=0`），`upstream_tools` 的 `name` 是暴露名、`tool` 是上游原始名、`group` 是生效组（`basic` 覆盖优先），`label` 形如 `<上游名> / <原始工具名>`；
 - 三个上游字段只读 registry 里的缓存视图，**不触网**：授予面不因管理面打开而探测上游；未配置上游管理器时三个字段都是空数组。
 
@@ -396,7 +396,7 @@ GET /admin/groups?q=&source=&role=
 
 - `basic` 是代码内置组，固定出现在列表首位（`source:"builtin"`、`name:"基础工具"`、
   `priority:0`、`min_budget:800`、`roles:[]`、`grantable:false`、`token_count:0`）；
-  `capability_count` 是常驻内置工具数（3）加当前逐工具加入 `basic` 的上游工具数；
+  `capability_count` 是常驻内置工具数（4：`search_capabilities`、`describe_capability`、`list_groups`、`db_run_template`）加当前逐工具加入 `basic` 的上游工具数；
 - `q` 对 code/name 做不区分大小写的包含匹配；`source` 只接受 `policy`|`managed`|`builtin`
   （其他值 400 `MCP_VALIDATION_ERROR`）；`role` 是角色 code，精确匹配条目的 `roles`；
 - 三层过滤同时生效，`total` 是过滤后的条数；
@@ -425,6 +425,8 @@ DELETE /admin/groups/{code}
 2. `POST /admin/capabilities/{id}/visibility`：设置 `discoverable` / `callable`。
 
 **发布 ≠ 对调用方开放**：只有两个开关都打开、且调用方属于该能力所在组，才既出现在 `tools/list`/`search` 又能 `tools/call`。管理台「审批」分栏把两步合并为一次操作，但仍是两次独立请求；第二步失败不会回滚已发布状态，界面会明确提示「已发布但可见性保存失败」。
+
+agent 侧推荐在 `admin_publish_capability` 里一并传 `discoverable` / `callable`，否则发布后仍是 `callable=false`，紧接着的 `db_run_template` 返回 `MCP_CAPABILITY_NOT_FOUND`（消息「能力不存在或不可见」）——看起来像登记失败，实际只是没开调用面。
 
 可见性判定只看组名与调用方角色；组的 `min_budget` / `priority` 不改变可见范围。
 
