@@ -64,7 +64,7 @@ pub trait BuiltinMcp: Send + Sync {
 | 方法 | 响应 |
 |---|---|
 | `initialize` | `{protocolVersion:"2025-03-26", capabilities:{tools:{}}, serverInfo:{name:<package id>, version:<package version>}}` |
-| `notifications/initialized` | `202` 空体（通知没有 id） |
+| 任何无 `id` 的请求（含 `notifications/initialized`） | `202` 空体（通知不回包；包与上游行校验通过后才静默成功） |
 | `ping` | `{}` |
 | `tools/list` | `{tools:[{name, description, inputSchema}]}`（无 cursor，一次给全） |
 | `tools/call` | 插件的 `result` 对象；缺 `params.name` → `-32602` |
@@ -134,6 +134,6 @@ AES-256-GCM，AAD 为空，hex 小写，12 字节随机 nonce。
 - **额外一跳**：上游客户端经回环 HTTP 调用本进程端点，每个 `tools/call` 多一次本地 HTTP 往返；
   仍受 `timeout_ms` 约束，但对延迟敏感的内置包应把工具实现做薄。
 - **TLS**：传输加密只让请求体里的密码是密文，不替代 TLS——共享密钥随管理页面下发，能读到页面
-  的中间人同样能拿到它。生产必须由网关终止 TLS，不要把管理面或密码字段暴露在明文 HTTP 上。
+  的中间人同样能拿到它。生产必须在前面做 TLS 终止（反向代理 / 负载均衡），不要把管理面或密码字段暴露在明文 HTTP 上。
 - 内嵌端点不实现 `resources`/`prompts`/`sampling`/`logging`/`completion`；也不支持批处理与
   `tools/list_changed` 推送（与 `/mcp` 面一致）。

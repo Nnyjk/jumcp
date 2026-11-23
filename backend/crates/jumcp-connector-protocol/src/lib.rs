@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 协议版本：host 与 agent 必须一致，版本不同直接拒绝握手。
+/// 协议版本：随 `initialize` 回执下发给对端；framing 层不做版本比对，对端必须自行拒绝不兼容版本。
 pub const PROTOCOL_VERSION: u32 = 1;
 
 pub const METHOD_INITIALIZE: &str = "initialize";

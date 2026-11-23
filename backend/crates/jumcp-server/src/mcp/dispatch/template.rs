@@ -85,7 +85,8 @@ impl McpServer {
             );
             return self.reject_tool_call(id, actor, &e, "db_run_template", context);
         }
-        // 6. 结果缓存：命中即不再执行（同 session 同参数连调两次只有第一次真跑）。
+        // 6. 结果缓存：命中即不再执行。缓存键是（模板 id、版本、参数哈希），不含身份，
+        //    因此 TTL 内同一查询对所有调用方都只真跑一次。
         if let Some(cached) = registry.cache_lookup(template_id, version, &rendered.params_hash) {
             // 命中分支没有执行结果：token 取缓存里记的值，缺失时才按同一口径估算。
             let cached_tokens = cached

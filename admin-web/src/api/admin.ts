@@ -236,7 +236,7 @@ export async function createCapability(
   })
 }
 
-/** 下架：successor_id 必须是已存在的后继能力。 */
+/** 下线：successor_id 必须是已存在的后继能力。 */
 export async function deprecateCapability(id: string, successorId: string): Promise<void> {
   await request<void>(`/admin/capabilities/${encodeURIComponent(id)}/deprecate`, {
     method: 'POST',
@@ -244,7 +244,10 @@ export async function deprecateCapability(id: string, successorId: string): Prom
   })
 }
 
-/** 组清单：policy 组来自 config/policy.toml（只读），managed 组可在管理台维护。 */
+/**
+ * 组清单：policy 组来自 config/policy.toml（只读），managed 组可在管理台维护。
+ * 后端不分页、一次返回全部条目；`limit` 会被忽略，保留它只为兼容旧调用方。
+ */
 export async function fetchGroups(query: GroupQuery = {}, signal?: AbortSignal): Promise<GroupPage> {
   return request<GroupPage>('/admin/groups', {
     params: {

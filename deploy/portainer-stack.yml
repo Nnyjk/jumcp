@@ -15,9 +15,8 @@ version: "3.8"
 # 管理台（浏览器）访问：本文件发布两个端口，各自只服务自己的面——
 #   - 8000（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent；
 #   - 8080（管理面）：`/admin/*`、`/health`、管理台静态站，给浏览器。
-# 管理台自带登录页（`POST /admin/login` → HttpOnly 会话 cookie），因此**没有网关**：
-# `deploy/admin-gateway/` 已删除，浏览器直连管理面端口，不再有反向代理注入 Bearer。
-# MCP 客户端也用各自 token 直连 MCP 面，同样不经任何中间层。
+# 管理台自带登录页（`POST /admin/login` → HttpOnly 会话 cookie），没有网关或 BFF：
+# 浏览器直连管理面端口，MCP 客户端用各自 token 直连 MCP 面，都不经中间层。
 #
 # 安全提示：管理面是浏览器入口，默认 cookie 不带 `Secure`（内网 HTTP）。要经公网暴露，
 # 请在前面挂 TLS 终止并设置 JUMCP_ADMIN_COOKIE_SECURE=1，同时用网络策略限制 8080 的访问来源。

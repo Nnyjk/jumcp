@@ -191,7 +191,7 @@ impl CapabilityStore {
         Ok(after)
     }
 
-    /// 删除管理组：仍有 capability 引用 → 409（带 `capability_count`）。
+    /// 删除管理组：仍有能力或未撤销令牌引用 → 409（带 `capability_count`/`token_count`）。
     ///
     /// 引用计数与删除在同一把连接锁内完成，避免"查完为 0、删前被别的请求写进一条"的竞态。
     pub fn remove_managed_group(

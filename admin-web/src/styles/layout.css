@@ -13,7 +13,7 @@
   font-weight: 600;
   text-decoration: none;
   transform: translateY(-200%);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .skip-link:focus-visible {
@@ -25,7 +25,7 @@
   display: grid;
   grid-template-columns: var(--nav-width) minmax(0, 1fr);
   min-height: 100vh;
-  transition: grid-template-columns 160ms ease;
+  transition: grid-template-columns var(--motion-fast) var(--ease-standard);
 }
 
 .shell[data-collapsed='true'] {
@@ -110,7 +110,7 @@
   font-size: var(--fs-14);
   text-decoration: none;
   white-space: nowrap;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .nav-link::before {
@@ -123,7 +123,7 @@
   border-radius: 0 2px 2px 0;
   background: transparent;
   transform: translateY(-50%);
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard);
 }
 
 .nav-link:hover {
@@ -188,7 +188,7 @@
   opacity: 0;
   pointer-events: none;
   transform: translateY(-50%);
-  transition: opacity 90ms ease;
+  transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
 .sidebar[data-collapsed='true'] .nav-link:hover::after,
@@ -435,7 +435,7 @@
     opacity: 0;
     pointer-events: none;
     transform: translateY(-50%);
-    transition: opacity 90ms ease;
+    transition: opacity var(--motion-fast) var(--ease-standard);
   }
 
   .sidebar .nav-link:hover::after,

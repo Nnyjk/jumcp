@@ -37,12 +37,20 @@ export function CopyButton({
     }, RESET_MS)
   }
 
-  const text = state === 'copied' ? copiedLabel : state === 'failed' ? '复制失败' : label
 
   return (
     <>
-      <button type="button" className={className} onClick={() => void copy()}>
-        {text}
+      <button
+        type="button"
+        className={`${className} copy-button`}
+        data-state={state}
+        onClick={() => void copy()}
+      >
+        <span className="copy-button-label">
+          <span className="copy-button-text copy-button-text-idle">{label}</span>
+          <span className="copy-button-text copy-button-text-copied">{copiedLabel}</span>
+          <span className="copy-button-text copy-button-text-failed">复制失败</span>
+        </span>
       </button>
       {/* 按钮文案变化在部分读屏下不会重播，用独立状态区保证「复制成功/失败」被听到。 */}
       <span className="sr-only" role="status">

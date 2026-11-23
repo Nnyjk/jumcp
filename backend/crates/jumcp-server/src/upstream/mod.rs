@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinSet;
 
-/// 未显式声明时，`tools/list` 缓存的有效期；管理面写操作会立即失效。
+/// `tools/list` 缓存有效期：过期后下一次投影重新拉取；管理面写配置会立即失效整条缓存。
 const TOOLS_TTL: Duration = Duration::from_secs(30);
 
 /// MCP 协议版本：对外回执与向上游 `initialize` 使用同一常量（当前只支持这一个版本）。

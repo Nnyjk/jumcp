@@ -37,7 +37,10 @@ const BASE_URL = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
  */
 let unauthorizedHandler: (() => void) | undefined
 
-/** 由 AuthProvider 注入：任何非豁免请求返回 401 时清登录态并跳登录页（client 不依赖 router）。 */
+/**
+ * 由 AuthProvider 注入：任何非豁免请求返回 401 时把登录态切回匿名（client 不依赖 router），
+ * 跳转由 App 的会话闸门完成。
+ */
 export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
   unauthorizedHandler = handler
 }

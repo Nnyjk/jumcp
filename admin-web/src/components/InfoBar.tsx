@@ -14,8 +14,11 @@ const SEVERITY_ICON: Record<InfoBarSeverity, IconName> = {
 
 /**
  * Fluent InfoBar：图标 + 标题 + 描述 + 可选元信息（如审计 event_id）。
- * 即时性完全由 role 承担：danger=alert（assertive），其余=status（polite），不再重复 aria-live，
- * 否则同一消息会被读屏播报两次。标题/描述用内部生成 id 关联，调用方无需参与。
+ * 没有关闭按钮：可见性完全由父组件决定，显示后要靠父组件清空状态才会消失。
+ * 即时性完全由 role 承担：danger=alert（assertive），info/success/warning=status（polite），
+ * 不再重复 aria-live，否则同一消息会被读屏播报两次。
+ * warning 与 danger 共用 alert 图标，区别只在配色与文案，不要靠图标区分严重程度。
+ * 标题/描述用内部生成 id 关联，调用方无需参与；severity 或 title 变化时重播一次进入动效。
  */
 export function InfoBar({
   severity,

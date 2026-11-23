@@ -207,6 +207,12 @@ fn audit_change(
         json!({"username": user.username, "state": user.state}),
     );
     if !changes.is_empty() {
+        // 与能力/组/上游审计共用 {field,before,after} 形状，管理台才能按字段名渲染；
+        // 管理账户审计只记录字段名，口令等敏感值永不进载荷。
+        let changes: Vec<Value> = changes
+            .iter()
+            .map(|field| json!({"field": field, "before": null, "after": null}))
+            .collect();
         payload.insert("changes".into(), json!(changes));
     }
     state

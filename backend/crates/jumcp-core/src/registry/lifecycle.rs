@@ -297,7 +297,7 @@ impl CapabilityStore {
         ))
     }
 
-    /// review → published（外部审批来源）：HTTP 管理面与模板注册表的历史入口。
+    /// review → published（外部审批来源）：只由 [`Self::promote_to_published`] 调用。
     fn transition_to_published(
         &self,
         id: &str,
@@ -514,7 +514,10 @@ impl CapabilityStore {
         )
     }
 
-    /// 已发布定义只插入新 version；哈希变化须新 `approval_id`。单个事务内：校验状态→插入新 version 行→更新指针(status 保持不变，不经过 review 中间态)。
+    /// 定义变更不原地改：插入新 version 行再更新指针，状态保持不变（不经过 review 中间态）。
+    ///
+    /// 除 deprecated 外的状态都可发布新版本；`approval_id` 无条件必填（空即拒）。插入与
+    /// 指针更新在同一事务内，任一失败整体回滚。
     pub fn publish_version(
         &self,
         id: &str,

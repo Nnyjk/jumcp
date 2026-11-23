@@ -39,7 +39,10 @@ export default defineConfig({
     proxy: {
       // 管理面在自己的端口（8080）：登录页 POST /admin/login 必须打到 adminTarget，而不是 MCP 面的 apiTarget。
       // 不再注入 Authorization：登录页拿到的会话 cookie 由浏览器随请求带上（credentials: 'include'）。
-      '/admin': { target: adminTarget, changeOrigin: true },
+      // changeOrigin 必须保持 false：后端对 cookie 身份的非 GET 请求做同源校验（Origin 的
+      // authority 必须等于 Host），改写 Host 会把浏览器的 5173 变成 8080，登录直接 403。
+      // 键写成正则：字面量 '/admin' 会按前缀吃掉 SPA 路由 /admins（被代理到后端直接 404）。
+      '^/admin(?:/|$)': { target: adminTarget, changeOrigin: false },
       // MCP 接入：令牌页复制的 URL 是本页同源 /mcp，开发期必须转发到后端才可用。
       // 这里不注入管理面 Bearer：Authorization 原样透传客户端自己的 access token。
       // 前缀 /mcp 同时会命中前端路由 /mcp-install：文档导航交回 SPA，只有 XHR/fetch 才代理。

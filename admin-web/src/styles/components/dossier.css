@@ -86,7 +86,7 @@
   font: inherit;
   font-size: var(--fs-14);
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .tab:hover {
@@ -302,6 +302,14 @@
   padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
+
+/* 结果区（档案的审计/调用面板、审计页的事件与审核队列）：加载骨架与空/错/数据块的体量差很大，
+   给一个下限让换态时卡片高度基本不变，分页与表格不会在下方跳位。 */
+.result-region {
+  min-height: 180px;
+}
+
+
 
 /* 不支持 backdrop-filter 时退回不透明面，否则半透明叠在背景上会牺牲正文对比度。 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

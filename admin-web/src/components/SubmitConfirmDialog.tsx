@@ -5,6 +5,8 @@ import { DetailField, DetailGrid } from './DetailGrid'
 /**
  * 治理状态变更（草稿 → 待审）的二次确认。提交不可自行撤回，只能由审批人退回，
  * 因此审核队列与能力档案两条入口共用同一份确认文案，避免两处行为分叉。
+ * 只负责展示与回调：标题带能力 id、副标题带版本与状态流转，字段值原样呈现供核对；
+ * 真正的 mutation 与关闭时机由调用方掌握。
  */
 export function SubmitConfirmDialog({
   id,

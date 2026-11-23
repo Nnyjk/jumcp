@@ -14,6 +14,11 @@
   gap: 4px;
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.gov-item:hover {
+  background: var(--row-hover);
 }
 
 .gov-item:last-child {

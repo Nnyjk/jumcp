@@ -11,7 +11,7 @@ import DashboardPage from './pages/dashboard'
 import LoginPage, { SessionSplash, SessionUnavailable } from './pages/login'
 import { AdminViewContext, VIEW_TITLE, useAdminViewStack } from './viewStack'
 
-// 路由级分包：工作台是入口页面保持静态，其余页面按需加载，避免单包超过 500 kB。
+// 路由级分包：工作台是入口页面保持静态，其余页面按路由懒加载，避免首屏包越过 Rollup 的 500 kB 告警线。
 const AuditPage = lazy(() => import('./pages/audit'))
 const AuditView = lazy(() => import('./pages/audit').then((module) => ({ default: module.AuditView })))
 const AdminsPage = lazy(() => import('./pages/admins'))
@@ -43,7 +43,7 @@ const NAV_ITEMS: PageMeta[] = [
   { to: '/upstreams', label: 'MCP 接入', icon: 'link', title: 'MCP 接入' },
   { to: '/groups', label: '组维护', icon: 'groups', title: '组维护' },
   { to: '/tokens', label: '访问令牌', icon: 'key', title: '访问令牌' },
-  // 审核队列已并入审计页签：侧栏只保留一个入口，避免两个导航项指向同一路由。
+  // 审核队列是审计页的一个页签，侧栏只保留审计一个入口：两个导航项指向同一路由只会互相干扰。
   { to: '/audit', label: '审计', icon: 'audit', title: '审计' },
   { to: '/exceptions', label: '例外与可见性', icon: 'exception', title: '例外与可见性' },
   { to: '/admins', label: '账户管理', icon: 'account', title: '账户管理' },
@@ -53,7 +53,9 @@ const COLLAPSED_KEY = 'jumcp-admin-nav-collapsed'
 
 /**
  * 会话闸门：未登录只能看见登录页，已登录才能进管理台外壳。
- * 管理面现在跑在自己的端口（52913），身份来自 HttpOnly cookie，不再由网关注入 Bearer。
+ * 管理面用独立端口（容器 8080，线上 52913）同源提供静态产物与 /admin/* 接口，
+ * 身份来自 HttpOnly 会话 cookie——前端不持有 Bearer，Authorization 头也不需要注入。
+ * 只有 pending（首屏在验会话）与 failed（管理面不可达）会停在闸门内，anonymous 一律重定向登录。
  */
 export default function App() {
   return (
@@ -90,6 +92,14 @@ function AppGate() {
   return <AdminShell />
 }
 
+/**
+ * 管理台外壳：侧栏 + TitleBar + content 区。
+ * 路由只由侧栏决定（Routes 仅在 view === null 时渲染）；操作视图（工具台账/能力档案/审计详情）
+ * 走 viewStack 在当前 content 区替换渲染，不写 URL，也不推 history。
+ * 侧栏折叠偏好存 localStorage，存储不可用时按展开渲染——偏好丢失不该白屏。
+ * content 区固定 tabIndex=-1：跳转链接、视图进入/返回时把焦点交给它，避免焦点停在已消失的按钮上；
+ * 同时滚回顶部，因为换了一屏内容。
+ */
 function AdminShell() {
   const { session, signOut } = useAuth()
   // AppGate 已保证此处是已登录态；用户名只用于侧栏展示，不参与任何鉴权判断。
@@ -172,11 +182,11 @@ function AdminShell() {
               {view === null ? (
                 <Routes>
                   <Route path="/" element={<DashboardPage />} />
-                  {/* 审核队列已合并进审计页签：保留旧深链，落到对应页签。 */}
+                  {/* 旧深链：/review 落到审计页的「审核队列」页签。 */}
                   <Route path="/review" element={<Navigate to="/audit?view=review" replace />} />
                   <Route path="/tools" element={<ToolsPage />} />
                   <Route path="/upstreams" element={<UpstreamsPage />} />
-                  {/* 旧深链兼容：安装目录已并入「MCP 接入」页签。 */}
+                  {/* 旧深链：安装目录现在是「MCP 接入」页的页签。 */}
                   <Route path="/mcp-install" element={<Navigate to="/upstreams" replace />} />
                   <Route path="/capabilities/:id" element={<CapabilityDossierPage />} />
                   <Route path="/groups" element={<GroupsPage />} />

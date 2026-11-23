@@ -23,7 +23,7 @@ pub(super) fn template_source(definition: &Value) -> Value {
 ///
 /// 状态规则（唯一判定点，registry 不做策略层判断）：
 /// - `draft`：直接改，状态保持 draft；`approval_id` 可选，仅作外部票号留痕；
-/// - `published`：必须带 `approval_id`；批准人一律取 token 派生 id（可与提审人相同）；
+/// - `published`：必须带 `approval_id`；批准人一律取会话账号派生（可与提审人相同）；
 /// - `review`：必须先退回 draft；`deprecated` / 其它：拒绝。
 ///
 /// `kind == "template"` 一律走 `TemplateRegistry`（parse → 编译 → sqlguard），
@@ -125,7 +125,7 @@ pub(super) async fn update_definition(
                     json!({"capability_id": id}),
                 )
             })?;
-            // 批准人（当前 token 主体）由鉴权派生，允许与提审人相同。
+            // 批准人（当前会话账号）由鉴权派生，允许与提审人相同。
             if record.kind == "template" {
                 let registry = state.service.templates.as_ref().ok_or_else(|| {
                     ApiError(McpError::new(
@@ -267,7 +267,7 @@ pub(super) struct PublishBody {
     approval_id: Option<String>,
 }
 
-/// review → published。`approval_id` 必填，批准人取 token 派生身份。
+/// review → published。`approval_id` 必填，批准人取会话账号派生身份。
 pub(super) async fn publish(
     State(state): State<AdminState>,
     Extension(auth): Extension<AuthenticatedAdmin>,
@@ -296,7 +296,7 @@ pub(super) async fn publish(
                 json!({"capability_id": id}),
             )
         })?;
-    // 批准人一律取 token 派生 id：请求体不接受 approved_by。
+    // 批准人一律取会话账号派生 id：请求体不接受 approved_by。
     let record = state
         .store
         .promote_to_published(&id, &approval_id, &actor)
@@ -430,7 +430,7 @@ pub(super) async fn create_capability(
             json!({"surface": SURFACE}),
         ));
     };
-    // 内置 id 不可写：模板门的 id 格式校验会先拒掉下划线形式的 builtin id（400），
+    // 内置 id 不可写：模板门的 id 格式要求点号命名空间，builtin id 会先被判成 400，
     // 因此这里先按"是否内置"判定，保证契约的 409。
     if let Some(id) = definition.get("template_id").and_then(|v| v.as_str())
         && is_builtin_id(id)

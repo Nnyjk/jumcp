@@ -288,3 +288,46 @@
     grid-column: auto;
   }
 }
+
+/* 复制按钮：文案切换用叠放文本实现，按钮宽度与周围布局保持不变。 */
+.copy-button {
+  position: relative;
+}
+
+.copy-button-label {
+  position: relative;
+  display: inline-block;
+  min-width: 4em;
+  text-align: center;
+}
+
+.copy-button-text {
+  position: absolute;
+  inset: 0;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard);
+}
+
+.copy-button-text-idle {
+  position: relative;
+  opacity: 1;
+}
+
+.copy-button[data-state='copied'] .copy-button-text-idle {
+  opacity: 0;
+}
+
+.copy-button[data-state='copied'] .copy-button-text-copied {
+  opacity: 1;
+  color: var(--success);
+}
+
+.copy-button[data-state='failed'] .copy-button-text-idle {
+  opacity: 0;
+}
+
+.copy-button[data-state='failed'] .copy-button-text-failed {
+  opacity: 1;
+  color: var(--danger);
+}

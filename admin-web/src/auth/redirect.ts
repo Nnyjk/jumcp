@@ -12,11 +12,15 @@ interface FromState {
   from?: { pathname?: string; search?: string } | undefined
 }
 
-/** 不是登录页自身的站内路径才算合法回跳目标（否则会出现 /login → /login 死循环）。 */
+/**
+ * 不是登录页自身的站内路径才算合法回跳目标：必须以 `/` 开头且不以 `/login` 开头
+ * （前缀判定，`/login` 下的任何路径都排除，否则会出现 /login → /login 死循环）。
+ */
 function usable(path: string | undefined): path is string {
   return path !== undefined && path.startsWith('/') && !path.startsWith('/login')
 }
 
+/** 回跳目标：history `state.from` 优先（无刷新跳转），其次 `?from=`，都没有回首页。 */
 export function loginTarget(location: LocationLike): string {
   const state = location.state as FromState | null
   const fromState = state?.from

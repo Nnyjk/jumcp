@@ -222,6 +222,7 @@ try {
   # 3. 前端
   Invoke-Step 'frontend: npm ci' $WebDir { & npm ci } | Out-Null
   Invoke-Step 'frontend: npm run typecheck' $WebDir { & npm run typecheck } | Out-Null
+  Invoke-Step 'frontend: npm run test:transport' $WebDir { & npm run test:transport } | Out-Null
   Invoke-Step 'frontend: npm run build' $WebDir { & npm run build } | Out-Null
   Invoke-Step 'frontend: eslint src --max-warnings 0' $WebDir { & npx eslint src --max-warnings 0 } | Out-Null
 

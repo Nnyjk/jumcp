@@ -32,6 +32,8 @@ export type AuditObjectType =
   | 'request'
   | 'token'
   | 'upstream'
+  | 'admin_user'
+  | 'session'
 
 /** 审计动作：治理动作与运行期动作分开取值，但共用同一字段。 */
 export type AuditAction =
@@ -56,6 +58,12 @@ export type AuditAction =
   | 'deny'
   | 'refresh'
   | 'update_tool_groups'
+  | 'call'
+  | 'admin.create'
+  | 'admin.update'
+  | 'admin.delete'
+  | 'admin.login'
+  | 'admin.logout'
 
 export type AuditOutcome = 'ok' | 'error' | 'denied' | 'summary'
 
@@ -66,10 +74,13 @@ export interface AuditChange {
   after: unknown
 }
 
-/** 审批信息：source=external 表示外部审批系统单号，系统不校验真伪。 */
+/**
+ * 审批信息。`source=external` 是外部审批系统单号（系统只存不校验真伪，`verified` 恒 false）；
+ * `source=agent` 是 MCP 面令牌自审（`verified` 恒 true）。没有审批单时整个字段为 null。
+ */
 export interface AuditApproval {
   id: string
-  source: 'external' | 'none'
+  source: 'external' | 'agent'
   verified: boolean
   submitted_by: string | null
   approved_by: string | null
@@ -114,7 +125,7 @@ export interface AuditEnvelope {
   hash?: string | undefined
 }
 
-/** 分页响应：列表类接口统一 {items,total,limit,offset}。 */
+/** 分页响应（能力清单）：limit 默认 50、上限 200，超限被夹紧而不是报错。 */
 export interface Page<T> {
   items: T[]
   total: number
@@ -122,7 +133,7 @@ export interface Page<T> {
   offset: number
 }
 
-/** 不分页的清单响应：审核队列只返回 {items,total}。 */
+/** 不分页的清单响应：审核队列、组、令牌、账户、上游与角色都只返回 {items,total}。 */
 export interface ItemPage<T> {
   items: T[]
   total: number
@@ -161,8 +172,8 @@ export interface AdminActor {
   /** 审计身份：账号 username（可被改名，改名后此处随之变化）。 */
   id: string
   /**
-   * 账号主键（32 位随机串），由会话响应带回。
-   * 判断「删除/停用的是不是自己」只能靠它；旧后端不返回该字段时为空。
+   * 账号主键（32 位十六进制串），由会话响应带回。
+   * 判断「删除/停用的是不是自己」只能靠它；旧后端不返回该字段时缺失。
    */
   user_id?: string | undefined
   role: string
@@ -203,7 +214,9 @@ export interface CapabilityItem {
   last_changed_at: string | null
   submitted_by: string | null
   submitted_at: string | null
+  /** 仅详情接口返回（最近一次版本时间）；列表行没有该字段。 */
   definition_updated_at: string | null
+  /** 后端不返回：内置能力没有注册表行（详情 404），来源由页面据此判定。 */
   source?: CapabilitySource | undefined
 }
 
@@ -289,6 +302,7 @@ export interface ToolStatsRow {
   failure: number
   success_rate: number | null
   cache_hits: number
+  /** 缓存命中率（0–1）：只有模板类行且窗口内有调用才有值，其余为 null（不是 0）。 */
   hit_rate: number | null
   retries: number
   avg_response_tokens: number | null
@@ -296,11 +310,13 @@ export interface ToolStatsRow {
   max_response_tokens: number | null
   last_call_at: string | null
   last_outcome: ToolCallOutcome | null
+  /** 窗口内最后 20 次调用的 token 数，按时间升序。 */
   recent_tokens: number[]
 }
 
 export interface ToolStatsPayload {
   window: ToolStatsWindow
+  /** true 表示窗口内事件超过后端扫描上限（50000 条），统计只是下界。 */
   truncated: boolean
   tools: ToolStatsRow[]
 }
@@ -342,7 +358,7 @@ export interface ToolCallsPage {
   calls: ToolCallRecord[]
 }
 
-/** 新建草案的 201 响应。 */
+/** 新建草案的 201 响应：status 恒为 draft（尚未提交审核）。 */
 export interface CreatedCapability {
   id: string
   status: string
@@ -409,12 +425,12 @@ export interface GroupPage {
   total: number
 }
 
-/** GET /admin/groups 的过滤条件：q 同时匹配 code/name。 */
+/** GET /admin/groups 的过滤条件：q 同时匹配 code/name，source/role 精确匹配；后端不分页。 */
 export interface GroupQuery {
   q?: string | undefined
   source?: GroupSource | undefined
   role?: string | undefined
-  /** 下拉选项一次取全：上游接入的授权组下拉用 200，避免默认分页截断。 */
+  /** 后端忽略该参数（组清单一次返回全部）：留着只为兼容既有调用方，不参与过滤。 */
   limit?: number | undefined
 }
 
@@ -633,15 +649,16 @@ export interface UpstreamItem {
   tool_count: number
   last_checked_at: string | null
   updated_at: string
-  /** 通过安装目录创建时带目录项 id 与安装版本；手工接入没有这两个字段。 */
+  /** 通过安装目录创建时带目录项 id 与安装版本；手工接入两者均为 null。 */
   catalog_id?: string | null
   catalog_version?: string | null
 }
 
 /**
  * POST/PUT /admin/upstreams 的 body。
- * `id` 仅创建时有意义；编辑时后端以路径参数为准。env/headers 的值支持 `env:NAME` 引用，
- * GET 会把 Authorization/Cookie 等敏感值显示为 `***`，原样回传即保持原值。
+ * `id` 只在创建时有意义：PUT 的 id 不可改，与路径不一致会被 400（MCP_UPSTREAM_INVALID）拒绝。
+ * env/headers 的值支持 `env:NAME` 引用，GET 会把 Authorization/Cookie 等敏感值显示为 `***`，
+ * 原样回传即保持原值。
  */
 export interface UpstreamInput {
   id: string
@@ -695,8 +712,9 @@ export interface UpstreamToolsPayload {
 }
 
 /**
- * PUT /admin/upstreams/{id}/tools/basic 的 body。
- * true=加入基础组，false=移出，null=清除覆盖（用于清理已从上游消失的工具）。
+ * PUT /admin/upstreams/{id}/tools/basic 的 body，合并语义。
+ * true 写入基础组覆盖；false 与 null 等价，都是删除覆盖、回到继承上游授权组。
+ * 校验是整请求粒度：未知工具、写工具或 admin 类上游命中任一条就整体 409，不做部分写入。
  */
 export interface UpdateBasicToolsInput {
   tools: Record<string, boolean | null>
@@ -704,9 +722,11 @@ export interface UpdateBasicToolsInput {
 
 /** 单条变更的前后值；null 表示没有覆盖。 */
 export interface BasicToolChange {
-  name: string
-  before: boolean | null
-  after: boolean | null
+  field: 'tool_group'
+  tool: string
+  /** 变更前后的逐工具覆盖组；null 表示没有覆盖、继承上游组。 */
+  before: string | null
+  after: string | null
 }
 
 /** PUT /admin/upstreams/{id}/tools/basic 的响应：只回传实际变更项与最新工具清单。 */

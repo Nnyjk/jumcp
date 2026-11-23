@@ -1,4 +1,4 @@
-//! 维护通道（`admin_*`）的授权、前置检查与五个写/读工具的 dispatch 实现。
+//! 维护通道（`admin_*`）的授权、前置检查与六个写/读工具的 dispatch 实现。
 
 use super::*;
 
@@ -58,7 +58,7 @@ impl McpServer {
 
     /// 维护工具调用的收尾：写一条 `tool_call` 审计后原样返回结果。
     ///
-    /// 为什么在这里统一写：5 个 admin 工具走同一分支，逐处写必有一处遗漏——而管理台的
+    /// 为什么在这里统一写：6 个维护工具走同一分支，逐处写必有一处遗漏——而管理台的
     /// 工具台账只认 `tool_call`，漏写就等于该工具永远 calls=0/health=unknown。
     /// 拒绝路径（未授权、审计缺失、builtin 不可写、参数非法）由调用方一并交进来，记
     /// `outcome=error` + `mcp_code`；成功则用 `estimate_tokens(结果)` 记 tokens。

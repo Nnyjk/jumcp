@@ -1,6 +1,6 @@
 import { groupLabel } from '../../api/queries'
 import type { CapabilityRisk, GroupItem, ToolHealth, ToolSource, ToolStatsRow } from '../../api/types'
-import { TOOL_CATEGORY_LABEL, UPSTREAM_CATEGORY_LABEL, toolGroupLabel } from '../../labels'
+import { RISK_LABEL, TOOL_CATEGORY_LABEL, UPSTREAM_CATEGORY_LABEL, toolGroupLabel } from '../../labels'
 
 export const HEALTH_OPTIONS: Array<{ value: '' | ToolHealth; label: string }> = [
   { value: '', label: '全部' },
@@ -8,6 +8,21 @@ export const HEALTH_OPTIONS: Array<{ value: '' | ToolHealth; label: string }> = 
   { value: 'degraded', label: '降级' },
   { value: 'failing', label: '故障' },
   { value: 'unknown', label: '未知' },
+]
+
+/** 来源分段控件的选项：受管能力 / 内置工具，卡片标题与分段按钮共用同一份标签。 */
+export const SOURCE_OPTIONS: Array<{ value: ToolSource; label: string }> = [
+  { value: 'managed', label: '受管能力' },
+  { value: 'builtin', label: '内置工具' },
+]
+
+/** 风险筛选项：标签与表格里的风险徽标共用 labels 的中文名，避免两处各写一份。 */
+export const RISK_OPTIONS: Array<{ value: '' | CapabilityRisk; label: string }> = [
+  { value: '', label: '全部' },
+  { value: 'read', label: RISK_LABEL.read },
+  { value: 'write', label: RISK_LABEL.write },
+  { value: 'sensitive', label: RISK_LABEL.sensitive },
+  { value: 'admin', label: RISK_LABEL.admin },
 ]
 
 /** 上游分类：三组内置分类使用中文名，custom 为自定义接入。 */

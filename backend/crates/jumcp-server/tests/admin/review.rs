@@ -266,7 +266,7 @@ async fn publish_by_other_person_succeeds_with_admin_change() {
     let h = harness();
     seed_capability(&h.store, "cap.c");
     h.store.submit_for_review("cap.c", "alice").expect("submit");
-    // 提审人 alice（记录在案），批准人 bob（用自己的 token 调用）。
+    // 提审人 alice（记录在案），批准人 bob（用自己的管理会话调用）。
     let (status, body) = call(
         &h.app,
         Req::post("/admin/capabilities/cap.c/publish")

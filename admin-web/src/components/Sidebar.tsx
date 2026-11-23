@@ -11,7 +11,10 @@ export interface NavEntry {
 
 /**
  * 左侧 NavigationView：260px 展开 / 48px 仅图标折叠，选中态为 3px 强调色竖条 + 8px 圆角高亮。
- * 折叠时用 CSS tooltip 显示名称，键盘聚焦同样触发。
+ * 折叠时文字节点直接不渲染，名称靠 CSS 生成内容挂在 data-label 上——悬停与键盘 focus-visible 同样触发。
+ * 折叠开关带 aria-controls/aria-expanded，指向导航容器 primary-nav。
+ * 折叠状态由父组件持有并持久化，本组件只报 onToggleCollapsed。
+ * ≤1100px 时 CSS 还会强制图标态（与 collapsed 无关），窄屏下文字被 display:none 隐藏但仍留在 DOM。
  */
 export function Sidebar({
   items,

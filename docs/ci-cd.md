@@ -15,7 +15,7 @@ CI 只订阅 `dev` 的 push 与 PR：`main` 上的改动只能经 `dev → main`
 - `publish` job 的 `if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')`：`workflow_dispatch` 可以选任意 ref，选到 feature 分支时整个 job 跳过，不构建、不推镜像。
 - tag 触发先跑 `git fetch --no-tags origin main`，再用 `git merge-base --is-ancestor "$GITHUB_SHA" origin/main` 校验：tag 必须打在 `main` 的提交上，在 `dev` 提交上打 `v*` tag 会失败退出（所以 checkout 用 `fetch-depth: 0`）。
 
-权限与并发：CI 只有 `contents: read`；`image-cd` 额外要 `packages: write`、`attestations: write`、`id-token: write`；`web-cd` 默认 `contents: read`，只有 tag 场景的 `release` job 提升到 `contents: write`（GitHub 权限是 job 级的，所以拆成两个 job）。并发：CI 取消同 ref 的旧运行，`image-cd` / `web-cd` 不取消（`cancel-in-progress: false`）。
+权限与并发：CI 默认只有 `contents: read`（`dependency-review` job 另需 `pull-requests: write` 回写结果）；`image-cd` 额外要 `packages: write`、`attestations: write`、`id-token: write`；`web-cd` 默认 `contents: read`，只有 tag 场景的 `release` job 提升到 `contents: write`（GitHub 权限是 job 级的，所以拆成两个 job）。并发：CI 取消同 ref 的旧运行，`image-cd` / `web-cd` 不取消（`cancel-in-progress: false`）。
 
 ## 分支模型与发布流程
 
@@ -65,11 +65,12 @@ CI 只订阅 `dev` 的 push 与 PR：`main` 上的改动只能经 `dev → main`
 1. `npm ci`
 2. `npm run lint`（`eslint .`）
 3. `npm run typecheck`（`tsc --noEmit`）
-4. `npm run build`（`tsc --noEmit && vite build`）
-5. `bash scripts/smoke-headless-web.sh`（在仓库根执行）：起 `vite preview` 提供 `admin-web/dist`，断言 `/` 返回 HTML 且含 `id="root"`、`/review` 是 200 的 SPA 回退、页面引用的 `/assets/*.js` 可取
-6. 上传 artifact `jumcp-admin-web-headless`（`admin-web/dist`，保留 14 天）
+4. `npm run test:transport`（传输 fixtures 校验，无需后端）
+5. `npm run build`（`tsc --noEmit && vite build`）
+6. `bash scripts/smoke-headless-web.sh`（在仓库根执行）：起 `vite preview` 提供 `admin-web/dist`，断言 `/` 返回 HTML 且含 `id="root"`、`/review` 是 200 的 SPA 回退、页面引用的 `/assets/*.js` 可取
+7. 上传 artifact `jumcp-admin-web-headless`（`admin-web/dist`，保留 14 天）
 
-第 5 步是「无头 Web 服务」产物校验：只有构建产物能当静态站点跑起来，才算这一步通过。
+第 6 步是「无头 Web 服务」产物校验：只有构建产物能当静态站点跑起来，才算这一步通过。
 
 ### `scripts`（timeout 5 分钟）
 
@@ -134,9 +135,10 @@ job 名 `release source is dev`，`if: github.event_name == 'pull_request' && gi
 - 内置包安装需要 `JUMCP_SECRET_KEY`（落库）与 `JUMCP_TRANSPORT_KEY`（请求体）两把 64 位 hex 密钥：镜像不提供默认值，HTTP 模式缺任一把都拒绝启动；未挂内嵌端点（如以 stdio 模式启动）时安装返回 503 `MCP_BUILTIN_UNAVAILABLE`
 - 默认 env（镜像内置）：
   - `JUMCP_MCP_WEB_DIR=/app/web`（管理台静态资源，同源提供）
-  - `JUMCP_MCP_TRANSPORT=streamable-http`、`JUMCP_MCP_HOST=0.0.0.0`、`JUMCP_MCP_PORT=8000`
+  - `JUMCP_MCP_TRANSPORT=streamable-http`、`JUMCP_MCP_HOST=0.0.0.0`、`JUMCP_MCP_PORT=8000`、`JUMCP_ADMIN_PORT=8080`
   - `JUMCP_MCP_CONFIG_FILE=/app/config/policy.toml`
   - `JUMCP_MCP_REGISTRY_PATH=/data/registry.sqlite3`、`JUMCP_MCP_AUDIT_PATH=/data/audit.sqlite3`
+  - `RUST_LOG=info`
 - `JUMCP_ADMIN_USERNAME` / `JUMCP_ADMIN_PASSWORD` **没有任何默认值**：HTTP 模式下空库首启就必须提供（口令至少 12 位），否则拒绝启动（fail-closed）。首个账号落库为 Argon2id 哈希，之后这两个变量不再生效，改口令走 `PATCH /admin/admins/{id}`。镜像里不含任何账号/口令/secret
 - 部署形态：单容器 `docker run` 见下文「运行命令」；Portainer / Docker Swarm 用 `deploy/portainer-stack.yml`（单副本、`stop-first`、命名卷），前置条件与边界见 [portainer-swarm.md](portainer-swarm.md)
 
@@ -173,7 +175,7 @@ docker buildx build --platform linux/amd64 -t jumcp:local --load .
 ### 起容器
 
 ```bash
-docker run -d --name jumcp -p 127.0.0.1:8000:8000 \
+docker run -d --name jumcp -p 127.0.0.1:8000:8000 -p 127.0.0.1:8080:8080 \
   -e JUMCP_ADMIN_USERNAME=admin \
   -e JUMCP_ADMIN_PASSWORD="$(openssl rand -hex 12)" \
   -e JUMCP_SECRET_KEY="$(openssl rand -hex 32)" \
@@ -218,11 +220,11 @@ bash scripts/smoke-image.sh <image> [--port <port>] [--timeout <seconds>]
 ```
 
 - 需要：`docker`、`curl`、`jq`
-- 容器参数：`/data` 用 `--tmpfs /data:rw,mode=1777,size=64m`（非 root 可写 + 每次干净空库），端口默认随机（`-p 127.0.0.1::8000`，也可 `--port` 指定）
+- 容器参数：`/data` 用 `--tmpfs /data:rw,mode=1777,size=64m`（非 root 可写 + 每次干净空库），端口默认随机（MCP 面 `-p 127.0.0.1::8000`、管理面 `-p 127.0.0.1::8080`）；`--port <p>` 指定**管理面**的宿主端口，MCP 面始终随机
 - 注入凭证：`JUMCP_ADMIN_USERNAME=smoke` + `JUMCP_ADMIN_PASSWORD=<至少 12 位>`（首次启动在空库里播种管理员）、`JUMCP_AGENT_TOKENS=agent-analyst:analyst:<token>`；可用 `JUMCP_SMOKE_ADMIN_USERNAME`、`JUMCP_SMOKE_ADMIN_PASSWORD`、`JUMCP_SMOKE_AGENT_TOKEN` 覆盖
 - 容器注入固定测试用的 `JUMCP_SECRET_KEY` 与 `JUMCP_TRANSPORT_KEY`（内置包安装链路的前提，见断言第 8 条）
 - 断言：
-  1. `/health` 探针分支（无 `Accept` / `Accept: application/json`）200 + `application/json` 且 `audit_chain == "valid"`——监控与容器探针不会被前端劫持
+  1. `/health` 探针分支（无 `Accept` / `Accept: application/json`）200 + `application/json` 且 `audit_chain == "valid"`——监控与容器探针不会被管理台路由劫持
   2. `GET /health` 且 `Accept: text/html` → 200 `text/html` 且含 `id="root"`（浏览器直接导航 `/health` 时落同源 SPA 外壳，不是 JSON 探针）
   3. `/` 200 `text/html` 且含 `id="root"`
   4. `/review` 200 SPA 回退

@@ -15,7 +15,8 @@ export type BadgeTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
 
 /**
  * Fluent 药丸徽标：语义色只表达状态，不承担唯一信息载体（文案同时给出）。
- * `title` 用于保留后端原值（如 status 的 draft/published）。
+ * 未知取值回退中性色并原样显示后端值，不隐藏、不猜中文名。
+ * `title` 用于保留后端原值（如 status 的 draft/published）；`dot` 只是视觉点缀，aria-hidden。
  */
 export function Badge({
   tone = 'neutral',
@@ -45,7 +46,10 @@ const LIFECYCLE_TONE: Record<string, BadgeTone> = {
   unknown: 'neutral',
 }
 
-/** 生命周期徽标：与「来源」分列，避免把内置误读成已发布。 */
+/**
+ * 生命周期徽标：取值可能是流程状态（草稿/待审/已发布/已下线），也可能是 builtin/unknown
+ * ——内置能力没有流程状态，显示「内置」并不代表已发布。与来源徽标并排展示，避免二者混读。
+ */
 export function LifecycleBadge({ status }: { status: string }) {
   return (
     <Badge tone={LIFECYCLE_TONE[status] ?? 'neutral'} dot title={status}>
@@ -61,6 +65,7 @@ const RISK_TONE: Record<CapabilityRisk, BadgeTone> = {
   admin: 'danger',
 }
 
+/** 风险等级徽标：read/write/sensitive/admin 是能力自报的风险等级，与工具分类（基础/分析/管理/自定义）不是一回事。 */
 export function RiskBadge({ risk }: { risk: CapabilityRisk }) {
   return (
     <Badge tone={RISK_TONE[risk] ?? 'neutral'} title={risk}>

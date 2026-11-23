@@ -1,6 +1,6 @@
 # 仓库结构
 
-jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP router 与治理，管理台是它的同源薄前端，`Dockerfile` 把两端打进同一个镜像。本文件说明每层目录的职责边界；怎么开发、怎么发版见 [CONTRIBUTING.md](../CONTRIBUTING.md)，能力与接口契约见 [README.md](../README.md) 与 `docs/` 其他文档。
+jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP router 与治理，管理台是它的同源薄前端，`Dockerfile` 把后端与管理台打进同一个镜像。本文件说明每层目录的职责边界；怎么开发、怎么发版见 [CONTRIBUTING.md](../CONTRIBUTING.md)，能力与接口契约见 [README.md](../README.md) 与 `docs/` 其他文档。
 
 ## 根目录
 
@@ -30,7 +30,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 
 | 模块 | 职责 |
 |---|---|
-| `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 管理面与 agent 主体令牌（常量时间比较） |
+| `config/` | `policy.toml` 的解析与校验：`tenant` 租户策略（组/角色定义、预算上限）、`principals` 为 `JUMCP_AGENT_TOKENS` 解析出的 agent 静态令牌（常量时间比较；只在 `access_tokens` 为空时一次性导入成引导令牌，运行期鉴权读库） |
 | `registry/` | 能力注册表：`record` 记录/版本/管理变更结构与定义 diff、`lifecycle` 注册→审核→发布→下架与可见性、`groups` 管理组 CRUD 与引用计数、`upstreams` 上游配置与逐工具组覆盖 |
 | `builtin/` | 内置 MCP 插件类型：`BuiltinPackage` / `BuiltinField` / `BuiltinToolDef` / `BuiltinConfig` / `BuiltinError` 与 `BuiltinMcp` trait（只依赖 `serde_json` 与 `std`，不依赖任何具体数据库） |
 | `secret.rs` | 配置字段加密：`SecretKey` 解析 64 位 hex 密钥，`enc:v1:` 前缀的 AES-256-GCM 加解密、`is_encrypted`（明文值原样兼容）与 `to_hex`（仅供 `GET /admin/transport-key` 下发传输密钥）；落库密钥 `JUMCP_SECRET_KEY` 与传输密钥 `JUMCP_TRANSPORT_KEY` 共用实现、用途分离 |
@@ -99,12 +99,14 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 |---|---|
 | `src/main.tsx` / `src/App.tsx` | 挂载、路由与全局外壳（侧栏 + content 视图栈） |
 | `src/api/` | `client.ts`（fetch 封装与错误归一）、`queries.ts`（数据拉取）、`admin.ts`（管理面接口）、`types.ts`（契约类型） |
+| `src/auth/` | 会话态：`AuthContext.tsx`（登录态与 401 收敛）、`session.ts`（`GET /admin/session` 探测）、`redirect.ts`（`?from=` 回跳） |
+| `src/lib/` | `transport.ts`（MCP 传输配置的编解码，`test:transport` 的 fixtures 对应的实现）、`upstreamId.ts`（上游 ID 规则） |
 | `src/pages/` | 路由级页面，一个功能一个目录：`login/`（账号口令登录）、`dashboard/`（工作台与图表）、`tools/`（台账与新建草案）、`groups/`、`admins/`（管理员账号 CRUD，`AccountForm.tsx` 与 `accountErrors.ts`）、`capability-dossier/`（六分栏与审批）、`upstreams/`（MCP 接入单页两页签：「接入清单」含基础工具弹层，「安装目录」含内置包的安装表单、已安装实例的配置编辑与卸载）、`tokens/`、`audit/`（`AuditEventsPanel.tsx` 审计流水、`ReviewQueuePanel.tsx` 审核队列、`AuditFilterForm.tsx` + `auditFilter.ts` 过滤条件、`PublishDialog.tsx` / `RejectDialog.tsx` 审批弹层）；`ExceptionPage.tsx` 是唯一的单文件页面（没有独立健康页，链状态在 `dashboard/` 与 `/health` 接口） |
 | `src/components/` | 复用的展示与交互件（表格、卡片、弹层、侧栏、主题切换、提交确认等） |
 | `src/motion/` | 过渡与动画原语（`useGsap.ts`） |
 | `src/styles/` | `index.css` 为汇总入口，`components.css` 按顺序 `@import` `styles/components/*.css`（顺序即级联优先级，勿重排）；另有 `layout.css`、`modal.css`、`dashboard.css`、`tokens.css` 与主题变量 |
-| `src/*.ts` | 跨页面工具：`audit.ts`、`objects.ts`、`labels.ts`、`format.ts`、`json.ts`、`notice.ts`、`theme.ts`、`viewStack.ts` |
-| `public/` `index.html` `vite.config.ts` `eslint.config.js` `tsconfig.json` | 静态资源、构建与开发代理（纯转发：`/admin`→管理面、`/mcp` `/health`→MCP 面；生产构建期拦截 `VITE_ADMIN_TOKEN`） |
+| `src/*.ts` | 跨页面工具与常量：`constants.ts`、`audit.ts`、`objects.ts`、`labels.ts`、`format.ts`、`json.ts`、`notice.ts`、`theme.ts`、`viewStack.ts` |
+| `public/` `index.html` `vite.config.ts` `eslint.config.js` `tsconfig.json` | 静态资源、构建与开发代理（纯转发：`/admin`→管理面、`/mcp` `/health`→MCP 面；生产构建期拦截 `VITE_ADMIN_TOKEN` 与 `VITE_ADMIN_ACTOR`） |
 
 页面职责与路由表见 `admin-web/README.md`；管理台不持有管理面凭证，浏览器不发 `Authorization`。
 
@@ -112,10 +114,10 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 
 - `config/`：只放部署策略文件。`policy.toml` 是唯一的策略入口（`[[groups]]`、`[[roles]]`、预算与只读开关）。数据库只经已接入的上游 MCP 工具访问，策略文件里不再声明数据源。镜像把它复制到 `/app/config/policy.toml`。
 - `deploy/`：只放部署定义。`portainer-stack.yml` 是 Portainer（Stacks）与 `docker stack deploy` 共用的 Swarm 定义：单副本、`stop-first` 更新/回滚、命名卷 `/data`、`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD` fail-fast，`docker stack config` 可离线校验（CI 的 `image` job 会跑）。平台用 placement constraints 固定 linux/amd64，因为 Swarm 的 stack 格式不接受 `platform`。前置条件与运维边界见 [portainer-swarm.md](portainer-swarm.md)。
-- `scripts/`：`dev.ps1`/`dev.sh`（一键启动前后端）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
+- `scripts/`：`dev.ps1`/`dev.sh`（一键启动后端与管理台）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
 - `docs/`：只写**当前有效**的结论（方案、契约、运维与 CI），结论变了就改原文，不保留阶段性设计与变更叙述；这类历史与被否决项放 `notes/`。文档索引在 `README.md`。
 - `notes/`：只记踩坑、约束、被否决的决定与开发期重要信息，路径 `notes/<module>/<note_name>.md`；结论一旦稳定就上升进 `docs/`。规范见 `AGENTS.md`。
-- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动，只读、不推镜像）、`image-cd.yml`（`dev`/`main` push、`v*` tag、手动，推 GHCR 并在 digest 上冒烟）与 `web-cd.yml`（同触发面，产出无头 Web 包 artifact，tag 时挂 GitHub Release）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
+- `.github/workflows/`：`ci.yml`（`dev` push、PR 到 `dev`/`main`、手动；不登录、不推镜像）、`image-cd.yml`（`dev`/`main` push、`v*` tag、手动，推 GHCR 并在 digest 上冒烟）与 `web-cd.yml`（同触发面，产出无头 Web 包 artifact，tag 时挂 GitHub Release）。分支模型与分支保护见 [docs/ci-cd.md](ci-cd.md)。
 
 ## 目录约定
 

@@ -27,6 +27,7 @@ export function UpstreamForm({
   groupsError,
   onSaved,
   onError,
+  onCancel,
 }: {
   target: EditorTarget
   groups: GroupItem[]
@@ -34,6 +35,7 @@ export function UpstreamForm({
   groupsError: boolean
   onSaved: (item: UpstreamItem) => void
   onError: (notice: Notice) => void
+  onCancel: () => void
 }) {
   const existing = target.mode === 'edit' ? target.item : undefined
   const [id, setId] = useState(existing?.id ?? '')
@@ -335,6 +337,9 @@ export function UpstreamForm({
         </p>
       )}
       <div className="form-actions">
+        <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={mutation.isPending}>
+          取消
+        </button>
         <button type="submit" className="btn btn-primary" disabled={mutation.isPending}>
           {mutation.isPending ? '保存中…' : existing === undefined ? '创建接入' : '保存修改'}
         </button>

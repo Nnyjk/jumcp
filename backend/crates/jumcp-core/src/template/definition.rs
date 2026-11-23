@@ -70,7 +70,7 @@ pub struct ParamSpec {
     pub timezone: Option<String>,
     #[serde(default = "default_empty_string_as_null")]
     pub empty_string_as_null: bool,
-    /// 数组元素上限：字段保留以固定定义 schema，但数组参数在注册期即被拒绝，故当前不可达。
+    /// 数组元素上限：字段保留以固定定义 schema，但数组参数在注册期即被拒绝，故运行期不可达。
     #[serde(default)]
     pub array_max_items: Option<usize>,
 }
@@ -216,7 +216,7 @@ pub struct PreflightReceipt {
 impl TemplateDef {
     /// 严格解析 + 语义校验（非法定义在注册期一次性拒绝，运行期不重复校验）。
     pub fn parse(value: &Value) -> Result<Self, McpError> {
-        // 缺 target 的定义来自旧版本（直连数据库时代），报错要点明迁移方向，
+        // 缺 target 无法执行（执行只走已接入的上游 MCP 工具），报错要点明 target 必填，
         // 不能只留 serde 的 missing field 文本。
         if value.get("target").is_none_or(Value::is_null) {
             return Err(target_error(
@@ -504,10 +504,10 @@ impl CompiledTemplate {
             })
             .unwrap_or_default();
         let variants: Vec<CompiledVariant> = match value.get("variants") {
-            // 缺省即"没有变体"：旧定义只存 base_sql，语义无歧义。
+            // 缺省即"没有变体"：只存 base_sql 的定义语义无歧义。
             None => Vec::new(),
-            // 有值但反序列化失败必须显式报错。原先 `unwrap_or_default` 会静默吞成空向量，
-            // 运行期于是回落到 base_sql——调用方以为选中的变体被丢掉，结果集可能完全不同。
+            // 有值但反序列化失败必须显式报错：静默吞成空向量会让运行期回落到 base_sql——
+            // 调用方以为选中的变体被丢掉，结果集可能完全不同。
             Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| {
                 template_error(
                     "variants_invalid",

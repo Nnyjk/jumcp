@@ -81,7 +81,7 @@ export function BasicToolsModal({
         result.changed.length === 0
           ? '没有实际变更。'
           : result.changed
-              .map((item) => `${item.name}: ${String(item.before)} → ${String(item.after)}`)
+              .map((item) => `${item.tool}: ${item.before ?? '继承组'} → ${item.after ?? '继承组'}`)
               .join(' · ')
       setDesired({})
       // 先写回最新清单，避免失效重取期间开关跳回旧值。

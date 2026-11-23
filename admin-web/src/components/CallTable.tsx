@@ -133,8 +133,11 @@ function callColumns(
 }
 
 /**
- * 能力/工具的调用记录：按与台账一致的时间窗查询，行内含事件类型、错误原因与执行 SQL。
- * 详情展示 SQL + 绑定值 + 原始入参，不再出现会话与 MCP 码字段。
+ * 单个对象（能力或工具 id）的调用记录：时间窗与台账一致，行内含事件类型、错误码/原因、执行 SQL 与耗时。
+ * offset 是组件本地状态，queryKey 带上 id/windowDays/offset：任一变化就换一页数据；调用方只需给时间窗。
+ * 空页仍渲染分页——时间窗收窄后当前页可能越界，用户要能返回上一页。
+ * 详情用 Modal 就地展开，key 取 event_id，切换记录时不残留上一条的退场状态。
+ * 行 key 取 event_id：审计事件不可变，重复 key 会让行内状态错位。
  */
 export function CallTable({ id, windowDays }: { id: string; windowDays: number }) {
   const [offset, setOffset] = useState(0)

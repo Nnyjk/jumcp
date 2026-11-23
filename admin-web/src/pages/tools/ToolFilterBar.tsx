@@ -3,7 +3,7 @@ import { Card } from '../../components/Card'
 import { Field } from '../../components/Field'
 import { WINDOW_OPTIONS } from '../../constants'
 import { toolGroupLabel as groupCodeLabel } from '../../labels'
-import { CATEGORY_OPTIONS, HEALTH_OPTIONS } from './toolFormat'
+import { CATEGORY_OPTIONS, HEALTH_OPTIONS, RISK_OPTIONS } from './toolFormat'
 
 /** 工具清单筛选条：全部条件由页面持有，这里只负责渲染与回调。 */
 export function ToolFilterBar({
@@ -80,11 +80,11 @@ export function ToolFilterBar({
             value={risk}
             onChange={(event) => onRiskChange(event.target.value as '' | CapabilityRisk)}
           >
-            <option value="">全部</option>
-            <option value="read">只读</option>
-            <option value="write">写入</option>
-            <option value="sensitive">敏感</option>
-            <option value="admin">管理</option>
+            {RISK_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </Field>
         <Field label="分类">

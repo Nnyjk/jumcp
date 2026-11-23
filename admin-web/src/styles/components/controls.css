@@ -18,7 +18,7 @@
   line-height: 20px;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .btn:hover:not(:disabled) {
@@ -110,7 +110,7 @@
   font: inherit;
   font-size: var(--fs-14);
   line-height: 20px;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
 .input::placeholder {

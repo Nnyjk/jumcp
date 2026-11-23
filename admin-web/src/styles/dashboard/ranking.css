@@ -30,14 +30,21 @@
   overflow: hidden;
   border-radius: var(--radius-pill);
   background: var(--fill-subtle);
+  transition: background-color var(--motion-fast) var(--ease-standard);
 }
 
+/* 条宽用 width 表达比例，入场时用 gsap 的 scaleX 展开：缩放不触发布局重排。 */
 .rank-bar {
   display: flex;
   min-width: 2px;
   height: 100%;
   overflow: hidden;
   border-radius: var(--radius-pill);
+  transform-origin: left center;
+}
+
+.rank-item:hover .rank-track {
+  background: var(--fill-hover);
 }
 
 .rank-seg {
@@ -77,6 +84,11 @@
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-12);
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.fail-row:not(.fail-head):hover {
+  background: var(--row-hover);
 }
 
 .fail-row:last-child {
