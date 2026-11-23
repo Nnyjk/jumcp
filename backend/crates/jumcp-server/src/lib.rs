@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod mcp;
 pub mod preflight;
 pub mod service;
+pub mod static_audit;
 pub mod templates_boot;
 pub mod upstream;
 pub mod web;

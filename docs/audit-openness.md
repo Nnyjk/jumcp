@@ -247,18 +247,28 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
 ### 7.5.1 `GET /admin/tools/candidates?window_days=&limit=`
 
 定制化 tool 候选加权评分：把窗口内的 `tool_call` 流水按**调用对象**（SQL 表 / 文件路径 /
-接口 `host+path` / 上游工具名）聚合成排名，分数越高越值得固化成定制 tool。MCP 内置工具
-`admin_tool_candidates` 与它共用同一份实现，同一窗口必得同一顺序。
+接口 `host+path` / 上游工具名）聚合成排名，分数越高越值得固化成定制 tool。
+
+进程内还有一个**静态审计**定时任务（仅 HTTP 模式；`JUMCP_STATIC_AUDIT_INTERVAL_SECS`，默认 300 秒，0 关闭）：
+按固定窗口 7 天、前 20 名预计算同一份报告并缓存在内存。MCP 内置工具 `admin_tool_candidates`
+**不传参时直接返回该快照**（`source=scheduled`），审计 agent 一次调用即可拿到排名与最近一次
+调用原文，不必再回查审计流水；传 `window_days` / `limit` 时按参数实时重算（`source=live`）。
+HTTP 端点始终实时计算，两边共用 `candidates_report`，同一窗口必得同一顺序。
 
 ```
-{ window:{days,from,to},
+{ source: "live"|"scheduled",
+  generated_at, scanned_calls,
+  window:{days,from,to},
   weights:{segment_gap_seconds,refine_step,failure_penalty,multi_token_bonus,multi_token_cap},
   truncated,
   candidates:[{
     subject, family, upstream_id, upstream_tool, score, calls,
-    longest_segment, refined_calls, failures, distinct_tokens, reasons:[…] }] }
+    longest_segment, refined_calls, failures, distinct_tokens, reasons:[…],
+    last_call_at, last_outcome, last_arguments }] }
 ```
 
+- `source`：`scheduled` 为后台静态审计快照，`live` 为本次调用现扫；`generated_at` 是报告生成时刻。
+- `scanned_calls`：窗口内扫到的 `tool_call` 条数（含不入候选的内置工具调用），用于判断快照覆盖面。
 - `family`：`sql` / `file` / `http` / `tool`（认不出对象参数时退到上游工具本身）。
 - 四条加权规则：同令牌对同一对象的**连续收紧**（相邻调用间隔 ≤ `segment_gap_seconds` 视为一段，
   段内第 ⌈n/2⌉ 次之后逐次递增 `k × refine_step`）、**失败**每次 `-failure_penalty`、
@@ -266,6 +276,8 @@ cookie 身份的非 GET 请求还要求同源 `Origin`/`Referer`，否则 403 `M
   分数是加权和，不给系数就无法解释"为什么它是 9 分"。
 - 「条件收紧」按**短间隔重复调用同一对象**推断，不解析语句结构：`tool_call` 审计只留入参，
   无法可靠判定后一次查询的范围是否更窄（先放宽再收窄同样常见），按结构判定会漏掉真实调参。
+- `last_call_at` / `last_outcome` / `last_arguments`：该对象在窗口内最近一次调用的时间、结果与原文
+  入参（JOIN 一拍多表的候选取同一条事件）；失败调用同样保留，不会被成功记录覆盖成"看起来没问题"。
 - 分数 ≤ 0 的对象不出现（"试过但没成气候"不该占 `limit`，更不该冒充候选）；结果按分数降序。
 - `truncated`：窗口扫描命中 50,000 条上限，或候选数超过 `limit`。
 - `window_days` 默认 7、上限 30；`limit` 默认 200、上限 200。
@@ -444,7 +456,7 @@ agent 侧推荐在 `admin_publish_capability` 里一并传 `discoverable` / `cal
 
 - SQLite 单表 `audit_events`，主键 `event_id`；索引 `(tenant, ts)`、`(event_type, ts)`。
 - `capability_versions` 主键 `(capability_id, version)`；`BEFORE UPDATE OF definition_json, definition_hash, capability_id, version` 禁止定义改写，但允许审批元数据（`status`/`submitted_*`/`approved_*`/`approval_id`）在版本行上盖章；`BEFORE DELETE` 全表禁止。
-- 哈希链校验结果通过 `/health` 的 `audit_chain`（`valid`/`tampered`/`error`）暴露。
+- 哈希链校验结果通过 `/health` 的 `audit_chain`（`valid`/`tampered`/`error`）暴露；静态审计快照就绪后 `/health` 另带 `static_audit:{generated_at,candidates}`，刷新停摆时这里会停在旧时间。
 - registry 库新增 `access_tokens`（`CREATE TABLE IF NOT EXISTS` + `ensure_column` 补列，旧库不受影响）：
   `id, name, token_hash(UNIQUE), token_prefix, tenant, role, groups_json, builtin_tools_json, source, caller, enabled, created_at, created_by, expires_at, revoked_at, last_used_at`。
 
