@@ -336,6 +336,10 @@ fn admin_surface_defaults_are_login_ready() {
     let s = Settings::default();
     assert_eq!(s.admin_port, 8080, "管理面独立端口，默认 8080");
     assert_eq!(s.admin_session_ttl_secs, 43_200, "默认 12 小时");
+    assert_eq!(
+        s.static_audit_interval_secs, 300,
+        "后台静态审计默认 5 分钟刷新一次"
+    );
     assert!(
         !s.admin_cookie_secure,
         "默认允许内网 HTTP：Secure 会让浏览器不回传 cookie（登录后立刻 401）"

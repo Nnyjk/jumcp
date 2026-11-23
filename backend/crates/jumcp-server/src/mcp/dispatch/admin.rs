@@ -268,9 +268,10 @@ impl McpServer {
 
     /// `admin_tool_candidates`：定制化 tool 候选加权评分（只读）。
     ///
-    /// 与 HTTP `GET /admin/tools/candidates` 共用 `crate::admin::tool_candidates_report`：
-    /// 审计 agent 在会话里看到的排名必须与看板逐字一致，否则"为什么推荐这个"无从对照。
-    /// `window_days` 缺省 7（与统计台账同口径），窗口与条数的夹紧在报告层完成。
+    /// 不传参时返回后台静态审计快照（`source=scheduled`）：排名与最近一次调用证据都已备好，
+    /// 审计 agent 一次调用即可决策，不必再回查审计流水。显式传 `window_days`/`limit` 时按
+    /// 参数实时重算（`source=live`），与 HTTP `GET /admin/tools/candidates` 共用同一份装配。
+    /// 快照尚未就绪（定时任务关闭/首轮未完成）时同样回退到实时计算。
     pub(super) fn admin_tool_candidates(&self, id: &Value, args: &Value, actor: &Actor) -> Value {
         const TOOL: &str = "admin_tool_candidates";
         let Some(log) = self.service.audit.as_ref() else {
@@ -279,6 +280,12 @@ impl McpServer {
                 &McpError::new("MCP_AUDIT_ERROR", json!({"hint": "审计未启用"})),
             );
         };
+        if args.get("window_days").is_none()
+            && args.get("limit").is_none()
+            && let Some(report) = self.service.static_audit()
+        {
+            return tool_result(id, (*report).clone(), false);
+        }
         let window_days = args
             .get("window_days")
             .and_then(Value::as_i64)

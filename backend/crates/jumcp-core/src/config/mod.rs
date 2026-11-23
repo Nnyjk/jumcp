@@ -84,6 +84,10 @@ pub struct Settings {
     pub admin_port: u16,
     /// 管理台会话 cookie 的存活秒数（`JUMCP_ADMIN_SESSION_TTL_SECS`，默认 43200 = 12h）。
     pub admin_session_ttl_secs: i64,
+    /// 静态审计刷新间隔（秒，`JUMCP_STATIC_AUDIT_INTERVAL_SECS`，默认 300；0 表示关闭定时任务）。
+    ///
+    /// 关闭后 `admin_tool_candidates` 仍在每次调用时实时计算，只是不再预热快照。
+    pub static_audit_interval_secs: i64,
     /// 会话 cookie 是否带 `Secure`（`JUMCP_ADMIN_COOKIE_SECURE=1`）。
     /// 默认关：纯 HTTP 内网部署下带 Secure 会让浏览器根本不发 cookie，等于登录成功但立刻掉线。
     pub admin_cookie_secure: bool,
@@ -127,6 +131,7 @@ impl Default for Settings {
             port: 8000,
             admin_port: 8080,
             admin_session_ttl_secs: 43_200,
+            static_audit_interval_secs: 300,
             admin_cookie_secure: false,
             audit_path: "data/audit.sqlite3".to_string(),
             registry_path: "data/registry.sqlite3".to_string(),
@@ -181,6 +186,9 @@ impl Settings {
         s.admin_session_ttl_secs = env_or("JUMCP_ADMIN_SESSION_TTL_SECS", "43200")
             .parse::<i64>()
             .map_err(|_| "JUMCP_ADMIN_SESSION_TTL_SECS 非法".to_string())?;
+        s.static_audit_interval_secs = env_or("JUMCP_STATIC_AUDIT_INTERVAL_SECS", "300")
+            .parse::<i64>()
+            .map_err(|_| "JUMCP_STATIC_AUDIT_INTERVAL_SECS 非法".to_string())?;
         s.admin_cookie_secure = env_or("JUMCP_ADMIN_COOKIE_SECURE", "0") == "1";
         s.audit_path = env_or("JUMCP_MCP_AUDIT_PATH", &s.audit_path);
         s.registry_path = env_or("JUMCP_MCP_REGISTRY_PATH", &s.registry_path);
@@ -238,6 +246,12 @@ impl Settings {
         }
         if !matches!(self.groups_mode.as_str(), "strict" | "intersect") {
             return Err(format!("groups_mode 非法: {}", self.groups_mode));
+        }
+        if self.static_audit_interval_secs < 0 {
+            return Err(format!(
+                "JUMCP_STATIC_AUDIT_INTERVAL_SECS 不能为负: {}",
+                self.static_audit_interval_secs
+            ));
         }
         if self.admin_session_ttl_secs <= 0 {
             return Err(format!(

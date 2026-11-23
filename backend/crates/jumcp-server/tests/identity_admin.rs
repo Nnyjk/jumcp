@@ -96,6 +96,7 @@ struct Harness {
     app: Router,
     store: Arc<CapabilityStore>,
     audit: Arc<AuditLog>,
+    service: Arc<Service>,
 }
 
 fn harness() -> Harness {
@@ -135,8 +136,13 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
         transport_key: None,
     };
     let app = jumcp_server::admin::router(admin)
-        .merge(http_router(Arc::new(McpServer::from_arc(service))));
-    Harness { app, store, audit }
+        .merge(http_router(Arc::new(McpServer::from_arc(service.clone()))));
+    Harness {
+        app,
+        store,
+        audit,
+        service,
+    }
 }
 
 /// 走完整生命周期开放一条能力（与 admin.rs 调同一批 store 方法）。
@@ -1159,6 +1165,86 @@ async fn admin_tool_candidates_matches_the_admin_endpoint() {
     // 非 admin 身份：与"不存在"同构，不泄露候选内容。
     let denied = call_tool(&h.app, ANALYST_TOKEN, "admin_tool_candidates", json!({})).await;
     assert_eq!(err_code(&denied), "MCP_CAPABILITY_NOT_FOUND", "{denied}");
+}
+
+/// 后台静态审计快照：调度刷新后，MCP 默认调用直接读快照（不再扫审计库）；
+/// 新事件只进显式实时重算。这是"缩减审计 agent 工作链路"的核心行为。
+#[tokio::test]
+async fn admin_tool_candidates_serves_the_static_audit_snapshot() {
+    let h = harness();
+    let append_call = |minutes: i64, token: &str| {
+        h.audit
+            .append(jumcp_core::audit::AuditEvent {
+                tenant: "default".into(),
+                actor: jumcp_core::audit::ActorRef {
+                    actor_type: "agent".into(),
+                    id: format!("agent-{token}"),
+                    role: "analyst".into(),
+                    token_id: Some(token.into()),
+                    source: None,
+                },
+                event_type: "tool_call".into(),
+                payload: json!({
+                    "object_type": "tool",
+                    "object_id": "ch__query",
+                    "action": "call",
+                    "outcome": "ok",
+                    "data": {
+                        "arguments": {"sql": "SELECT id FROM env_air.orders LIMIT 10"},
+                        "upstream_id": "ch",
+                        "upstream_tool": "query",
+                        "elapsed_ms": 4
+                    }
+                }),
+                session_id: format!("s-{token}"),
+                ts: (chrono::Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339(),
+                event_id: String::new(),
+            })
+            .expect("append");
+    };
+    for minutes in [30, 29, 28] {
+        append_call(minutes, "tok-a");
+    }
+    jumcp_server::static_audit::refresh(&h.service)
+        .await
+        .expect("static audit refresh");
+
+    let snapshot = call_tool(&h.app, ADMIN_TOKEN, "admin_tool_candidates", json!({})).await;
+    assert_eq!(snapshot["result"]["isError"], json!(false), "{snapshot}");
+    let snapshot = snapshot["result"]["structuredContent"].clone();
+    assert_eq!(snapshot["source"], json!("scheduled"), "{snapshot}");
+    assert_eq!(snapshot["window"]["days"], json!(7));
+    assert_eq!(
+        snapshot["candidates"][0]["subject"],
+        json!("env_air.orders")
+    );
+    assert_eq!(snapshot["candidates"][0]["calls"], json!(3));
+    assert_eq!(
+        snapshot["candidates"][0]["last_arguments"],
+        json!({"sql": "SELECT id FROM env_air.orders LIMIT 10"}),
+        "快照自带最近一次调用证据，agent 不必回查审计流水"
+    );
+
+    // 新事件不改变已生成的快照：默认调用命中的是后台算好的结果。
+    append_call(1, "tok-b");
+    let cached = call_tool(&h.app, ADMIN_TOKEN, "admin_tool_candidates", json!({})).await;
+    assert_eq!(
+        cached["result"]["structuredContent"], snapshot,
+        "默认调用必须读快照，而不是每次现扫审计"
+    );
+
+    // 显式窗口/条数 = 主动要实时口径：新事件立即反映。
+    let live = call_tool(
+        &h.app,
+        ADMIN_TOKEN,
+        "admin_tool_candidates",
+        json!({"window_days": 7}),
+    )
+    .await;
+    let live = live["result"]["structuredContent"].clone();
+    assert_eq!(live["source"], json!("live"), "{live}");
+    assert_eq!(live["candidates"][0]["calls"], json!(4));
+    assert_eq!(live["candidates"][0]["distinct_tokens"], json!(2));
 }
 
 /// 通用分发入口（`tools/call` 按 name 路由）产生的 `tool_call` 必须能回放原始入参。
