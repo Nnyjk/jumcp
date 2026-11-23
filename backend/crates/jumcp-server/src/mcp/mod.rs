@@ -157,10 +157,10 @@ pub fn admin_tool_definitions() -> Vec<Value> {
         ),
         tool(
             "admin_tool_candidates",
-            "定制化 tool 候选评分（只读）：按连续收紧/失败/多令牌加权排序，附加分理由",
+            "定制化 tool 候选排名（只读）：默认读后台静态审计快照（含最近一次调用证据）；显式传 window_days/limit 时实时重算",
             json!({"type":"object","properties":{
-                "window_days":{"type":"integer","description":"统计窗口（天），默认 7、夹紧 1..=30"},
-                "limit":{"type":"integer","description":"返回候选数，夹紧 1..=200"}
+                "window_days":{"type":"integer","description":"统计窗口（天），默认 7、夹紧 1..=30；传入即实时重算"},
+                "limit":{"type":"integer","description":"返回候选数，夹紧 1..=200；传入即实时重算"}
             }}),
         ),
         write_tool(

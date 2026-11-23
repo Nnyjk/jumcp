@@ -100,6 +100,22 @@ async fn consecutive_refinement_weights_the_tail_of_a_segment() {
         vec![json!("env_air.orders")],
         "单次调用与内置调用都不入候选"
     );
+
+    // 静态审计与实时接口共用同一份装配：来源、扫描规模、最近一次调用证据都必须随结果给出。
+    assert_eq!(body["source"], json!("live"));
+    assert!(
+        body["generated_at"].as_str().is_some_and(|s| !s.is_empty()),
+        "{body}"
+    );
+    assert_eq!(body["scanned_calls"], json!(10), "窗口内全部 tool_call");
+    assert_eq!(orders["last_outcome"], json!("ok"));
+    assert_eq!(orders["last_arguments"], sql("env_air.orders"));
+    assert!(
+        orders["last_call_at"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "{orders}"
+    );
 }
 
 /// 规则二：失败的调用扣分，能压过短段收索引来的加分；扣成非正分的对象直接出局。

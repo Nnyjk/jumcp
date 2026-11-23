@@ -193,6 +193,9 @@ async fn run_http(
             "access_tokens 为空：/mcp 将拒绝所有请求，请先在管理面 POST /admin/tokens 生成令牌"
         );
     }
+    // 后台静态审计：首轮 tick 立即跑，之后每 `JUMCP_STATIC_AUDIT_INTERVAL_SECS` 秒刷新。
+    // 放这里而不是 stdio：stdio 进程没有长驻管理面/会话，定时快照没有消费者。
+    jumcp_server::static_audit::spawn(service.clone());
     let mcp_app = jumcp_server::app::mcp_surface(
         server,
         service.clone(),

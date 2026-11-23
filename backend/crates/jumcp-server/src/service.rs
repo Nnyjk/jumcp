@@ -61,6 +61,10 @@ pub struct Service {
     /// 审计事件的 `session_id` 列（审计检索用）。
     /// 预算账本与模板版本钉住**不**用它：那两处按请求身份派生（见 `session_key`）。
     pub session_id: String,
+    /// 后台静态审计快照（已渲染的候选报告）：`None` = 调度未启用、尚未刷新或审计未启用。
+    ///
+    /// 只由 `crate::static_audit` 写；MCP 工具读它来跳过"调用时扫描审计库"这一步。
+    static_audit: Mutex<Option<Arc<Value>>>,
 }
 
 impl Service {
@@ -76,6 +80,7 @@ impl Service {
             templates: None,
             upstreams: None,
             session_id: "default".to_string(),
+            static_audit: Mutex::new(None),
         }
     }
     pub fn with_catalog(mut self, catalog: Catalog) -> Self {
@@ -89,6 +94,16 @@ impl Service {
     pub fn with_audit(mut self, audit: Arc<AuditLog>) -> Self {
         self.audit = Some(audit);
         self
+    }
+    /// 覆盖后台静态审计快照：调度器按固定窗口重算后整体替换（不合并、不追加）。
+    pub fn set_static_audit(&self, report: Value) -> Result<(), McpError> {
+        let mut slot = self.static_audit.lock().map_err(|_| McpError::lock())?;
+        *slot = Some(Arc::new(report));
+        Ok(())
+    }
+    /// 读取最近一次静态审计快照；`None` 时调用方必须回退到实时计算。
+    pub fn static_audit(&self) -> Option<Arc<Value>> {
+        self.static_audit.lock().ok().and_then(|slot| slot.clone())
     }
     pub fn with_scope(mut self, scope: EffectiveScope) -> Self {
         self.scope = Some(scope);
@@ -391,6 +406,13 @@ pub fn health_report(service: &Service) -> Value {
     });
     if !detail.is_null() {
         body["audit_chain_detail"] = detail;
+    }
+    // 静态审计快照的新鲜度：调度停摆时这里会停在旧时间，运维不必翻日志才能发现。
+    if let Some(report) = service.static_audit() {
+        body["static_audit"] = json!({
+            "generated_at": report["generated_at"],
+            "candidates": report["candidates"].as_array().map_or(0, Vec::len)
+        });
     }
     body
 }

@@ -486,6 +486,9 @@ pub(super) async fn tool_stats(
     })))
 }
 
+/// 候选聚合键：族 + 对象 + 上游归属；候选排名与"最近一次调用证据"共用同一把键。
+type CandidateKey = (super::scoring::Family, String, String, String);
+
 /// 一次调用事实化：缺上游归属的事件跳过，同一次调用命中多张表则逐表各记一条。
 ///
 /// 为什么不给缺 `upstream_id`/`upstream_tool` 的事件补默认值：`tool_call` 里同时有内置工具
@@ -494,9 +497,13 @@ pub(super) async fn tool_stats(
 ///
 /// 令牌身份取 `actor.token_id`，缺省退回 `actor.id`：前者是精确令牌，后者是 agent 身份，
 /// 同一身份换令牌仍算"同一方在反复调参"，而不同身份访问同一对象才是规则三要的广度证据。
-fn call_facts(list: &[CallObservation]) -> Vec<CallFact> {
+///
+/// 第二个返回值把候选键映射到**窗口内最近一次调用**的观测下标：与事实抽取同一趟完成，
+/// 避免为了补证据再把整窗 SQL 解析一遍；只有入选候选才会按下标取入参原文。
+fn call_facts(list: &[CallObservation]) -> (Vec<CallFact>, HashMap<CandidateKey, usize>) {
     let mut out: Vec<CallFact> = Vec::new();
-    for o in list {
+    let mut latest: HashMap<CandidateKey, usize> = HashMap::new();
+    for (index, o) in list.iter().enumerate() {
         let (Some(upstream_id), Some(upstream_tool)) = (&o.upstream_id, &o.upstream_tool) else {
             continue;
         };
@@ -520,20 +527,32 @@ fn call_facts(list: &[CallObservation]) -> Vec<CallFact> {
                 format!("{upstream_id}/{upstream_tool}"),
             ));
         }
-        out.extend(subjects.into_iter().map(|(family, subject)| CallFact {
-            token: token.to_string(),
-            subject,
-            family,
-            upstream_id: upstream_id.clone(),
-            upstream_tool: upstream_tool.clone(),
-            ok,
-            ts: ts.timestamp(),
-        }));
+        for (family, subject) in subjects {
+            // 观测按时间升序扫描，后写覆盖前写即得最近一次；失败调用同样保留。
+            latest.insert(
+                (
+                    family,
+                    subject.clone(),
+                    upstream_id.clone(),
+                    upstream_tool.clone(),
+                ),
+                index,
+            );
+            out.push(CallFact {
+                token: token.to_string(),
+                subject,
+                family,
+                upstream_id: upstream_id.clone(),
+                upstream_tool: upstream_tool.clone(),
+                ok,
+                ts: ts.timestamp(),
+            });
+        }
     }
-    out
+    (out, latest)
 }
 
-fn candidate_json(candidate: &super::scoring::Candidate) -> Value {
+fn candidate_json(candidate: &super::scoring::Candidate, evidence: Option<&CallEvidence>) -> Value {
     json!({
         "subject": candidate.subject,
         "family": candidate.family.as_str(),
@@ -546,7 +565,18 @@ fn candidate_json(candidate: &super::scoring::Candidate) -> Value {
         "failures": candidate.failures,
         "distinct_tokens": candidate.distinct_tokens,
         "reasons": candidate.reasons,
+        // 最近一次调用的原文：审计 agent 据此直接写模板，不必回查审计流水。
+        "last_call_at": evidence.map(|e| e.ts.clone()),
+        "last_outcome": evidence.map(|e| e.outcome.clone()),
+        "last_arguments": evidence.map(|e| e.arguments.clone()),
     })
+}
+
+/// 候选对象最近一次调用的入参快照：缺证据的字段在响应里是 `null`。
+struct CallEvidence {
+    ts: String,
+    outcome: String,
+    arguments: Value,
 }
 
 /// 定制化 tool 候选评分的唯一装配点：窗口扫描 → 事实抽取 → 纯函数打分 → 响应 JSON。
@@ -562,23 +592,82 @@ pub(crate) fn tool_candidates_report(
     window_days: i64,
     limit: i64,
 ) -> Result<Value, McpError> {
+    candidates_report(log, window_days, limit, "live")
+}
+
+/// 后台静态审计使用的同一份装配，只是把 `source` 标成 `scheduled`：
+/// 排名口径与实时接口完全一致，差别仅在"什么时候扫的审计库"。
+pub(crate) fn static_audit_report(
+    log: &AuditLog,
+    window_days: i64,
+    limit: i64,
+) -> Result<Value, McpError> {
+    candidates_report(log, window_days, limit, "scheduled")
+}
+
+fn candidates_report(
+    log: &AuditLog,
+    window_days: i64,
+    limit: i64,
+    source: &str,
+) -> Result<Value, McpError> {
     let window_days = window_days.clamp(1, STATS_MAX_WINDOW_DAYS);
     let limit = limit.clamp(1, MAX_LIMIT);
     let to = Utc::now();
     let from_iso = (to - chrono::Duration::days(window_days)).to_rfc3339();
     let to_iso = to.to_rfc3339();
     let (observations, mut truncated) = scan_in_window(log, "tool_call", &from_iso)?;
-    let facts = call_facts(&observations);
+    let (facts, latest) = call_facts(&observations);
     let candidates = super::scoring::score(&facts);
     if candidates.len() > limit as usize {
         truncated = true;
     }
-    let items: Vec<Value> = candidates
+    let top: Vec<&super::scoring::Candidate> = candidates.iter().take(limit as usize).collect();
+    let wanted: HashSet<CandidateKey> = top
         .iter()
-        .take(limit as usize)
-        .map(candidate_json)
+        .map(|c| {
+            (
+                c.family,
+                c.subject.clone(),
+                c.upstream_id.clone(),
+                c.upstream_tool.clone(),
+            )
+        })
+        .collect();
+    // 只为入选候选取入参原文：窗口内其余调用的 arguments 不复制进快照。
+    let evidence: HashMap<CandidateKey, CallEvidence> = latest
+        .into_iter()
+        .filter(|(key, _)| wanted.contains(key))
+        .map(|(key, index)| {
+            let o = &observations[index];
+            (
+                key,
+                CallEvidence {
+                    ts: o.ts.clone(),
+                    outcome: o.outcome.clone(),
+                    arguments: o.arguments.clone(),
+                },
+            )
+        })
+        .collect();
+    let items: Vec<Value> = top
+        .iter()
+        .map(|candidate| {
+            let key = (
+                candidate.family,
+                candidate.subject.clone(),
+                candidate.upstream_id.clone(),
+                candidate.upstream_tool.clone(),
+            );
+            candidate_json(candidate, evidence.get(&key))
+        })
         .collect();
     Ok(json!({
+        // 数据来源：`scheduled` 是进程内定时任务产出的快照，`live` 是本次调用现扫的审计。
+        "source": source,
+        "generated_at": to_iso,
+        // 扫描规模随结果回显：静态审计快照是否"看得够全"一眼可判。
+        "scanned_calls": observations.len(),
         "window": {"days": window_days, "from": from_iso, "to": to_iso},
         // 权重随结果回显：分数是加权和，不给系数就没法解释"为什么它是 9 分"。
         "weights": {

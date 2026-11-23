@@ -81,9 +81,10 @@ COPY config/policy.toml /app/config/policy.toml
 # 两个监听面（不能相同，相同即拒绝启动）：
 # - JUMCP_MCP_PORT（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent；
 # - JUMCP_ADMIN_PORT（管理面）：`/admin/*`、`/health` 与管理台静态站（JUMCP_MCP_WEB_DIR），给浏览器。
-# 管理台登录用 cookie 会话，因此还有两个可选旋钮：
+# 管理台登录用 cookie 会话，因此还有三个可选旋钮：
 # - JUMCP_ADMIN_SESSION_TTL_SECS（默认 43200 = 12 小时）；
-# - JUMCP_ADMIN_COOKIE_SECURE=1 仅在 HTTPS（TLS 终止在网关时也算）下启用，否则浏览器不回传 cookie。
+# - JUMCP_ADMIN_COOKIE_SECURE=1 仅在 HTTPS（TLS 终止在网关时也算）下启用，否则浏览器不回传 cookie；
+# - JUMCP_STATIC_AUDIT_INTERVAL_SECS（默认 300 秒，0 关闭）：后台预计算候选排名快照。
 ENV JUMCP_MCP_WEB_DIR=/app/web \
     JUMCP_MCP_TRANSPORT=streamable-http \
     JUMCP_MCP_HOST=0.0.0.0 \
