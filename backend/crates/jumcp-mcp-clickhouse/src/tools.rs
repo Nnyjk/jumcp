@@ -2,7 +2,7 @@
 //!
 //! 名字用短名：上游 router 对外暴露成 `<server_id>__<tool>`，这里再带前缀会重复。
 //!
-//! 只读语义三层不削弱：
+//! 只读约束三条同时成立：
 //! - 用户 SQL 必过 [`jumcp_sqlguard::validate`]（ClickHouse 方言 + `allowed_schemas`）；
 //! - 执行走 connector（`readonly=1` 等设置在 agent 内固定，本 crate 无法关掉）；
 //! - `system.*` 内的目录查询由本服务自己写死，用户输入只作为**绑定参数**进入，绝不拼接。

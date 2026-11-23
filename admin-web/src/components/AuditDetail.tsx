@@ -13,6 +13,7 @@ import {
 import { DASH, dashText, formatDateTime } from '../format'
 import {
   ACTION_LABEL,
+  APPROVAL_SOURCE_LABEL,
   EVENT_TYPE_LABEL,
   OBJECT_TYPE_LABEL,
   OUTCOME_LABEL,
@@ -226,12 +227,11 @@ export function AuditDetail({ event }: { event: AuditEnvelope }) {
             <DetailField label="审批单号" mono>
               {approvalText(payload.approval)}
             </DetailField>
+            {/* 约束：审批来源查 APPROVAL_SOURCE_LABEL 映射，未收录来源原样透传兜底，保证向前兼容且不丢失审计现场 */}
             <DetailField label="审批来源">
               {payload.approval === null || payload.approval === undefined
                 ? DASH
-                : payload.approval.source === 'external'
-                  ? '外部审批系统（系统不校验）'
-                  : '无审批单'}
+                : (APPROVAL_SOURCE_LABEL[payload.approval.source] ?? payload.approval.source)}
             </DetailField>
             <DetailField label="提审人" mono>
               {dashText(payload.approval?.submitted_by ?? undefined)}

@@ -10,6 +10,7 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined
 }
 
+/** 单元格文案：标量原样转文本，对象/数组走行内 JSON，空值给破折号（不能读成空字符串）。 */
 function valueText(value: unknown): string {
   if (value === null || value === undefined || value === '') return DASH
   if (typeof value === 'string') return value
@@ -70,6 +71,7 @@ function paramRows(source: unknown): ParamRow[] {
   return []
 }
 
+/** 约束与缓存共用的渲染：字符串原样进代码块，数组进列表，map 进键值表，其余给破折号。 */
 function ConstraintList({ source }: { source: unknown }) {
   if (typeof source === 'string') {
     return <CodeBlock>{source}</CodeBlock>
@@ -102,7 +104,11 @@ function ConstraintList({ source }: { source: unknown }) {
 
 /**
  * 能力定义的结构化只读视图：SQL / 参数表 / 约束 / 缓存 / 方言 / 绑定顺序 / 变体。
- * 完整 JSON 收在「高级」折叠里，避免管理员把原始定义当成唯一入口。
+ * 只读：不接收编辑回调，管理台只展示定义，不在视图内修改；完整 JSON 收在「高级」折叠里，
+ * 避免管理员把原始定义当成唯一入口。
+ *
+ * 字段按宽松契约读取：既支持顶层平铺（`base_sql`、`params`），也支持嵌套在 `template` 下；
+ * 认不出的字段不猜，逐节降级成说明文案（如「定义中没有可识别的 SQL 字段。」），整个视图不会因此空白或抛错。
  */
 export function DefinitionView({ definition }: { definition: Record<string, unknown> }) {
   const template = isRecord(definition.template) ? definition.template : undefined

@@ -184,10 +184,10 @@ struct Masked {
     has_comment: bool,
 }
 
-/// 把字符串字面量与注释从 SQL 里抹掉（保持长度无关，只用空白占位）。
+/// 把字符串字面量与注释逐字符替换为空白（引号、注释定界符一并抹掉），只留"出现过注释"的标记。
 ///
 /// 为什么必须抹字符串：`WHERE name = 'a; DROP TABLE t'` 里的分号与关键字是数据，
-/// 不是语句结构；不抹就会把合法查询当成注入，也会让真正的注入藏进字面量里漏判。
+/// 不是语句结构；不抹会误杀合法查询。抹掉后剩下的才是语句结构，后续规则只对它判定。
 fn mask(sql: &str) -> Masked {
     let chars: Vec<char> = sql.chars().collect();
     let mut text = String::with_capacity(sql.len());

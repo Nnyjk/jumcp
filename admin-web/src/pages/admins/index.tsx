@@ -19,8 +19,8 @@ const ACCOUNTS_KEY = ['admin-accounts'] as const
 export default function AdminsPage() {
   const queryClient = useQueryClient()
   const { session } = useAuth()
-  // 会话 actor.id 是 username，而 row.id 是账号主键：必须用 user_id 比对才能识别「自己」。
-  // 旧后端不带 user_id 时退回 null（不禁用，靠后端 409 MCP_ADMIN_SELF_DELETE 兜底）。
+  // 鉴权上下文约束：会话 actor.id 存的是 username，而 row.id 是自增主键；
+  // 必须使用 actor.user_id 比对识别当前登录用户自身；缺失时回退为 null 并依赖后端 MCP_ADMIN_SELF_DELETE 安全拦截。
   const meId = session.state === 'authenticated' ? (session.actor.user_id ?? null) : null
 
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
@@ -34,7 +34,7 @@ export default function AdminsPage() {
 
   const accounts = useMemo(() => {
     const items = accountsQuery.data?.items ?? []
-    // 按用户名排序：账户清单不分页，稳定顺序比后端返回顺序更好扫读。
+    // 列表展示约束：管理账户清单不分页，前端按 username 字典序稳定排列，便于快速检索目标账户。
     return [...items].sort((left, right) => left.username.localeCompare(right.username))
   }, [accountsQuery.data])
 
@@ -46,8 +46,8 @@ export default function AdminsPage() {
       setDeleteTarget(null)
       setNotice({
         severity: 'success',
-        title: '账户已删除',
-        description: `${account.username} 已从管理台移除，无法再登录；其历史审计事件保留。`,
+        title: '管理账户已删除',
+        description: `管理账户 ${account.username} 已从管理台移除，无法再登录；关联的历史审计事件仍将保留。`,
         meta: undefined,
       })
       void queryClient.invalidateQueries({ queryKey: ACCOUNTS_KEY })
@@ -114,7 +114,7 @@ export default function AdminsPage() {
             type="button"
             className="btn btn-danger btn-sm"
             disabled={row.id === meId}
-            title={row.id === meId ? '不能删除当前登录的账户' : undefined}
+            title={row.id === meId ? '禁止删除当前已登录的管理账户' : undefined}
             onClick={() => {
               setNotice(undefined)
               setDeleteTarget(row)
@@ -149,7 +149,7 @@ export default function AdminsPage() {
             ? accountsQuery.isError
               ? '查询失败'
               : '查询中'
-            : `共 ${accounts.length} 个账户 · ${activeCount} 个启用中`
+            : `共 ${accounts.length} 个管理账户 · ${activeCount} 个启用中`
         }
         actions={
           <button
@@ -160,7 +160,7 @@ export default function AdminsPage() {
               setEditor({ mode: 'create' })
             }}
           >
-            新建账户
+            新建管理账户
           </button>
         }
         flush
@@ -169,14 +169,14 @@ export default function AdminsPage() {
         {accountsQuery.isError && <ErrorState error={accountsQuery.error} />}
         {accountsQuery.data !== undefined && accounts.length === 0 && (
           <EmptyState
-            hint="还没有管理账户。新建一个账户后即可用它登录管理台。"
+            hint="暂无管理账户。可点击右上角「新建管理账户」添加，新建后可直接登录管理面(8080)。"
             action={
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={() => setEditor({ mode: 'create' })}
               >
-                新建账户
+                新建管理账户
               </button>
             }
           />
@@ -201,11 +201,11 @@ export default function AdminsPage() {
             setEditor(null)
             setNotice({
               severity: 'success',
-              title: mode === 'create' ? '账户已创建' : '账户已更新',
+              title: mode === 'create' ? '管理账户已创建' : '管理账户已更新',
               description:
                 mode === 'create'
-                  ? `${account.username} 已创建，可立即用它登录管理台。`
-                  : `${account.username} 的资料已更新。`,
+                  ? `管理账户 ${account.username} 已创建，可立即用于登录管理面(8080)。`
+                  : `管理账户 ${account.username} 的资料已更新。`,
               meta: undefined,
             })
             void queryClient.invalidateQueries({ queryKey: ACCOUNTS_KEY })
@@ -215,13 +215,14 @@ export default function AdminsPage() {
 
       {deleteTarget !== null && (
         <ConfirmDialog
-          title={`删除账户 · ${deleteTarget.username}`}
-          subtitle="删除后该账户无法再登录管理台，此操作不可撤回。"
+          title={`删除管理账户 · ${deleteTarget.username}`}
+          subtitle="删除后该管理账户无法再登录管理面(8080)，此操作不可撤回。"
           confirmLabel="确认删除"
           pendingLabel="删除中…"
           tone="danger"
           pending={deleteMutation.isPending}
-          errorTitle="删除账户失败"
+          errorTitle="删除管理账户失败"
+          error={deleteMutation.error === null ? undefined : accountErrorMessage(deleteMutation.error)}
           onClose={() => {
             setDeleteTarget(null)
             deleteMutation.reset()
@@ -229,13 +230,9 @@ export default function AdminsPage() {
           onConfirm={() => deleteMutation.mutate(deleteTarget)}
         >
           <p className="hint">
-            该账户的历史审计事件会保留；若它是最后一个启用中的账户，后端会拒绝删除。
+            该账户关联的历史审计事件将永久保留；若该账户为系统中最后一个启用中的管理账户，删除操作将被后端拦截拒绝。
           </p>
-          {deleteMutation.error !== null && (
-            <p className="inline-error" role="alert">
-              {accountErrorMessage(deleteMutation.error)}
-            </p>
-          )}
+
         </ConfirmDialog>
       )}
     </PageShell>

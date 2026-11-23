@@ -226,6 +226,7 @@ run_step "scripts: release tag resolution" "$REPO_ROOT" bash scripts/test-releas
 # 3. 前端
 run_step "frontend: npm ci" "$WEB_DIR" npm ci
 run_step "frontend: npm run typecheck" "$WEB_DIR" npm run typecheck
+run_step "frontend: npm run test:transport" "$WEB_DIR" npm run test:transport
 run_step "frontend: npm run build" "$WEB_DIR" npm run build
 run_step "frontend: eslint src --max-warnings 0" "$WEB_DIR" npx eslint src --max-warnings 0
 

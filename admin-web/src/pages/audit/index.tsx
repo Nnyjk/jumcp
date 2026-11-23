@@ -1,15 +1,15 @@
-import type { KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BackButton } from '../../components/BackButton'
 import { Card } from '../../components/Card'
 import { PageShell } from '../../components/PageShell'
+import { TabBar, TabPanel, type TabItem } from '../../components/TabBar'
 import type { AuditInitialFilter } from './auditFilter'
 import { AuditEventsPanel } from './AuditEventsPanel'
 import { ReviewQueuePanel } from './ReviewQueuePanel'
 
 type AuditTab = 'review' | 'events'
 
-const TABS: Array<{ key: AuditTab; label: string }> = [
+const TABS: TabItem<AuditTab>[] = [
   { key: 'review', label: '审核队列' },
   { key: 'events', label: '审计事件' },
 ]
@@ -26,52 +26,15 @@ export default function AuditPage() {
     setSearchParams(params, { replace: true })
   }
 
-  const handleTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const lastIndex = TABS.length - 1
-    let target: number | undefined
-    if (event.key === 'ArrowRight') target = index === lastIndex ? 0 : index + 1
-    else if (event.key === 'ArrowLeft') target = index === 0 ? lastIndex : index - 1
-    else if (event.key === 'Home') target = 0
-    else if (event.key === 'End') target = lastIndex
-    if (target === undefined) return
-    event.preventDefault()
-    const next = TABS[target]
-    if (next === undefined) return
-    selectTab(next.key)
-    document.getElementById(`audit-tab-${next.key}`)?.focus()
-  }
-
   return (
     <PageShell>
       <Card title="审计" subtitle="审核队列与平台审计事件">
-        <nav className="tabbar" role="tablist" aria-label="审计分栏">
-          {TABS.map((item, index) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              id={`audit-tab-${item.key}`}
-              aria-controls={tab === item.key ? `audit-panel-${item.key}` : undefined}
-              aria-selected={tab === item.key}
-              tabIndex={tab === item.key ? 0 : -1}
-              className="tab"
-              onClick={() => selectTab(item.key)}
-              onKeyDown={(event) => handleTabKey(event, index)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
+        <TabBar idBase="audit" items={TABS} value={tab} onChange={selectTab} label="审计分栏" />
       </Card>
 
-      <div
-        className="tab-panel"
-        role="tabpanel"
-        id={`audit-panel-${tab}`}
-        aria-labelledby={`audit-tab-${tab}`}
-      >
+      <TabPanel idBase="audit" tabKey={tab}>
         {tab === 'review' ? <ReviewQueuePanel /> : <AuditEventsPanel />}
-      </div>
+      </TabPanel>
     </PageShell>
   )
 }

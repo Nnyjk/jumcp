@@ -25,7 +25,7 @@
    | `JUMCP_IMAGE` | — | 覆盖镜像，默认 `ghcr.io/nnyjk/jumcp:latest`。生产填固定 tag 或 `@sha256:` digest |
    | `JUMCP_SECRET_KEY` | ✅ | 64 位 hex（`openssl rand -hex 32`）。内置 MCP 包密码字段的**落库**加密密钥；HTTP 模式缺失或不合法会直接拒绝启动。**轮换后旧密文不可解**，需在管理台重填密码 |
    | `JUMCP_TRANSPORT_KEY` | ✅ | 64 位 hex（`openssl rand -hex 32`）。**传输**加密密钥：管理台从 `GET /admin/transport-key` 取到它，在浏览器里加密 `secret` 字段的请求体；HTTP 模式缺失或不合法同样拒绝启动。与落库密钥用途分离，轮换后只需在管理台重填密码 |
-   | `JUMCP_MCP_UPSTREAM_STDIO` | — | 默认 `1`（stack 里写作 `${JUMCP_MCP_UPSTREAM_STDIO:-1}`），只影响**手工接入的 stdio 上游**；内置包走内嵌 HTTP 端点，不需要它。不允许容器拉起子进程的部署可显式设 `0` |
+   | `JUMCP_MCP_UPSTREAM_STDIO` | — | 默认关闭，只有显式设 `1` 才开启；只影响**手工接入的 stdio 上游**，内置包走内嵌 HTTP 端点，不需要它。栈文件不设置这个变量，不允许容器拉起子进程的部署保持默认即可 |
    | `JUMCP_MCP_BUNDLED_BIN_DIR` | — | 可选。覆盖**手工 stdio 上游**可执行文件的查找目录。查找顺序：该目录 → `jumcp-server` 同目录（镜像里是 `/usr/local/bin`）→ `PATH`；目录里没有同名文件就继续回落，所以指向一个空目录不会破坏内置包 |
    | `JUMCP_PORT` | — | MCP 面对外发布的端口，默认 `8000`（ingress，任意节点该端口都可达） |
    | `JUMCP_ADMIN_PORT_PUBLISHED` | — | 管理面对外发布的端口，默认 `8080`（ingress）。浏览器访问 `http://<节点>:8080/` 即登录页；只在内网暴露 |
@@ -49,7 +49,7 @@
 52912 只给 agent。**不要**把两个发布端口设成同一个值——容器内两个监听本来就不同，发布重合只会让一面被遮蔽。
 
 - 管理台 UI：`http://<任意 swarm 节点>:<JUMCP_ADMIN_PORT_PUBLISHED>`（默认 8080，线上 52913），首屏是**登录页**
-  （`POST /admin/login` 换 HttpOnly 会话 cookie）。管理台不再依赖反向代理注入 Bearer——这是本次分面带来的最大变化。
+  （`POST /admin/login` 换 HttpOnly 会话 cookie）。管理台不依赖反向代理注入 Bearer。
 - 健康检查：`GET /health` **两个面都有**；镜像与栈的 healthcheck 都各探一次，避免"另一面没监听"被判健康。
 - MCP endpoint：`POST /mcp`，客户端带 `Authorization: Bearer <agent token>`；不支持自定义请求头的客户端（例如只在 `tools/call` 上带头的 mcp-go 系）可用 `POST /mcp?access_token=<agent token>`（仅 MCP 面，token 会出现在 URL 中，限内网、可重签发轮换），走 MCP 面发布端口（默认 8000，线上 52912）。
 - 分面是硬边界：管理面访问 `/mcp`、`/internal/*` 返回 `404 MCP_NOT_FOUND`；MCP 面访问 `/admin/*` 与 `/`
@@ -60,18 +60,13 @@
 
 ### 没有网关：浏览器直连管理面
 
-`deploy/admin-gateway/` 已删除（分面前的产物）。它之所以存在，是因为旧的单端口模型下 `/admin/*` 只认
-Bearer 而浏览器不发凭据：只能用 nginx 做 basic auth 外层并在 `/admin/*` 注入 `Authorization`。
-
-现在管理面独立在 8080 且自带登录面，浏览器直接访问 `http://<任意 swarm 节点>:8080/`，登录后靠
+`deploy/` 里没有网关组件：管理面独立在 8080 且自带登录面，浏览器直接访问 `http://<任意 swarm 节点>:8080/`，登录后靠
 HttpOnly 会话 cookie 认身份——**中间没有任何反向代理注入凭据**：
 
 - 管理面入口的安全边界由端口可达性决定：只对内网暴露 8080，或前置一层 TLS 终止（并设
   `JUMCP_ADMIN_COOKIE_SECURE=1`），不要再用共享口令式的 basic auth 冒充操作者身份。
 - MCP 客户端带各自 agent token 直连 MCP 面（8000），也不经任何中间层。
-- 线上若仍有旧网关服务（把管理面的发布端口反代到 8000 并注入 Bearer），迁移时直接删掉该 stack/服务：
-  把管理面发布端口指向容器 8080 即可。保留网关只会带来"网关注入的身份盖过用户会话身份"的双重身份问题。
-- **本轮只改文档**：线上已有的网关与栈不动，迁移按本节说明单独执行。
+- 线上若仍有旧网关服务（把管理面的发布端口反代到 8000 并注入 Bearer），迁移时直接删掉该 stack/服务，把管理面发布端口指向容器 8080。保留网关只会带来"网关注入的身份盖过用户会话身份"的双重身份问题。
 
 开发期同理：Vite 代理只做纯转发——`/admin` 转管理面、`/mcp` 与 `/health` 转 MCP 面，
 不注入任何 token（`JUMCP_DEV_ADMIN_TARGET` / `JUMCP_DEV_API_TARGET` 两个变量只指定目标地址）。
@@ -96,7 +91,7 @@ HttpOnly 会话 cookie 认身份——**中间没有任何反向代理注入凭�
     jumcp:local
   ```
 
-  Stack 里的等价写法就是 `portainer-stack.yml` 中 volumes 下注释掉的那行 `/opt/jumcp/bin:/opt/jumcp/bin:ro`，外加 environment 里的 `JUMCP_MCP_BUNDLED_BIN_DIR: /opt/jumcp/bin`。查找顺序是该目录 → 服务可执行文件同目录（`/usr/local/bin`）→ `PATH`，目录里没有同名文件就继续回落，所以挂一个空目录不会破坏内置包。
+  栈文件不预置该目录与变量；需要时在 `portainer-stack.yml` 的 `volumes` 与 `environment` 里自行加上 `/opt/jumcp/bin:/opt/jumcp/bin:ro` 与 `JUMCP_MCP_BUNDLED_BIN_DIR: /opt/jumcp/bin`。查找顺序是该目录 → 服务可执行文件同目录（`/usr/local/bin`）→ `PATH`，目录里没有同名文件就继续回落，所以挂一个空目录不会破坏内置包。
 - 换镜像后已安装的上游仍在（那行记录还在 `/data` 里）；旧版 stdio 安装在 HTTP 模式启动时自动迁移成内嵌 HTTP 上游（DSN 解析失败的行保留原样并 warn，需要重装）。不需要的上游用 `DELETE /admin/mcp/catalog/{id}/install/{upstream_id}` 卸载（只删该包装出来的上游）。
 - 升级：Portainer 里改 `JUMCP_IMAGE` 后 **Update the stack**（勾选 re-pull image），或命令行 `docker service update --image ghcr.io/nnyjk/jumcp:<tag> jumcp_jumcp`。
 - 回滚：Portainer 的 **Rollback the stack**，或 `docker service rollback jumcp_jumcp`。

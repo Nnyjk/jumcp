@@ -11,9 +11,13 @@ import {
 export type ModalSize = 'md' | 'lg' | 'xl'
 
 /**
- * 原生 <dialog> 弹窗：挂载即 showModal，关闭时 close + 卸载。
- * 焦点由原生 top layer 管理（自带焦点圈定与还原），不引入第三方 focus-trap；
- * 遮罩点击、Esc（cancel）与右上角关闭按钮统一走 requestClose。
+ * 原生 <dialog> 弹窗：挂载即 showModal，退场动画结束后 close 并回调 onClose。
+ * 挂载期间锁住 body 滚动，卸载时还原原值（StrictMode 的 mount → cleanup → mount 不会留下打开的 dialog）。
+ * 焦点由原生 top layer 管理（自带焦点圈定与还原），不引入第三方 focus-trap：
+ * 优先聚焦 modal-body 里第一个表单控件，没有表单控件时落到浏览器的默认首焦点（右上角关闭按钮）。
+ * 遮罩点击、Esc（cancel）与右上角关闭按钮统一走 requestClose；重复请求被吸收，
+ * 因此父组件必须等 onClose 再把自身状态清空，过早卸载会截断退场动画。
+ * size 只切换弹窗宽度（md 560px / lg 760px / xl 1180px，均以 94vw 收窄），面板高度封顶一屏减 96px。
  */
 export function Modal({
   title,
@@ -50,7 +54,7 @@ export function Modal({
     onCloseRef.current = onClose
   }, [onClose])
 
-  /** 先播 150ms 退场（reduced-motion 下瞬时），动画结束再 close + 通知父组件卸载。 */
+  /** 先播退场（MOTION_DURATION.fast，reduced-motion 下瞬时），动画结束再 close + 通知父组件卸载。 */
   const requestClose = useCallback(() => {
     if (closingRef.current) return
     closingRef.current = true

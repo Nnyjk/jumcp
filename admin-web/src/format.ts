@@ -24,7 +24,8 @@ export function truncateInline(value: string | null | undefined, max = 72): stri
 
 /**
  * RFC3339 允许任意位数的小数秒（Rust chrono 默认带纳秒），而 V8 只稳定解析到毫秒；
- * 这里先把小数部分截到 3 位、补全 ±HHMM 时区，再交给 Date 解析。
+ * 这里先把小数部分截到 3 位、把 ±HHMM 时区改写成 ±HH:MM，再交给 Date 解析。
+ * 完全没带时区的串保持原样，由 Date 按浏览器本地时间解析（后端始终带时区，此分支只兜历史数据）。
  */
 const RFC3339 =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/
@@ -69,7 +70,10 @@ export function formatDateTime(value: string | null | undefined): string {
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-/** 等待时长：从某个时间点到 now 的粗粒度人话（分钟级以下才给秒）。 */
+/**
+ * 等待时长：从某个时间点到 now 的粗粒度人话（分钟级以下才给秒）。
+ * 时钟漂移导致的未来时间按 0 秒处理，不出现负时长；空值与不可解析值给破折号。
+ */
 export function formatWaitSince(value: string | null | undefined, now: number = Date.now()): string {
   if (value === null || value === undefined) return DASH
   const date = parse(value)

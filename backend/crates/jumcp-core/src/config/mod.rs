@@ -21,7 +21,8 @@ pub const MAX_GROUPS: usize = 20;
 pub const MAX_GROUP_NAME_LEN: usize = 64;
 /// 保留组名：`basic` 是常驻工具与"逐工具开放的上游工具"的公共基础通道，
 /// `builtin` 只是保留名（不能作为任何工具的组值），`admin` 是维护通道的安全边界。
-/// 三个通道（配置文件/管理 API）都不得创建、修改或删除它们。
+/// 管理 API 不得创建、修改或删除它们；配置文件另行禁止定义 `basic`/`builtin`
+/// （`admin` 仍可由策略定义，见 `TenantPolicy::validate`）。
 pub const RESERVED_GROUP_NAMES: &[&str] = &["basic", "builtin", "admin"];
 
 /// 代码内置的公共基础组：组本身不是可授权组，成员对所有 token 可见（仍受 allowlist 约束）。
@@ -94,8 +95,9 @@ pub struct Settings {
     /// 管理台静态构建产物目录（`JUMCP_MCP_WEB_DIR`）：空表示不托管静态资源。
     /// 非空时启动期必须存在且含 `index.html`（fail-closed，见 [`validate_web_dir`]）。
     pub web_dir: String,
-    /// MCP 面 per-request 身份（JUMCP_AGENT_TOKENS="agent_id:role:token,..."）。
-    /// HTTP `/mcp` 只认这里派生的身份；为空时 /mcp 一律 `MCP_UNAUTHORIZED`（无兜底角色）。
+    /// MCP 面静态令牌清单（JUMCP_AGENT_TOKENS="agent_id:role:token,..."）。
+    /// 只在 `access_tokens` 为空时一次性导入成引导令牌；HTTP `/mcp` 的身份一律由库里的
+    /// access token 派生，这里不参与请求鉴权。
     pub agent_tokens: AgentTokens,
     /// 静态客户端平铺阈值：可见 kind=tool 能力数 ≤ 阈值时直接平铺；0 表示禁用平铺。
     pub flatten_threshold: i64,

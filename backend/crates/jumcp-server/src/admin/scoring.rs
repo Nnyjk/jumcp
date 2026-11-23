@@ -3,7 +3,7 @@
 //! 纯函数：输入事实、输出排序后的候选，不读时钟也不碰审计库——口径因此能被固定样本逐条锁住，
 //! 且 HTTP 管理面与 MCP 内置工具共用同一份实现（同一批事实必然得出同一份排名）。
 //!
-//! 四条加权规则（与需求一一对应）：
+//! 三条加权规则：
 //!
 //! | 规则 | 事实 | 权重 |
 //! |---|---|---|
@@ -44,6 +44,8 @@ pub const MULTI_TOKEN_BONUS: f64 = 2.0;
 pub const MULTI_TOKEN_CAP: f64 = 6.0;
 
 /// 聚合维度：决定 `subject` 的写法，也决定审计 agent 该如何落地成定制 tool。
+///
+/// `sql` / `file` / `http` 与前置拦截的三族同名，候选与拦截规则可以对照着看。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Family {
     Sql,
@@ -54,7 +56,7 @@ pub enum Family {
 }
 
 impl Family {
-    /// 与 `preflight::Family` 的族名一致，方便把候选与拦截规则对照着看。
+    /// 候选响应里的族名（`sql` / `file` / `http` / `tool`）。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Sql => "sql",
@@ -75,7 +77,8 @@ pub struct CallFact {
     pub family: Family,
     pub upstream_id: String,
     pub upstream_tool: String,
-    /// `outcome ∈ {ok, summary}`：其余取值一律按失败计（与统计台账的成功口径一致）。
+    /// `outcome ∈ {ok, summary}`：其余取值一律按失败计（成功口径与统计台账一致，
+    /// 台账另把 `error` / `unknown` / `budget_rejected` 单列为 failure）。
     pub ok: bool,
     /// Unix 秒：段判定只需要相对先后与间隔，不关心展示格式。
     pub ts: i64,
@@ -100,7 +103,10 @@ pub struct Candidate {
     pub reasons: Vec<String>,
 }
 
-/// 一次调用的对象：SQL 按表逐条展开（JOIN 一拍多表），文件/接口取第一个能识别的目标。
+/// 一次调用的对象：SQL 按表逐条展开（JOIN 一拍多表），文件与接口各取键表里第一个非空值。
+///
+/// 族优先级与拦截层一致：入参里识别出 SQL 就只记 SQL，不再看路径/URL 键；文件与接口
+/// 两类键可同时出现，因此一次调用可能同时产生两条事实（聚合粒度是证据，不是判定）。
 ///
 /// 为什么 SQL 走 `preflight::table_refs`：拦截层已经在做同一件事，两处各写一套词法扫描
 /// 必然漂移；评分只需要"稳定的聚合键"，复用它是唯一不会互相矛盾的来源。

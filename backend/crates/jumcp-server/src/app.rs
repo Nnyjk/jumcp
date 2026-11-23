@@ -2,7 +2,7 @@
 //!
 //! 为什么分成两个 Router 而不是一个 Router 两倍监听：分面是**部署事实**（网关要按端口转发、
 //! 内网只暴露管理面、MCP 面给 agent），路由表分开才能保证"一个面上不存在另一个面的端点"——
-//! 靠鉴权中间件区分做不到，`/mcp` 的 Bearer token 与管理面 token 是两套身份。
+//! 靠鉴权中间件区分做不到，`/mcp` 的 access token 与管理面的会话 cookie 是两套身份。
 //!
 //! 面与路径：
 //! - MCP 面（`JUMCP_MCP_PORT`）：`/mcp`、`/internal/mcp/{package}/{upstream}`、`/health`；其余 404。

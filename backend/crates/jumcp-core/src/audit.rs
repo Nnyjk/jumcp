@@ -568,7 +568,7 @@ pub fn surface_of(actor: &ActorRef) -> &'static str {
     }
 }
 
-/// 旧库补列：`surface` 列在 2026-11 新增，历史行保持空串（不重写、不重算哈希）。
+/// 旧库补列：历史行保持空串（不重写、不重算哈希）。
 fn ensure_surface_column(conn: &Connection) -> Result<(), McpError> {
     let mut stmt = conn
         .prepare("PRAGMA table_info(audit_events)")

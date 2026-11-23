@@ -127,7 +127,8 @@ pub(super) fn validate_group_fields(
 /// 过滤只影响返回集合与 `total`：`q` 对 code/name 做小写包含匹配；`source` 只接受
 /// policy|managed|builtin（其他值 400）；`role` 按角色 code 精确匹配该条目的授权角色。
 /// policy 组的 `roles` 由 `policy.roles` 反查（哪些角色的 default_groups 含该组 code）。
-/// `basic` 组不对应任何行：成员是常驻内置工具 + 被逐工具覆盖到 basic 的上游工具。
+/// `basic` 是合成条目（`source=builtin`，`grantable=false`），不来自 policy/managed 任何一张表；
+/// 计数 = 常驻内置工具数 + 被逐工具覆盖到 basic 的上游工具数。
 #[derive(Debug, Deserialize)]
 pub(super) struct GroupListQuery {
     q: Option<String>,

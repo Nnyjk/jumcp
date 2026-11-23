@@ -1,19 +1,15 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { gsap } from 'gsap'
 import { fetchCapabilities } from '../api/admin'
+import { useQuery } from '@tanstack/react-query'
 import { groupLabel, useGroupIndex } from '../api/queries'
 import type { CapabilityItem, CapabilityQuery, GroupItem } from '../api/types'
 import { LifecycleBadge, RiskBadge } from '../components/Badge'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { Field } from '../components/Field'
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  PageShell,
-  Pagination,
-} from '../components/PageShell'
+import { EmptyState, ErrorState, LoadingState, PageShell, Pagination } from '../components/PageShell'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../motion/useGsap'
 import { DASH } from '../format'
 import { STATUS_LABEL, TOOL_KIND_LABEL } from '../labels'
 import { useAdminView } from '../viewStack'
@@ -114,11 +110,38 @@ export default function ExceptionPage() {
     [groupIndex, openDossier],
   )
 
-  const { data, error, isPending, isError } = useQuery({
+  const { data, error, isPending, isError, refetch, isFetching } = useQuery({
     queryKey: ['capabilities', filter, offset],
     queryFn: ({ signal }) => fetchCapabilities(filter, offset, signal),
   })
 
+  /**
+   * 表格区重播：已提交的过滤条件（状态/组/关键字）变化后延迟 160ms 再淡入一次，
+   * 让「换了一组条件 → 换了一张表」可感知。首次进入不重播，避免与 PageShell 的页面入场动画叠加。
+   */
+  const filterSignature = `${filter.status ?? ''}|${filter.group ?? ''}|${filter.q ?? ''}`
+  const lastSignature = useRef(filterSignature)
+  const [contentKey, setContentKey] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (lastSignature.current === filterSignature) return
+    lastSignature.current = filterSignature
+    const timer = window.setTimeout(() => setContentKey(filterSignature), 160)
+    return () => window.clearTimeout(timer)
+  }, [filterSignature])
+
+  const tableRef = useGsapScope<HTMLDivElement>(
+    (scope) => {
+      if (contentKey === undefined) return
+      gsap.from(scope, {
+        opacity: 0,
+        y: 6,
+        duration: MOTION_DURATION.fast,
+        ease: MOTION_EASE,
+        clearProps: 'opacity,transform',
+      })
+    },
+    [contentKey],
+  )
   return (
     <PageShell>
       <Card title="过滤">
@@ -172,7 +195,7 @@ export default function ExceptionPage() {
                 setOffset(0)
               }}
             >
-              重置
+              清空筛选
             </button>
           </div>
         </form>
@@ -185,11 +208,12 @@ export default function ExceptionPage() {
             ? isError
               ? '查询失败'
               : '查询中'
-            : undefined
+            : `共 ${data.total} 条`
         }
         flush
         footer={
-          data !== undefined && data.total > 0 ? (
+          /* 数据到达后分页条常驻：空结果与有结果之间切换时卡片高度不变。 */
+          data !== undefined ? (
             <Pagination
               total={data.total}
               offset={data.offset}
@@ -199,30 +223,59 @@ export default function ExceptionPage() {
           ) : undefined
         }
       >
-        <p className="hint scope-note">
-          只读清单：可发现决定是否出现在调用方的 tools/list 与检索结果中；可调用决定能否被
-          tools/call 直接调用。修改请到能力档案的「审批」分栏。
-        </p>
-        {isPending && <LoadingState rows={7} label="正在查询能力清单" />}
-        {isError && <ErrorState error={error} />}
-        {data !== undefined && data.items.length === 0 && (
-          <EmptyState
-            hint={
-              data.total > 0
-                ? '当前页没有记录，请用下方的上一页返回。'
-                : '没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。'
-            }
-          />
-        )}
-        {data !== undefined && data.items.length > 0 && (
-          <DataTable
-            label="能力可见性与可调用性"
-            columns={columns}
-            rows={data.items}
-            rowKey={(row) => row.id}
-            minWidth="888px"
-          />
-        )}
+        {/* 内容区：过滤条件变化后重播一次淡入；分页条始终占位，避免出现/消失导致的高度抖动。 */}
+        <div ref={tableRef}>
+          <p className="hint scope-note">
+            只读清单：可发现决定是否出现在调用方的 tools/list 与检索结果中；可调用决定能否被
+            tools/call 直接调用。修改请到能力档案的「审批」分栏。
+          </p>
+          {isPending && <LoadingState rows={7} label="正在查询能力清单" />}
+          {isError && (
+            <div className="state-wrap">
+              <ErrorState error={error} />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+              >
+                重试
+              </button>
+            </div>
+          )}
+          {data !== undefined && data.items.length === 0 && (
+            <EmptyState
+              hint={
+                data.total > 0
+                  ? '当前页没有记录，请用下方的上一页返回。'
+                  : '没有可展示的能力记录。清空状态/组/关键字过滤后重试，或先在注册表登记能力。'
+              }
+              action={
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setDraft(EMPTY_FILTER)
+                    setFilter(EMPTY_FILTER)
+                    setOffset(0)
+                  }}
+                >
+                  清空筛选
+                </button>
+              }
+            />
+          )}
+          {data !== undefined && data.items.length > 0 && (
+            <DataTable
+              label="能力可见性与可调用性"
+              meta={`本页 ${data.items.length} 行`}
+              columns={columns}
+              rows={data.items}
+              rowKey={(row) => row.id}
+              minWidth="888px"
+            />
+          )}
+        </div>
       </Card>
     </PageShell>
   )

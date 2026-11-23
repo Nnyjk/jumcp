@@ -79,7 +79,7 @@ COPY config/policy.toml /app/config/policy.toml
 # 空库里没有管理员时同样拒绝启动：首次部署必须显式给出初始账号与口令。
 #
 # 两个监听面（不能相同，相同即拒绝启动）：
-# - JUMCP_MCP_PORT（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent 与网关；
+# - JUMCP_MCP_PORT（MCP 面）：`/mcp`、`/internal/mcp/*`、`/health`，给 agent；
 # - JUMCP_ADMIN_PORT（管理面）：`/admin/*`、`/health` 与管理台静态站（JUMCP_MCP_WEB_DIR），给浏览器。
 # 管理台登录用 cookie 会话，因此还有两个可选旋钮：
 # - JUMCP_ADMIN_SESSION_TTL_SECS（默认 43200 = 12 小时）；

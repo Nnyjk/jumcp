@@ -152,8 +152,8 @@ pub fn attach(app: Router, web_dir: &str) -> Result<Router, String> {
 
 /// `GET|HEAD /health` + `Accept: text/html` → 管理台 `index.html`；其余一律交给后端。
 ///
-/// 为什么按 `Accept` 分流而不是按路径：管理台自己有一个 `/health` 页面路由，
-/// 浏览器地址栏导航必须拿到页面；而探针/监控/前端 XHR 请求的是后端健康数据。
+/// 为什么按 `Accept` 分流而不是按路径：管理台没有独立的 `/health` 路由，浏览器导航
+/// 拿到 `index.html` 后由客户端路由落到工作台；而探针/监控/管理台 XHR 请求的是后端健康数据。
 /// 这与开发期 Vite 代理的 `bypass` 规则一致，保证 dev 与生产同源行为相同。
 async fn health_browser_navigation(
     State(assets): State<Arc<WebAssets>>,

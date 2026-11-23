@@ -1,6 +1,12 @@
 import type { ReactNode } from 'react'
 
-/** 内联 SVG 图标集：20px 线性风格，与 Fluent 图标观感对齐（不引入图标库）。 */
+/**
+ * 内联 SVG 图标集：24 视口、1.5px 描边、currentColor 取文字色（不引入图标库）。
+ * 可用名称由 IconName 联合约束，写错名字是类型错误，不会得到空白图标。
+ * 图标一律 aria-hidden + focusable="false"：它不提供可访问名称，
+ * 纯图标按钮/链接必须自己带 aria-label，否则读屏只剩「按钮」。
+ * size 只改渲染宽高（默认 20）；描边宽度按 viewBox 等比缩放，图标越小线条越细。
+ */
 export type IconName =
   | 'logo'
   | 'dashboard'

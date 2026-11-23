@@ -1,4 +1,4 @@
-//! 预算模型：常驻 2000 / schema 12 / 会话累计 2500，峰值 7500，默认 fail；
+//! 预算模型：常驻 2000 / schema 12 个与 3000 tokens / 会话累计 2500，峰值 7500，默认 fail；
 //! 单发结果截断见模板 `max_result_tokens`，不在本模块。
 //! 为什么累计按会话：schema/result 常驻 transcript，按轮计会先破。
 
@@ -170,7 +170,7 @@ impl BudgetLedger {
             detail: json!({"cumulative": l.result_tokens}),
         }
     }
-    /// 超限默认抛 MCP_BUDGET_EXCEEDED；truncate 显式开启才放行。
+    /// 超限默认返回 `MCP_BUDGET_EXCEEDED`；`truncate` 策略下标记 `truncated` 后放行。
     pub fn check_resident(
         &self,
         resident_tokens: i64,

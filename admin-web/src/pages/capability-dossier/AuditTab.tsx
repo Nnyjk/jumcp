@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { fetchAuditEvents } from '../../api/admin'
 import { useGroupIndex } from '../../api/queries'
 import type { AuditEnvelope } from '../../api/types'
@@ -11,6 +11,8 @@ import { Card } from '../../components/Card'
 import { DataTable, type DataTableColumn } from '../../components/DataTable'
 import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState, Pagination } from '../../components/PageShell'
+import { gsap } from 'gsap'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 
 export function AuditTab({ id }: { id: string }) {
   const [offset, setOffset] = useState(0)
@@ -21,7 +23,20 @@ export function AuditTab({ id }: { id: string }) {
     queryKey: ['audit-object', id, offset],
     queryFn: ({ signal }) =>
       fetchAuditEvents({ object_id: id, order: 'desc' }, offset, signal),
+    // 动机约束：翻页查询期间保留当前页数据，防止重新加载时容器塌陷为骨架屏导致视口跳动与分页条漂移。
+    placeholderData: keepPreviousData,
   })
+
+  /* 审计面板随数据到达淡入一次；翻页时只换内容，不重播整块动效。 */
+  const bodyRef = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [query.data === undefined ? 'pending' : `data:${query.data.events.length}`])
 
   /* 与 /audit 一致：768 下摘要必须紧随时间列出现。 */
   const columns: Array<DataTableColumn<AuditEnvelope>> = [
@@ -83,33 +98,48 @@ export function AuditTab({ id }: { id: string }) {
         query.data !== undefined && query.data.total > 0 ? (
           <Pagination
             total={query.data.total}
-            offset={query.data.offset}
+            // 约束：绑定本地请求态 offset 而非响应体 query.data.offset，避免在 keepPreviousData 保留旧数据期间产生高亮页码回跳。
+            offset={offset}
             limit={query.data.limit}
             onChange={setOffset}
           />
         ) : undefined
       }
     >
-      {query.isPending && <LoadingState rows={6} label="正在查询对象审计" />}
-      {query.isError && <ErrorState error={query.error} />}
-      {query.data !== undefined && query.data.events.length === 0 && (
-        <EmptyState
-          hint={
-            query.data.total > 0
-              ? '当前页没有记录（数据可能在翻页后发生了变化），请用下方的上一页返回。'
-              : '该对象还没有审计事件；提交、发布、可见性调整或调用后会出现。'
-          }
-        />
-      )}
-      {query.data !== undefined && query.data.events.length > 0 && (
-        <DataTable
-          label={`${id} 的审计事件`}
-          columns={columns}
-          rows={query.data.events}
-          rowKey={(row) => row.event_id}
-          minWidth="804px"
-        />
-      )}
+      {/* 约束：.result-region 施加最小高度以在加载、空态与数据表格切换时保持高度稳定，防止视口高度跳动 */}
+      <div className="result-region" ref={bodyRef}>
+        {query.isPending && <LoadingState rows={6} label="正在加载对象审计" />}
+        {query.isError && <ErrorState error={query.error} />}
+        {query.data !== undefined && query.data.events.length === 0 && (
+          <EmptyState
+            hint={
+              query.data.total > 0
+                ? '暂无当前页记录（数据在翻页后可能发生变动），请返回上一页。'
+                : '暂无审计事件记录。提交审核、批准发布、调整可见性或产生工具调用后将在此记录。'
+            }
+            action={
+              query.data.total > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setOffset(Math.max(0, offset - (query.data?.limit || 50)))}
+                >
+                  返回上一页
+                </button>
+              ) : undefined
+            }
+          />
+        )}
+        {query.data !== undefined && query.data.events.length > 0 && (
+          <DataTable
+            label={`${id} 的审计事件`}
+            columns={columns}
+            rows={query.data.events}
+            rowKey={(row) => row.event_id}
+            minWidth="804px"
+          />
+        )}
+      </div>
 
       {selected !== null && (
         <Modal

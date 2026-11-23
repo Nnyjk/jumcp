@@ -47,6 +47,7 @@ cd admin-web
 npm ci
 npm run lint
 npm run typecheck
+npm run test:transport
 npm run build
 cd ..
 bash scripts/smoke-headless-web.sh        # 构建产物能当静态站点起
@@ -91,7 +92,7 @@ git switch -c sync/main-to-dev
 git merge --no-ff origin/main -m "merge: 发版后把 main 同步回 dev"
 git push -u origin sync/main-to-dev
 gh pr create --base dev --head sync/main-to-dev --title "chore(sync): 发版后把 main 同步回 dev"
-# 等 4 个检查全绿后 merge
+# 等 required checks 全绿后 merge
 ```
 
 然后发版：

@@ -8,18 +8,17 @@
   margin-bottom: var(--space-4);
 }
 
-.mcp-catalog-filter {
-  flex: 0 1 260px;
+.mcp-catalog-toolbar .field {
+  flex: 0 1 220px;
   min-width: 0;
-  max-width: 320px;
 }
 
-.mcp-catalog-filter .input {
+.mcp-catalog-toolbar .input,
+.mcp-catalog-toolbar .select {
   width: 100%;
 }
 
 .mcp-catalog-count {
-  margin-left: auto;
   align-self: center;
   flex: none;
 }
@@ -150,4 +149,88 @@
   font-size: var(--fs-14);
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+/* 接入清单容器：表格横向滚动时不挤压上方页签 */
+.mcp-upstream-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* 目录分组：标题 / 计数 / 卡片网格三级层次 */
+.mcp-catalog-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.mcp-catalog-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.mcp-catalog-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.mcp-catalog-group-title {
+  margin: 0;
+  font-size: var(--fs-16);
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.mcp-catalog-group-count {
+  flex: none;
+}
+
+/* 骨架卡片：与最终卡片同列宽同高度，加载切换不跳版 */
+.mcp-package-skeleton {
+  min-height: 180px;
+  justify-content: flex-start;
+}
+
+@media (max-width: 900px) {
+  .mcp-catalog-toolbar .field {
+    flex: 1 1 100%;
+  }
+
+  .mcp-catalog-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+}
+
+/* 详情弹窗里的安装配置：每个实例一块 JSON，只读可滚动 */
+.mcp-detail-configs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mcp-detail-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mcp-detail-config-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--fs-14);
+  font-weight: 600;
+}
+
+.mcp-detail-config-title .mcp-package-id {
+  font-weight: 400;
 }

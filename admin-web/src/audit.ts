@@ -3,6 +3,7 @@ import { DASH } from './format'
 import { inlineJson } from './json'
 import {
   ACTION_LABEL,
+  APPROVAL_SOURCE_LABEL,
   CHANGE_FIELD_LABEL,
   ERROR_CODE_LABEL,
   LIFECYCLE_LABEL,
@@ -85,7 +86,11 @@ export function changeValueText(value: unknown): string {
 }
 
 function objectText(payload: AuditPayload, labelers?: AuditLabelers): string {
-  const type = payload.object_type === undefined ? DASH : OBJECT_TYPE_LABEL[payload.object_type]
+  // 后端 object_type 是自由字符串（会话、账号等治理对象也在写），未收录值原样展示。
+  const type =
+    payload.object_type === undefined
+      ? DASH
+      : (OBJECT_TYPE_LABEL[payload.object_type] ?? payload.object_type)
   const code = payload.object_id ?? DASH
   const label =
     payload.object_type === 'group' && labelers?.group !== undefined
@@ -98,18 +103,20 @@ function actionText(payload: AuditPayload): string {
   return payload.action === undefined ? DASH : (ACTION_LABEL[payload.action] ?? payload.action)
 }
 
+/** 结果列：`失败 · 参数校验失败（MCP_VALIDATION_ERROR）`，与 denialReason 的「中文名（原码）」同口径。 */
 function resultText(payload: AuditPayload): string {
   if (payload.outcome === undefined) return DASH
   const base = OUTCOME_LABEL[payload.outcome] ?? payload.outcome
-  return payload.error_code ? `${base}（${codeText(payload.error_code)}）` : base
-}
-
-function codeText(code: string): string {
+  const code = payload.error_code
+  if (!code) return base
   const label = ERROR_CODE_LABEL[code]
-  return label === undefined ? code : `${label} ${code}`
+  return label === undefined ? `${base} · ${code}` : `${base} · ${label}（${code}）`
 }
 
-/** 策略拒绝原因：error_code 优先，其次 payload.data 里的 reason_code/detail。 */
+/**
+ * 策略拒绝原因：`error_code` 优先，其次 `payload.data.reason_code`，都没有才退回 `error_message`。
+ * 码表收录时按「中文名（原码）」给出，原码保留便于对照后端日志。
+ */
 export function denialReason(payload: AuditPayload): string | undefined {
   if (payload.error_code !== undefined && payload.error_code !== null && payload.error_code !== '') {
     const label = ERROR_CODE_LABEL[payload.error_code]
@@ -170,13 +177,18 @@ export function auditSummary(event: AuditEnvelope, labelers?: AuditLabelers): st
   return `${actorLabel(event.actor)} ${actionText(payload)} ${objectText(payload, labelers)}${move} · ${resultText(payload)}`
 }
 
+/**
+ * 审批单展示：external 是外部审批系统单号（系统不校验真伪，只在 verified 时标记已校验）；
+ * source=agent 是 MCP 面令牌自审，同样带单号；没有审批单（approval 为 null）与空单号明确写出来。
+ */
 export function approvalText(
   approval: AuditPayload['approval'],
 ): string {
   if (approval === null || approval === undefined) return '无审批记录'
-  if (approval.source === 'none' || approval.id === '') return '无审批单'
+  if (approval.id === '') return '无审批单'
   if (approval.source === 'external') {
     return `外部审批单 ${approval.id}（${approval.verified ? '已校验' : '系统不校验'}）`
   }
-  return approval.id
+  const source = APPROVAL_SOURCE_LABEL[approval.source]
+  return source === undefined ? approval.id : `${source} ${approval.id}`
 }

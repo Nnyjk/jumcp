@@ -17,7 +17,8 @@ import type {
 
 /**
  * 展示用中文名。后端原值仍是唯一契约：徽标/单元格的 title 保留英文原值，
- * 过滤参数与错误码一律使用原值，避免界面翻译与状态机脱节。
+ * 筛选器提交的过滤参数也用原值；只有错误码在展示时翻成人话（errorCodeText），
+ * 原码仍随详情一起给出，便于按后端日志对号。
  */
 export const STATUS_LABEL: Record<CapabilityStatus, string> = {
   draft: '草稿',
@@ -60,6 +61,8 @@ export const OBJECT_TYPE_LABEL: Record<AuditObjectType, string> = {
   request: '请求',
   token: '访问令牌',
   upstream: '上游接入',
+  admin_user: '管理账户',
+  session: '管理会话',
 }
 
 export const ACTION_LABEL: Record<AuditAction, string> = {
@@ -69,7 +72,7 @@ export const ACTION_LABEL: Record<AuditAction, string> = {
   publish: '发布',
   reject: '退回',
   visibility: '调整可见性',
-  deprecate: '下架',
+  deprecate: '下线',
   group_create: '创建组',
   group_update: '修改组',
   group_delete: '删除组',
@@ -84,6 +87,12 @@ export const ACTION_LABEL: Record<AuditAction, string> = {
   deny: '拒绝',
   refresh: '刷新上游',
   update_tool_groups: '调整基础工具',
+  call: '调用工具',
+  'admin.create': '创建管理账户',
+  'admin.update': '修改管理账户',
+  'admin.delete': '删除管理账户',
+  'admin.login': '登录管理台',
+  'admin.logout': '退出管理台',
 }
 
 export const OUTCOME_LABEL: Record<AuditOutcome, string> = {
@@ -93,61 +102,83 @@ export const OUTCOME_LABEL: Record<AuditOutcome, string> = {
   summary: '摘要',
 }
 
+/**
+ * 审批来源：`external` 是外部审批系统单号（系统只存不校验真伪），
+ * `agent` 是 MCP 面令牌自审（`verified=true`）；没有审批单时该字段为 null，不在此表中。
+ */
 export const APPROVAL_SOURCE_LABEL: Record<string, string> = {
   external: '外部审批单',
-  none: '无审批单',
+  agent: '令牌自审',
 }
 
 /** 后端业务错误码 → 人话。码表外的错误码原样展示，不隐藏。 */
 export const ERROR_CODE_LABEL: Record<string, string> = {
-  MCP_UNAUTHORIZED: '未认证调用方',
-  MCP_FORBIDDEN: '无访问权限',
-  MCP_NOT_FOUND: '对象不存在',
-  MCP_CONFLICT: '状态冲突',
+  MCP_UNAUTHORIZED: '鉴权失败',
+  MCP_FORBIDDEN: '同源校验失败',
+  MCP_NOT_FOUND: '资源不存在',
   MCP_VALIDATION_ERROR: '参数校验失败',
+  MCP_BAD_REQUEST: '请求体不合法',
   MCP_STORE_ERROR: '存储层错误',
-  MCP_BUDGET_EXCEEDED: '超出调用预算',
-  MCP_GROUP_NOT_FOUND: '组不存在或未授权',
-  MCP_RATE_LIMITED: '触发频率限制',
-  MCP_INTERNAL_ERROR: '服务内部错误',
-  MCP_UNSUPPORTED: '不支持的操作',
+  MCP_RATE_LIMITED: '请求过于频繁',
+  MCP_BUDGET_EXCEEDED: '上下文预算不足',
+  MCP_CONTEXT_BUDGET_EXHAUSTED: '会话上下文预算耗尽',
   MCP_APPROVAL_REQUIRED: '缺少有效审批',
-  MCP_AUDIT_ERROR: '审计写入失败',
-  MCP_BAD_REQUEST: '请求不合法',
-  MCP_BUILTIN_IMMUTABLE: '内置对象不可修改',
-  MCP_CAPABILITY_NOT_FOUND: '能力不存在',
+  MCP_AUDIT_ERROR: '审计层错误',
   MCP_CONFIG_ERROR: '配置错误',
-  MCP_CONTEXT_BUDGET_EXHAUSTED: '上下文预算耗尽',
   MCP_EXEC_TIMEOUT: '执行超时',
   MCP_FILTER_UNSUPPORTED: '不支持的过滤条件',
-  MCP_GROUP_CONFLICT: '组冲突',
-  MCP_GROUP_FORBIDDEN: '组访问被拒绝',
+  MCP_GROUP_NOT_FOUND: '组不存在',
+  MCP_GROUP_CONFLICT: '组已存在或由配置维护',
+  MCP_GROUP_FORBIDDEN: '组不在角色授权范围',
   MCP_GROUP_IN_USE: '组仍被引用',
+  MCP_GROUP_RESERVED: '组名保留',
   MCP_TOKEN_NOT_FOUND: '令牌不存在',
   MCP_TOKEN_ALREADY_REVOKED: '令牌已撤销',
-  MCP_GROUP_RESERVED: '组名保留',
+  MCP_BUILTIN_IMMUTABLE: '内置对象不可修改',
+  MCP_CAPABILITY_NOT_FOUND: '能力不存在或不可见',
+  MCP_VERSION_CONFLICT: '版本不一致',
+  MCP_STATE_TRANSITION_INVALID: '状态迁移非法',
   MCP_IMMUTABLE_PUBLISHED: '已发布不可原地修改',
-  MCP_MULTI_STATEMENT: '只允许单条语句',
-  MCP_NOT_IMPLEMENTED: '未实现的操作',
-  MCP_NULL_PARAM_NEEDS_CAST: '空参数需显式类型',
-  MCP_PARAM_COUNT_MISMATCH: '参数数量不匹配',
-  MCP_PARAM_STYLE_UNSUPPORTED: '不支持的参数样式',
+  MCP_NOT_IMPLEMENTED: '尚未实现',
   MCP_PREFLIGHT_REQUIRED: '需要预检',
-  MCP_SCHEMA_OUT_OF_SCOPE: '超出允许的 schema',
-  MCP_SQL_REJECTED: 'SQL 被拒绝',
+  MCP_MULTI_STATEMENT: '只允许单条语句',
+  MCP_SQL_REJECTED: 'SQL 未通过只读校验',
   MCP_SQL_BLOCKED: 'SQL 被前置拦截',
   MCP_FILE_BLOCKED: '文件访问被前置拦截',
   MCP_HTTP_BLOCKED: '接口调用被前置拦截',
-  MCP_STATE_TRANSITION_INVALID: '非法状态迁移',
-  MCP_TEMPLATE_INVALID: '模板定义非法',
+  MCP_SCHEMA_OUT_OF_SCOPE: '超出允许的 schema',
   MCP_UNSUPPORTED_COLUMN_TYPE: '不支持的列类型',
-  MCP_VERSION_CONFLICT: '版本冲突',
+  MCP_TEMPLATE_INVALID: '模板定义未通过校验',
+  MCP_NULL_PARAM_NEEDS_CAST: 'null 参数需显式转换',
+  MCP_PARAM_COUNT_MISMATCH: '参数数量不匹配',
+  MCP_PARAM_STYLE_UNSUPPORTED: '不支持的参数样式',
+  MCP_UPSTREAM_NOT_FOUND: '上游不存在',
+  MCP_UPSTREAM_CONFLICT: '上游 id 或工具名冲突',
+  MCP_UPSTREAM_INVALID: '上游配置不合法',
+  MCP_UPSTREAM_DISABLED: '上游已停用',
+  MCP_UPSTREAM_UNREACHABLE: '上游不可达',
+  MCP_UPSTREAM_ERROR: '上游返回错误',
+  MCP_UPSTREAM_WRITE_FORBIDDEN: '可写上游未获授权启用',
+  MCP_UPSTREAM_STDIO_DISABLED: 'stdio 上游默认关闭',
+  MCP_UPSTREAM_PACKAGE_MANAGED: '包管理字段不可手改',
   MCP_UPSTREAM_TOOL_UNKNOWN: '上游工具不存在或已变更',
   MCP_UPSTREAM_TOOL_NOT_READ_ONLY: '写工具不能归入基础组',
   MCP_UPSTREAM_TOOL_NOT_ELIGIBLE: '工具不满足基础组条件',
+  MCP_CATALOG_NOT_FOUND: '内置包不存在',
+  MCP_BUILTIN_UNAVAILABLE: '内置包或密钥不可用',
+  MCP_TRANSPORT_KEY_MISSING: '传输密钥未配置',
+  MCP_TRANSPORT_CIPHERTEXT_REQUIRED: '密钥需密文传输',
+  MCP_TRANSPORT_DECRYPT_FAILED: '密钥无法解密',
+  MCP_ADMIN_USER_EXISTS: '账号已存在',
+  MCP_ADMIN_USER_NOT_FOUND: '账号不存在',
+  MCP_ADMIN_LAST_ACTIVE: '至少保留一名启用账号',
+  MCP_ADMIN_SELF_DELETE: '不能删除当前登录账号',
 }
 
-/** 定义/可见性变更的字段名 → 中文。未知字段原样展示。 */
+/**
+ * 审计 `changes` 里的字段名 → 中文。定义变更的字段是点号路径（如 `template.description`），
+ * 未收录的原样展示；上游 `env`/`headers` 里的密钥值在审计中一律以 `***` 脱敏。
+ */
 export const CHANGE_FIELD_LABEL: Record<string, string> = {
   base_sql: '基础 SQL',
   sql: '模板 SQL',
@@ -163,6 +194,24 @@ export const CHANGE_FIELD_LABEL: Record<string, string> = {
   callable: '可被调用',
   status: '生命周期',
   successor_id: '替代能力',
+  name: '名称',
+  priority: '优先级',
+  min_budget: '最小预算',
+  roles: '授权角色',
+  transport: '传输方式',
+  url: '地址',
+  command: '命令',
+  args: '启动参数',
+  env: '环境变量',
+  headers: '请求头',
+  category: '分类',
+  read_only: '只读声明',
+  enabled: '启用',
+  timeout_ms: '超时（毫秒）',
+  tool_group: '基础工具归属',
+  username: '用户名',
+  password: '密码',
+  state: '状态',
 }
 
 /** /health 的 status 是后端自由字符串：已知值翻译，未知值原样展示。 */
@@ -249,23 +298,23 @@ export function toolGroupLabel(code: string, fallback?: string): string {
   return fallback ?? code
 }
 
-/** 上游探测状态：unknown 表示尚未探测，不冒充正常。 */
+/** 上游探测状态：unknown 表示尚未探测，不冒充正常；error 与健康态的 failing 同称「故障」。 */
 export const UPSTREAM_STATUS_LABEL: Record<UpstreamStatus, string> = {
   ok: '正常',
   degraded: '降级',
-  error: '错误',
+  error: '故障',
   unknown: '未知',
 }
 
 /**
  * 可见性组合的中文短句，避免两个裸布尔被误读：
  * - 可发现：出现在调用方的 tools/list 与 search 结果中；
- * - 可调用：允许 tools/call 直接调用。
+ * - 可调用：允许 tools/call 直接调用；不可发现但可调用表示只能按名直调。
  */
 export function visibilityText(discoverable: boolean, callable: boolean): string {
   if (discoverable && callable) return '可发现 · 可调用'
   if (discoverable) return '可发现 · 不可调用'
-  if (callable) return '不可发现 · 系统直调'
+  if (callable) return '不可发现 · 可直调'
   return '不可见 · 不可调用'
 }
 

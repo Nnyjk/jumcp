@@ -1,5 +1,5 @@
 // jumcp-core：平面 A/D/G 语义移植（Python 参考只读）。
-// 哈希/normalize 必须与 Python 逐字节一致：生成固定向量见 tests/hash_vectors.rs。
+// 哈希/normalize 必须与 Python 逐字节一致：固定向量见 `canonical` 的单测（`python_vector_*`）。
 
 pub mod access;
 pub mod audit;

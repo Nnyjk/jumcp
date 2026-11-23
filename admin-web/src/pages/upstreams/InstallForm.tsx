@@ -22,6 +22,7 @@ export function InstallForm({
   groupsError,
   onInstalled,
   onError,
+  onCancel,
 }: {
   entry: McpCatalogEntry
   groups: GroupItem[]
@@ -29,6 +30,7 @@ export function InstallForm({
   groupsError: boolean
   onInstalled: (upstream: UpstreamItem) => void
   onError: (notice: Notice) => void
+  onCancel: () => void
 }) {
   const queryClient = useQueryClient()
   /** 目录推不出可用 id 时不在渲染期抛错：转成内联错误并阻止提交。 */
@@ -220,6 +222,9 @@ export function InstallForm({
         </p>
       )}
       <div className="form-actions">
+        <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={mutation.isPending}>
+          取消
+        </button>
         <button
           type="submit"
           className="btn btn-primary"

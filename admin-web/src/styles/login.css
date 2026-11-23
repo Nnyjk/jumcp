@@ -93,3 +93,8 @@
   font-size: var(--fs-12);
   line-height: 18px;
 }
+
+/* 错误提示只在提交失败时插入，单独淡入，不带动整张卡片。 */
+.login-error {
+  animation: state-enter var(--motion-fast) var(--ease-standard);
+}

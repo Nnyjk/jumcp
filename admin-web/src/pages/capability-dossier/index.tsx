@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import type { KeyboardEvent } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -10,7 +9,9 @@ import {
 } from '../../api/admin'
 import { indexGroups, indexRoles, useGroupsQuery, useRolesQuery } from '../../api/queries'
 import { ApiError } from '../../api/client'
-import type { CapabilitySource, GroupItem } from '../../api/types'
+import type { CapabilityDetail, CapabilitySource, GroupItem } from '../../api/types'
+import { gsap } from 'gsap'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { DASH, formatDateTime } from '../../format'
 import { WINDOW_OPTIONS } from '../../constants'
 import { TOOL_KIND_LABEL, visibilityText } from '../../labels'
@@ -22,6 +23,7 @@ import { DefinitionView } from '../../components/DefinitionView'
 import { DetailField, DetailGrid } from '../../components/DetailGrid'
 import { InfoBar } from '../../components/InfoBar'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
+import { TabBar, TabPanel } from '../../components/TabBar'
 import type { Notice } from '../../notice'
 import { useAdminView, type DossierTab } from '../../viewStack'
 import { ApprovalTab } from './ApprovalTab'
@@ -131,22 +133,6 @@ export function CapabilityDossier({
 
   const effectiveTab = tabs.some((item) => item.key === tab) ? tab : 'overview'
 
-  /** 标准 tabs 键盘模型：左右循环、Home/End 跳首尾，切换后焦点跟随。 */
-  const handleTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const lastIndex = tabs.length - 1
-    let nextIndex = index
-    if (event.key === 'ArrowRight') nextIndex = index === lastIndex ? 0 : index + 1
-    else if (event.key === 'ArrowLeft') nextIndex = index === 0 ? lastIndex : index - 1
-    else if (event.key === 'Home') nextIndex = 0
-    else if (event.key === 'End') nextIndex = lastIndex
-    else return
-    event.preventDefault()
-    const target = tabs[nextIndex]
-    if (target === undefined) return
-    setTab(target.key)
-    document.getElementById(`dossier-tab-${target.key}`)?.focus()
-  }
-
   // 404 是内置工具的合法降级路径；其他错误必须显式暴露。
   if (detailQuery.isPending || (detailQuery.isError && notFound && statsQuery.isPending)) {
     return (
@@ -173,7 +159,7 @@ export function CapabilityDossier({
       <PageShell>
         <BackButton label={backLabel} onClick={onBack} />
         <Card title="能力档案">
-          <EmptyState hint="能力清单与工具统计里都找不到该 ID。请确认链接是否来自已删除的能力。" />
+          <EmptyState hint="暂无该能力数据。能力清单与工具统计中均未检索到此 ID，请确认链接有效性。" />
         </Card>
       </PageShell>
     )
@@ -238,32 +224,10 @@ export function CapabilityDossier({
           </p>
         </header>
 
-        <nav className="tabbar" role="tablist" aria-label="能力档案分栏">
-          {tabs.map((item, index) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              id={`dossier-tab-${item.key}`}
-              aria-controls={effectiveTab === item.key ? `dossier-panel-${item.key}` : undefined}
-              aria-selected={effectiveTab === item.key}
-              tabIndex={effectiveTab === item.key ? 0 : -1}
-              className="tab"
-              onClick={() => setTab(item.key)}
-              onKeyDown={(event) => handleTabKey(event, index)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
+        <TabBar idBase="dossier" items={tabs} value={effectiveTab} onChange={setTab} label="能力档案分栏" />
       </Card>
 
-      <div
-        className="tab-panel"
-        role="tabpanel"
-        id={`dossier-panel-${effectiveTab}`}
-        aria-labelledby={`dossier-tab-${effectiveTab}`}
-      >
+      <TabPanel idBase="dossier" tabKey={effectiveTab}>
       {effectiveTab === 'overview' && (
         <OverviewTab
           detail={detail}
@@ -285,13 +249,7 @@ export function CapabilityDossier({
       )}
 
       {effectiveTab === 'definition' && (
-        <Card title="能力定义">
-          {detail === undefined ? (
-            <EmptyState hint="内置工具没有受管定义；请查看「概览」中的统计与「调用」记录。" />
-          ) : (
-            <DefinitionView definition={detail.definition} />
-          )}
-        </Card>
+        <DefinitionPanel detail={detail} />
       )}
 
       {effectiveTab === 'versions' && (
@@ -312,29 +270,88 @@ export function CapabilityDossier({
       )}
 
       {effectiveTab === 'calls' && (
-        <Card
-          title="调用记录"
-          actions={
-            <div className="segmented" role="group" aria-label="调用时间窗">
-              {WINDOW_OPTIONS.map((days) => (
-                <button
-                  key={days}
-                  type="button"
-                  aria-pressed={windowDays === days}
-                  onClick={() => setWindowDays(days)}
-                >
-                  {days} 天
-                </button>
-              ))}
-            </div>
-          }
-        >
-          <CallTable key={windowDays} id={id} windowDays={windowDays} />
-        </Card>
+        <CallsPanel id={id} windowDays={windowDays} onWindowDays={setWindowDays} />
       )}
 
       {effectiveTab === 'audit' && <AuditTab id={id} />}
-      </div>
+      </TabPanel>
     </PageShell>
+  )
+}
+
+/**
+ * 定义面板：受管能力才有的定义正文。
+ * 定义内容随 detail 到达后淡入一次——切换页签已有 TabPanel 的整体淡入，这里只补「内容换人」的层次。
+ */
+function DefinitionPanel({ detail }: { detail: CapabilityDetail | undefined }) {
+  const ref = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [detail?.definition_hash])
+
+  return (
+    <Card title="能力定义">
+      {detail === undefined ? (
+        <EmptyState hint="暂无受管定义。内置工具由代码直接注册，详情请查看「概览」指标与「调用」记录。" />
+      ) : (
+        <div ref={ref}>
+          <DefinitionView definition={detail.definition} />
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * 调用面板：时间窗切换后表格整体淡入一次。
+ * 动效约束：表格内部逐行动效由 DataTable 限制前 20 行，此处仅在时间窗切换时做外层过渡。
+ */
+function CallsPanel({
+  id,
+  windowDays,
+  onWindowDays,
+}: {
+  id: string
+  windowDays: number
+  onWindowDays: (days: number) => void
+}) {
+  const ref = useGsapScope<HTMLDivElement>((scope) => {
+    gsap.from(scope, {
+      opacity: 0,
+      y: 8,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      clearProps: 'opacity,transform',
+    })
+  }, [windowDays])
+
+  return (
+    <Card
+      title="调用记录"
+      actions={
+        <div className="segmented" role="group" aria-label="调用时间窗">
+          {WINDOW_OPTIONS.map((days) => (
+            <button
+              key={days}
+              type="button"
+              aria-pressed={windowDays === days}
+              onClick={() => onWindowDays(days)}
+            >
+              {days} 天
+            </button>
+          ))}
+        </div>
+      }
+    >
+      {/* 约束：.result-region 施加最小高度以在时间窗切换或调用表格重取时维持容器高度稳定，防塌高抖动 */}
+      <div className="result-region" ref={ref}>
+        <CallTable key={windowDays} id={id} windowDays={windowDays} />
+      </div>
+    </Card>
   )
 }

@@ -20,8 +20,11 @@ import { InfoBar } from '../../components/InfoBar'
 import { SubmitConfirmDialog } from '../../components/SubmitConfirmDialog'
 import { ToggleSwitch } from '../../components/ToggleSwitch'
 import { noticeMessage, type Notice } from '../../notice'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useAdminView } from '../../viewStack'
 import { hasMissingApprovalMeta, latestVersion } from './dossierFormat'
+import { gsap } from 'gsap'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 
 export function ApprovalPanel({
   detail,
@@ -53,6 +56,8 @@ export function ApprovalPanel({
   const [callable, setCallable] = useState(published ? detail.callable : true)
   const [reason, setReason] = useState('')
   const [confirmSubmit, setConfirmSubmit] = useState(false)
+  // 约束：退回为不可逆状态迁移（重置提审状态与提审人上下文）；先在卡片内填写原因，再由 ConfirmDialog 进行模态二次确认，防止误触直接打回。
+  const [confirmReject, setConfirmReject] = useState(false)
   // 发布与退回是两个独立表单：共用一份错误态会把退回校验错误渲染到发布表单里，看起来像「点了没反应」。
   const [publishError, setPublishError] = useState<string | undefined>(undefined)
   const [rejectError, setRejectError] = useState<string | undefined>(undefined)
@@ -132,6 +137,7 @@ export function ApprovalPanel({
   const rejectMutation = useMutation({
     mutationFn: () => rejectCapability(detail.id, reason.trim()),
     onSuccess: (result) => {
+      setConfirmReject(false)
       setReason('')
       setRejectError(undefined)
       onNotice({
@@ -142,7 +148,9 @@ export function ApprovalPanel({
       })
       onChanged()
     },
-    onError: (error) => setRejectError(noticeMessage(error, '退回失败')),
+    onError: () => {
+      // 失败原因由 ConfirmDialog 在弹层内展示（弹层会盖住页面里的行内错误）。
+    },
   })
 
   const busy =
@@ -151,8 +159,22 @@ export function ApprovalPanel({
     rejectMutation.isPending ||
     visibilityMutation.isPending
 
+  /* 审批三卡在 detail 到达后依次淡入；版本或状态变化时面板会重挂载，动效随之重播。 */
+  const columnsRef = useGsapScope<HTMLDivElement>((scope) => {
+    const cards = Array.from(scope.querySelectorAll<HTMLElement>(':scope > .card'))
+    if (cards.length === 0) return
+    gsap.from(cards, {
+      opacity: 0,
+      y: 10,
+      duration: MOTION_DURATION.enter,
+      ease: MOTION_EASE,
+      stagger: 0.05,
+      clearProps: 'opacity,transform',
+    })
+  }, [detail.id, detail.version, detail.status])
+
   return (
-    <div className="dossier-columns">
+    <div className="dossier-columns" ref={columnsRef}>
       <Card title="主体与审批">
         <DetailGrid>
           <DetailField label="当前主体" mono title="GET /admin/me">
@@ -321,7 +343,7 @@ export function ApprovalPanel({
                 return
               }
               setRejectError(undefined)
-              rejectMutation.mutate()
+              setConfirmReject(true)
             }}
           >
             <label className="field">
@@ -345,6 +367,40 @@ export function ApprovalPanel({
               </button>
             </div>
           </form>
+        )}
+
+        {/* 约束：ConfirmDialog 负责二次确认不可逆退回动作并同步展示填写的退回原因，阻断误触提交 */}
+        {confirmReject && detail.status === 'review' && (
+          <ConfirmDialog
+            title={`退回草稿 · ${detail.id}`}
+            subtitle={`版本 v${detail.version} · 待审 → 草稿`}
+            confirmLabel="确认退回"
+            pendingLabel="退回中…"
+            tone="danger"
+            pending={rejectMutation.isPending}
+            error={rejectMutation.error ?? undefined}
+            errorTitle="退回失败"
+            onClose={() => {
+              setConfirmReject(false)
+              rejectMutation.reset()
+            }}
+            onConfirm={() => rejectMutation.mutate()}
+          >
+            <p className="hint">
+              退回后该版本回到草稿状态，提审人基准重置，需要重新提交审核。
+            </p>
+            <DetailGrid>
+              <DetailField label="能力 ID" mono>
+                {detail.id}
+              </DetailField>
+              <DetailField label="版本" mono>
+                v{detail.version}
+              </DetailField>
+              <DetailField label="退回原因" wide>
+                {reason.trim()}
+              </DetailField>
+            </DetailGrid>
+          </ConfirmDialog>
         )}
 
         {detail.status === 'deprecated' && (

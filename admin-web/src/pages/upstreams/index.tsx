@@ -1,4 +1,5 @@
-import { useMemo, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState } from 'react'
+import { gsap } from 'gsap'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   deleteUpstream,
@@ -10,17 +11,22 @@ import { UPSTREAMS_KEY, groupLabel, indexGroups, useGroupsQuery } from '../../ap
 import type { UpstreamItem } from '../../api/types'
 import { Badge, CategoryBadge, UpstreamStatusBadge } from '../../components/Badge'
 import { Card } from '../../components/Card'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
 import { DataTable, type DataTableColumn } from '../../components/DataTable'
 import { InfoBar } from '../../components/InfoBar'
 import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
+import { TabBar, TabPanel, type TabItem } from '../../components/TabBar'
 import { DASH, formatDateTime } from '../../format'
-import { UPSTREAM_STATUS_LABEL, UPSTREAM_TRANSPORT_LABEL } from '../../labels'
+import { UPSTREAM_CATEGORY_LABEL, UPSTREAM_STATUS_LABEL, UPSTREAM_TRANSPORT_LABEL } from '../../labels'
 import { noticeFromError, type Notice } from '../../notice'
 import { BasicToolsModal } from './BasicToolsModal'
 import { CatalogTab } from './CatalogTab'
+import { Field } from '../../components/Field'
 import { UpstreamForm } from './UpstreamForm'
 import {
+  CATEGORY_OPTIONS,
   GROUP_OPTIONS_LIMIT,
   targetText,
   toInput,
@@ -29,7 +35,7 @@ import {
 
 type UpstreamTab = 'list' | 'catalog'
 
-const TABS: Array<{ key: UpstreamTab; label: string }> = [
+const TABS: TabItem<UpstreamTab>[] = [
   { key: 'list', label: '接入清单' },
   { key: 'catalog', label: '安装目录' },
 ]
@@ -39,34 +45,56 @@ export default function UpstreamsPage() {
   const [tab, setTab] = useState<UpstreamTab>('list')
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [editor, setEditor] = useState<EditorTarget | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<UpstreamItem | null>(null)
-  const [deleteError, setDeleteError] = useState<Notice | undefined>(undefined)
   const [basicTarget, setBasicTarget] = useState<UpstreamItem | null>(null)
-
-  /** 按 ARIA tabs 约定响应方向键/Home/End：移动选中项并把焦点交给新页签按钮。 */
-  const handleTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const lastIndex = TABS.length - 1
-    let target: number | undefined
-    if (event.key === 'ArrowRight') target = index === lastIndex ? 0 : index + 1
-    else if (event.key === 'ArrowLeft') target = index === 0 ? lastIndex : index - 1
-    else if (event.key === 'Home') target = 0
-    else if (event.key === 'End') target = lastIndex
-    if (target === undefined) return
-    event.preventDefault()
-    const next = TABS[target]
-    if (next === undefined) return
-    setTab(next.key)
-    document.getElementById(`upstreams-tab-${next.key}`)?.focus()
-  }
+  const [deleteTarget, setDeleteTarget] = useState<UpstreamItem | null>(null)
+  const [deleteError, setDeleteError] = useState<unknown>(undefined)
+  const [filter, setFilter] = useState({ q: '', group: '', category: '', status: '' })
 
   const upstreamsQuery = useQuery({
     queryKey: UPSTREAMS_KEY,
     queryFn: ({ signal }) => fetchUpstreams(signal),
   })
   const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
-  const groups = groupsQuery.data?.items ?? []
+  const groups = useMemo(() => groupsQuery.data?.items ?? [], [groupsQuery.data])
   const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
-  const rows = upstreamsQuery.data?.items ?? []
+  /** 筛选下拉只列可授予的组；组清单拉取失败时下拉退化为空，不会静默过滤掉行。 */
+  const groupChoices = useMemo(
+    () => groups.filter((item) => item.grantable !== false).map((item) => ({ code: item.code, name: item.name })),
+    [groups],
+  )
+  const rows = useMemo(() => upstreamsQuery.data?.items ?? [], [upstreamsQuery.data])
+
+  /** 筛选只影响展示，不改后端查询；状态与分类沿用契约里的原始取值。 */
+  const filteredRows = useMemo(() => {
+    const keyword = filter.q.trim().toLowerCase()
+    return rows.filter((row) => {
+      if (keyword !== '' && !row.name.toLowerCase().includes(keyword) && !row.id.toLowerCase().includes(keyword)) {
+        return false
+      }
+      if (filter.group !== '' && row.group !== filter.group) return false
+      if (filter.category !== '' && row.category !== filter.category) return false
+      if (filter.status === 'enabled' && !row.enabled) return false
+      if (filter.status === 'disabled' && row.enabled) return false
+      return true
+    })
+  }, [rows, filter])
+  const filterActive = filter.q !== '' || filter.group !== '' || filter.category !== '' || filter.status !== ''
+  const filterSignature = `${filter.q}|${filter.group}|${filter.category}|${filter.status}`
+  const rowSignature = rows.map((row) => row.id).join('\u0000')
+
+  /** 列表进入动效：数据或筛选变化时重播一次，表格自身的行动画在其内部叠加。 */
+  const listRef = useGsapScope<HTMLDivElement>(
+    (scope) => {
+      gsap.from(scope, {
+        opacity: 0,
+        y: 6,
+        duration: MOTION_DURATION.fast,
+        ease: MOTION_EASE,
+        clearProps: 'opacity,transform',
+      })
+    },
+    [rowSignature, filterSignature],
+  )
 
   /** 上游写操作会改变 router 暴露的工具集合，台账一并失效。 */
   const refreshAfterWrite = () => {
@@ -121,7 +149,7 @@ export default function UpstreamsPage() {
       })
       refreshAfterWrite()
     },
-    onError: (error) => setDeleteError(noticeFromError(error, '删除上游失败')),
+    onError: (error) => setDeleteError(error),
   })
 
   /**
@@ -279,32 +307,10 @@ export default function UpstreamsPage() {
       )}
 
       <Card title="MCP 接入" subtitle="上游接入清单与内置 MCP 安装目录">
-        <nav className="tabbar" role="tablist" aria-label="MCP 接入分栏">
-          {TABS.map((item, index) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              id={`upstreams-tab-${item.key}`}
-              aria-controls={tab === item.key ? `upstreams-panel-${item.key}` : undefined}
-              aria-selected={tab === item.key}
-              tabIndex={tab === item.key ? 0 : -1}
-              className="tab"
-              onClick={() => setTab(item.key)}
-              onKeyDown={(event) => handleTabKey(event, index)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
+        <TabBar idBase="upstreams" items={TABS} value={tab} onChange={setTab} label="MCP 接入分栏" />
       </Card>
 
-      <div
-        className="tab-panel"
-        role="tabpanel"
-        id={`upstreams-panel-${tab}`}
-        aria-labelledby={`upstreams-tab-${tab}`}
-      >
+      <TabPanel idBase="upstreams" tabKey={tab}>
         {tab === 'list' && (
           <Card
             title="上游接入清单"
@@ -349,20 +355,102 @@ export default function UpstreamsPage() {
               />
             )}
             {rows.length > 0 && (
-              <DataTable
-                label="MCP 上游接入清单"
-                meta={`共 ${rows.length} 行`}
-                columns={columns}
-                rows={rows}
-                rowKey={(row) => row.id}
-                minWidth="1184px"
-              />
+              <div className="mcp-upstream-list">
+                <div className="filter-bar">
+                  <Field label="搜索" title="name / id">
+                    <input
+                      className="input"
+                      type="search"
+                      value={filter.q}
+                      onChange={(event) => setFilter((previous) => ({ ...previous, q: event.target.value }))}
+                      placeholder="按名称或 id 过滤"
+                    />
+                  </Field>
+                  <Field label="授权组" title="group">
+                    <select
+                      className="select"
+                      value={filter.group}
+                      onChange={(event) => setFilter((previous) => ({ ...previous, group: event.target.value }))}
+                    >
+                      <option value="">全部组</option>
+                      {groupChoices.map((item) => (
+                        <option key={item.code} value={item.code} title={item.code}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="分类" title="category">
+                    <select
+                      className="select"
+                      value={filter.category}
+                      onChange={(event) =>
+                        setFilter((previous) => ({ ...previous, category: event.target.value }))
+                      }
+                    >
+                      <option value="">全部分类</option>
+                      {CATEGORY_OPTIONS.map((value) => (
+                        <option key={value} value={value}>
+                          {UPSTREAM_CATEGORY_LABEL[value]}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="状态" title="enabled">
+                    <select
+                      className="select"
+                      value={filter.status}
+                      onChange={(event) => setFilter((previous) => ({ ...previous, status: event.target.value }))}
+                    >
+                      <option value="">全部状态</option>
+                      <option value="enabled">已启用</option>
+                      <option value="disabled">已停用</option>
+                    </select>
+                  </Field>
+                  <div className="filter-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setFilter({ q: '', group: '', category: '', status: '' })}
+                      disabled={!filterActive}
+                    >
+                      清空筛选
+                    </button>
+                  </div>
+                </div>
+
+                <div ref={listRef}>
+                  {filteredRows.length === 0 ? (
+                    <EmptyState
+                      hint="没有符合筛选条件的接入。调整或清空筛选条件后再看。"
+                      action={
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => setFilter({ q: '', group: '', category: '', status: '' })}
+                        >
+                          清空筛选
+                        </button>
+                      }
+                    />
+                  ) : (
+                    <DataTable
+                      label="MCP 上游接入清单"
+                      meta={`显示 ${filteredRows.length} / 共 ${rows.length}`}
+                      columns={columns}
+                      rows={filteredRows}
+                      rowKey={(row) => row.id}
+                      minWidth="1184px"
+                    />
+                  )}
+                </div>
+              </div>
             )}
           </Card>
         )}
 
         {tab === 'catalog' && <CatalogTab onNotice={setNotice} />}
-      </div>
+      </TabPanel>
 
       {editor !== null && (
         <Modal
@@ -376,6 +464,7 @@ export default function UpstreamsPage() {
           onClose={() => setEditor(null)}
         >
           <UpstreamForm
+            onCancel={() => setEditor(null)}
             target={editor}
             groups={groups}
             groupsLoading={groupsQuery.isPending}
@@ -401,44 +490,26 @@ export default function UpstreamsPage() {
       )}
 
       {deleteTarget !== null && (
-        <Modal
-          size="md"
+        <ConfirmDialog
           title={`删除上游 · ${deleteTarget.name}`}
-          onClose={() => setDeleteTarget(null)}
-          footer={
-            <>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={deleteMutation.isPending}
-                onClick={() => setDeleteTarget(null)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate(deleteTarget)}
-              >
-                {deleteMutation.isPending ? '删除中…' : '确认删除'}
-              </button>
-            </>
-          }
+          subtitle={`上游 id：${deleteTarget.id}`}
+          confirmLabel="确认删除"
+          pendingLabel="删除中…"
+          tone="danger"
+          pending={deleteMutation.isPending}
+          error={deleteError}
+          errorTitle="删除上游失败"
+          onClose={() => {
+            setDeleteTarget(null)
+            setDeleteError(undefined)
+          }}
+          onConfirm={() => deleteMutation.mutate(deleteTarget)}
         >
           <p className="hint">
             将删除上游 {deleteTarget.name}（{deleteTarget.id}）。router 会同步移除其{' '}
             {deleteTarget.tool_count} 个工具，调用方之后不再看到或调用这些工具。删除后不可恢复。
           </p>
-          {deleteError !== undefined && (
-            <InfoBar
-              severity={deleteError.severity}
-              title={deleteError.title}
-              description={deleteError.description}
-              meta={deleteError.meta}
-            />
-          )}
-        </Modal>
+        </ConfirmDialog>
       )}
     </PageShell>
   )

@@ -1,7 +1,7 @@
-//! agent 主体的令牌：token 派生身份，自述头不可信；比较一律常量时间。
+//! agent 主体的静态令牌：`JUMCP_AGENT_TOKENS` 的解析与常量时间比较。
 //!
-//! 管理面不再走令牌：管理员是 `admin_users` 里的账号（Argon2id 口令 + 会话 cookie），
-//! 见 `registry::admins`。这里只剩 MCP 面的调用方令牌。
+//! 管理面不走令牌：管理员是 `admin_users` 里的账号（Argon2id 口令 + 会话 cookie），
+//! 见 `registry::admins`。这里的静态令牌只作为引导导入 `access_tokens` 的来源。
 
 pub fn is_principal_id(id: &str) -> bool {
     (2..=32).contains(&id.len())
@@ -12,8 +12,8 @@ pub fn is_principal_id(id: &str) -> bool {
 
 /// MCP 面的 agent 主体：`JUMCP_AGENT_TOKENS="agent_id:role:token,..."` 的解析结果。
 ///
-/// 为什么单独一组 token：HTTP `/mcp` 必须按请求派生身份（`Actor.actor_id` 即 agent_id），
-/// 否则所有 agent 共用进程默认角色，审计无法追责，admin 组也无从区分。
+/// 运行期鉴权不读这里：HTTP `/mcp` 的身份由库里的 access token 派生；本组令牌只在
+/// `access_tokens` 为空时一次性导入成引导令牌（sha256 落库，明文继续可用）。
 #[derive(Clone, PartialEq, Eq)]
 pub struct AgentPrincipal {
     pub id: String,

@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 /// 因此 stdio 下所有请求共用进程默认身份（`Service::process_actor`：优先 `analyst` 角色，
 /// 否则取名字最前的**非 admin** 角色；全部角色都持 `admin` 组时角色为空、`require_scope()`
 /// 失败即 fail-closed），审计里 actor.id 为空——这是传输本身的限制，
-/// 不是兜底降级。HTTP 面没有这条路径：/mcp 只认 `JUMCP_AGENT_TOKENS` 派生的身份。
+/// 不是兜底降级。HTTP 面没有这条路径：/mcp 只认数据库 access token 派生的身份。
 async fn run_stdio(server: Arc<McpServer>) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let actor = server.service().process_actor();
@@ -170,7 +170,7 @@ async fn run_http(
         tracing::info!(username = %user.username, "已创建初始管理员账号");
     }
     // 治理面不可静默失效：`Service::audit_event` 在无审计时是 no-op，
-    // 维护通道（admin_register_template / admin_set_visibility）会"写成功但无痕迹"。
+    // 维护通道的写工具会"写成功但无痕迹"。
     if settings.audit_path.is_empty() {
         anyhow::bail!(
             "HTTP 模式下 JUMCP_MCP_AUDIT_PATH 未配置：维护通道不允许无审计运行（审计不可静默失效）"

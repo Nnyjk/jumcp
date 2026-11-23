@@ -21,39 +21,89 @@
   font-weight: 600;
 }
 
-.dash-segmented {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--surface-control);
+/* 刷新按钮：pending 时换底色并显示转圈，不遮挡看板数据。 */
+
+.dash-refresh {
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
-.dash-segmented button {
-  min-height: 24px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--fs-12);
-  line-height: 20px;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.dash-segmented button:hover {
-  background: var(--fill-hover);
-  color: var(--text-primary);
-}
-
-.dash-segmented button[aria-pressed='true'] {
+.dash-refresh[data-pending='true'] {
+  border-color: var(--accent-border);
   background: var(--accent-subtle);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
   color: var(--accent);
-  font-weight: 600;
+}
+
+.dash-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: dash-spin 700ms linear infinite;
+}
+
+@keyframes dash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 面板内容区：加载 / 空 / 有数据三种状态共用一个最小高度，状态切换时卡片不跳。 */
+
+.dash-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: var(--dash-panel-min, 0px);
+}
+
+/* 各面板的最小高度取「有数据」时的内容高度：加载 / 空 / 有数据三态切换时容器不跳。 */
+.dash-panel-kpi {
+  --dash-panel-min: 200px;
+}
+
+.dash-panel-trend {
+  --dash-panel-min: 288px;
+}
+
+.dash-panel-donut {
+  --dash-panel-min: 288px;
+}
+
+.dash-panel-lifecycle {
+  --dash-panel-min: 128px;
+}
+
+.dash-panel-tools {
+  --dash-panel-min: 220px;
+}
+
+.dash-panel-failures {
+  --dash-panel-min: 156px;
+}
+
+.dash-panel-feed {
+  --dash-panel-min: 240px;
+}
+
+/* 刷新提示：数据变化时列表条目短暂高亮一次，然后回到常态。不重播入场动效。 */
+
+@keyframes dash-flash {
+  from {
+    background-color: var(--row-hover);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* 不留 fill-mode：动画结束后回到元素本来的背景，:hover 的高亮才不会被动画帧压住。 */
+.dash-flash > *:not(.fail-head) {
+  animation: dash-flash var(--motion-enter) var(--ease-standard);
 }
 
 .dash-updated {

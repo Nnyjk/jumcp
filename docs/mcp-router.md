@@ -72,7 +72,7 @@ token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与
 勾选 `<server_id>__*` 或 `*`"——精确名只对刷新前已存在的工具有效。
 
 `tools/list` 的每条内置工具带 `category`；`search_capabilities` 支持可选 `category` 过滤；
-`describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（托管能力归 `analysis`）。
+`describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（注册的能力与 `admin_*` 工具归 `analysis`，`admin_audit_queries` 归 `admin`，其余内置工具按 §1 的分类表）。
 组索引（`list_groups` 与 `tools/list` 的 `groups`）只统计上游等非内置来源：没有上游工具
 加入 `basic` 时索引里没有 `basic`，有覆盖时按生效组计数（常驻内置工具不计入）。
 
@@ -139,11 +139,11 @@ database = "analytics"    # 可选：透传给上游的默认库
 （调用方给的原始参数）、`upstream_id`、`upstream_tool`、`tokens`、`cache`、`elapsed_ms`、
 `version`、`row_count`、`truncated`。
 
-**升级注意**：`db_run_template` 是恢复后的内置 id，已存在的访问令牌如果 `builtin_tools`
-是显式白名单（既不含它、也不含 `*` 或其它通配），调用会被 allowlist 门禁拒绝——
-`MCP_CAPABILITY_NOT_FOUND`（`data.tool="db_run_template"`，拒绝判定记
-`policy_decision.detail.surface="mcp/builtin-allowlist"`），与此同时该工具也不会出现在它的
-`tools/list` 里。处理方式：重签发令牌并勾选该工具，或把白名单改成含 `*`。
+**allowlist 与 `db_run_template`**：访问令牌的 `builtin_tools` 是显式白名单时，不含
+`db_run_template`、也不含 `*` 或其它通配的白名单调用它会拿到 `MCP_CAPABILITY_NOT_FOUND`
+（`data.tool="db_run_template"`，拒绝判定记
+`policy_decision.detail.surface="mcp/builtin-allowlist"`），该工具也不会出现在它的
+`tools/list` 里。要放行就重签发令牌并勾选该工具，或把白名单改成含 `*`。
 `tools/list` 与 `tools/call` 用同一处判定，所以"列表里没有"就"调不了"，不会出现半可见。
 
 ## 2. 上游配置模型
@@ -309,7 +309,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
   `secret=true` 的字段，线格式与落库**完全一致**：`enc:v1:` + `hex(12 字节随机 nonce ‖ ciphertext ‖ tag)`，
   AAD 为空，hex 小写。服务端解出明文后用 `JUMCP_SECRET_KEY` 重新加密再落库——两把密钥用途分离，
   传输密钥泄漏不等于库里的密文可解，反之亦然。
-- 为什么经鉴权端点下发而不是编译进前端 bundle：静态资源不需要登录就能下载，密钥进构建产物等于公开。
+- 为什么经鉴权端点下发而不是编译进管理台 bundle：静态资源不需要登录就能下载，密钥进构建产物等于公开。
 - 轮换：换掉 `JUMCP_TRANSPORT_KEY` 后，未重新提交的旧传输密文不可解，保存会得到
   `MCP_TRANSPORT_DECRYPT_FAILED`，重新填一次密码即可；落库密文由 `JUMCP_SECRET_KEY` 管理，
   与传输密钥轮换无关。
@@ -354,7 +354,8 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 
 **stdio**（仅手工上游；内置包不走这条路）：默认关闭。仅当 `JUMCP_MCP_UPSTREAM_STDIO=1` 时允许
 注册与连接；命令用
-`tokio::process::Command` 直接 spawn（不经过 shell；`command` 按 §3.2 解析，随包分发的
+`tokio::process::Command` 直接 spawn（不经过 shell；`command` 按 §10 的查找顺序解析
+——`JUMCP_MCP_BUNDLED_BIN_DIR` → 服务同目录 → `PATH`，随包分发的
 连接器不必写绝对路径），显式 `.env_remove` 掉
 `JUMCP_AGENT_TOKENS`，stdin/stdout 走行分隔 JSON-RPC，stderr 丢弃
 （上游可能把 env 里的凭据打到 stderr，而 `status_message` 会出现在 GET 响应里）。
