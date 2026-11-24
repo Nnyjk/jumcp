@@ -183,7 +183,7 @@ async fn basic_tool_override_is_merged_and_idempotent() {
 }
 
 #[tokio::test]
-async fn basic_tool_override_rejects_unknown_write_and_admin_tools() {
+async fn basic_tool_override_rejects_unknown_and_admin_tools() {
     let h = harness();
     let (url, _fake) = spawn_fake(false).await;
     let (status, _) = create_upstream(&h, upstream_body("mixed", &url)).await;
@@ -205,21 +205,6 @@ async fn basic_tool_override_rejects_unknown_write_and_admin_tools() {
     let (status, body) = put_basic_tools(&h, "ghost", json!({"echo": true})).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], json!("MCP_UPSTREAM_NOT_FOUND"));
-
-    // 写上游：basic 只允许只读工具。
-    let hw = harness_with(false, true);
-    let (wurl, _wfake) = spawn_fake(false).await;
-    let mut wbody = upstream_body("writer", &wurl);
-    wbody["read_only"] = json!(false);
-    let (status, body) = create_upstream(&hw, wbody).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    refresh(&hw, "writer").await;
-    let (status, body) = put_basic_tools(&hw, "writer", json!({"echo": true})).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(
-        body["error"]["code"],
-        json!("MCP_UPSTREAM_TOOL_NOT_READ_ONLY")
-    );
 
     // 上游类别是 admin：维护通道不能借 basic 变成人人可见。
     let (aurl, _afake) = spawn_fake(false).await;
@@ -257,7 +242,7 @@ async fn basic_tool_override_rejects_unknown_write_and_admin_tools() {
 
 #[tokio::test]
 async fn basic_tool_override_survives_refresh_and_is_orphaned_not_dropped() {
-    let h = harness_with(false, false);
+    let h = harness_with(false);
     let (url, fake) = spawn_fake_named(&["echo", "keep"]).await;
     let (status, _) = create_upstream(&h, upstream_body("mixed", &url)).await;
     assert_eq!(status, StatusCode::OK);
@@ -323,7 +308,7 @@ async fn basic_precheck_matches_sanitized_exposed_name() {
         json!("dots__orders-lookup")
     );
 
-    let manager = UpstreamManager::new(h.store.clone(), false);
+    let manager = UpstreamManager::new(h.store.clone());
     let out_of_scope = scope(&["db.read.core"]); // 不含上游组 db.read.analytics
     assert!(
         !manager.matches_upstream(&out_of_scope, "dots__orders-lookup"),
@@ -360,8 +345,8 @@ async fn basic_precheck_matches_sanitized_exposed_name() {
 }
 
 #[tokio::test]
-async fn basic_override_stays_visible_when_upstream_turns_write() {
-    let h = harness_with(false, true);
+async fn basic_override_stays_visible_when_upstream_turns_admin() {
+    let h = harness_with(false);
     let (url, _fake) = spawn_fake_named(&["echo", "keep"]).await;
     let (status, _) = create_upstream(&h, upstream_body("mixed", &url)).await;
     assert_eq!(status, StatusCode::OK);
@@ -369,9 +354,9 @@ async fn basic_override_stays_visible_when_upstream_turns_write() {
     let (status, body) = put_basic_tools(&h, "mixed", json!({"echo": true})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // 上游改成写通道：覆盖行仍可见（overridden=true），但不生效（basic=false）。
+    // 上游改成 admin 类别：覆盖行仍可见（overridden=true），但不生效（basic=false）。
     let mut body = upstream_body("mixed", &url);
-    body["read_only"] = json!(false);
+    body["category"] = json!("admin");
     let (status, resp) = call(
         &h.app,
         "PUT",

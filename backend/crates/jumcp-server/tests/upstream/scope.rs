@@ -314,24 +314,52 @@ async fn admin_write_tools_declare_non_readonly_annotations() {
 }
 
 #[tokio::test]
-async fn upstream_annotations_default_by_risk() {
-    let h = harness_with(false, true);
-    let (read_url, _read) = spawn_fake_named(&["plain"]).await;
-    let (write_url, _write) = spawn_fake_named(&["plain"]).await;
+async fn upstream_annotations_default_by_catalog_origin() {
+    let h = harness_with(false);
+    let (manual_url, _manual) = spawn_fake_named(&["plain"]).await;
+    let (builtin_url, _builtin) = spawn_fake_named(&["plain"]).await;
     assert_eq!(
-        create_upstream(&h, upstream_body("ro", &read_url)).await.0,
+        create_upstream(&h, upstream_body("manual", &manual_url))
+            .await
+            .0,
         StatusCode::OK
     );
-    let mut write_body = upstream_body("rw", &write_url);
-    write_body["read_only"] = json!(false);
-    assert_eq!(create_upstream(&h, write_body).await.0, StatusCode::OK);
+    // 内置包安装出来的行：catalog_id 让投影按只读处理（实现随仓库发布，可审计）。
+    let def = McpUpstream {
+        id: "pack".into(),
+        name: "内置包上游".into(),
+        transport: "http".into(),
+        url: builtin_url.clone(),
+        command: String::new(),
+        args: Vec::new(),
+        env: Default::default(),
+        headers: Default::default(),
+        group: "db.read.analytics".into(),
+        category: "custom".into(),
+        enabled: true,
+        timeout_ms: 5000,
+        catalog_id: Some("clickhouse-basic".into()),
+        catalog_version: Some("0.0.1".into()),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    h.store.insert_upstream(&def, &[], "alice").expect("insert");
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        "/admin/upstreams/pack/refresh",
+        Some(ALICE_TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 
     let token = issue_token(
         &h,
         "agent-risk-annotations",
         "analyst",
         &["db.read.analytics"],
-        &["ro__plain", "rw__plain"],
+        &["manual__plain", "pack__plain"],
     )
     .await;
     let resp = mcp(&h.app, &token, "tools/list", json!({})).await;
@@ -344,64 +372,16 @@ async fn upstream_annotations_default_by_risk() {
             .unwrap_or(Value::Null)
     };
 
-    // 只读上游没声明注解 → 只读注解。
-    let read_only = annotations_of("ro__plain");
-    assert_eq!(read_only["readOnlyHint"], json!(true));
-    assert_eq!(read_only["idempotentHint"], json!(true));
+    // 内置包没声明注解 → 按只读投影。
+    let builtin = annotations_of("pack__plain");
+    assert_eq!(builtin["readOnlyHint"], json!(true));
+    assert_eq!(builtin["idempotentHint"], json!(true));
 
-    // 可写上游没声明注解 → 协议最保守缺省值，绝不出现 readOnlyHint=true。
-    let writable = annotations_of("rw__plain");
-    assert_eq!(writable["readOnlyHint"], json!(false));
-    assert_eq!(writable["destructiveHint"], json!(true));
-    assert_eq!(writable["idempotentHint"], json!(false));
-    assert_eq!(writable["openWorldHint"], json!(true));
+    // 手工接入的外部 MCP 没声明注解 → 协议最保守缺省值，绝不出现 readOnlyHint=true。
+    let manual = annotations_of("manual__plain");
+    assert_eq!(manual["readOnlyHint"], json!(false));
+    assert_eq!(manual["destructiveHint"], json!(true));
+    assert_eq!(manual["idempotentHint"], json!(false));
+    assert_eq!(manual["openWorldHint"], json!(true));
 }
 
-#[tokio::test]
-async fn write_upstream_rows_are_hidden_when_deployment_forbids_writes() {
-    let h = harness_with(false, false);
-    let (url, _fake) = spawn_fake(false).await;
-    // 绕过管理面直接落库：模拟"配置文件/旧部署留下的 read_only=false"。
-    let def = McpUpstream {
-        id: "writer".into(),
-        name: "写上游".into(),
-        transport: "http".into(),
-        url: url.clone(),
-        command: String::new(),
-        args: Vec::new(),
-        env: Default::default(),
-        headers: Default::default(),
-        group: "db.read.analytics".into(),
-        category: "custom".into(),
-        read_only: false,
-        enabled: true,
-        timeout_ms: 5000,
-        catalog_id: None,
-        catalog_version: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
-    h.store.insert_upstream(&def, &[], "alice").expect("insert");
-    let token = issue_token(
-        &h,
-        "agent-write-gate",
-        "analyst",
-        &["db.read.analytics"],
-        &["writer__echo"],
-    )
-    .await;
-
-    let names = tool_names(&h.app, &token).await;
-    assert!(
-        !names.iter().any(|n| n.starts_with("writer__")),
-        "写上游在开关关闭时不得投影: {names:?}"
-    );
-    let resp = mcp(
-        &h.app,
-        &token,
-        "tools/call",
-        json!({"name":"writer__echo","arguments":{}}),
-    )
-    .await;
-    assert_eq!(resp["error"]["code"], json!(-32602));
-}

@@ -110,8 +110,6 @@ pub struct Settings {
     pub budget_overflow: String,
     /// stdio 上游总开关（`JUMCP_MCP_UPSTREAM_STDIO=1`）：默认关，关闭时拒收 stdio 配置。
     pub upstream_stdio: bool,
-    /// 允许注册 `read_only=false` 的上游（`JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`）。
-    pub upstream_write: bool,
     /// 配置字段加密密钥（`JUMCP_SECRET_KEY`，64 位 hex）。HTTP 模式必需：
     /// 内置 MCP 的密码类字段落库前用它加密；缺失/非法即拒绝启动，避免明文密码落盘。
     pub secret_key: Option<SecretKey>,
@@ -142,7 +140,6 @@ impl Default for Settings {
             groups_mode: "strict".to_string(),
             budget_overflow: "fail".to_string(),
             upstream_stdio: false,
-            upstream_write: false,
             secret_key: None,
             transport_key: None,
             policy: TenantPolicy::default(),
@@ -201,7 +198,6 @@ impl Settings {
         s.groups_mode = env_or("JUMCP_MCP_GROUPS_MODE", &s.groups_mode);
         s.budget_overflow = env_or("JUMCP_MCP_BUDGET_OVERFLOW", &s.budget_overflow);
         s.upstream_stdio = env_or("JUMCP_MCP_UPSTREAM_STDIO", "0") == "1";
-        s.upstream_write = env_or("JUMCP_MCP_ALLOW_WRITE_UPSTREAM", "0") == "1";
         let secret_raw = env_or("JUMCP_SECRET_KEY", "");
         if !secret_raw.trim().is_empty() {
             s.secret_key = Some(SecretKey::parse(&secret_raw).map_err(|e| e.to_string())?);

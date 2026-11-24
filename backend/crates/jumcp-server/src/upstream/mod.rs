@@ -114,14 +114,14 @@ pub fn exposed_tool_name(server_id: &str, tool: &str) -> String {
     )
 }
 
-/// 单工具能否进 `basic`（公共基础通道）：只读、非 admin 类别、名字不是 `admin_` 前缀。
+/// 单工具能否进 `basic`（公共基础通道）：非 admin 类别、名字不是 `admin_` 前缀。
 ///
-/// 三条限制合起来回答同一个问题："这个工具能不能成为所有 token 都能看见的只读入口"。
-/// 写工具、审计类工具与 `admin_*` 维护工具都必须留在上游组里按组授权，
-/// 否则 `basic` 会变成绕过 admin 的旁路。
+/// 这两条限制回答同一个问题："这个工具能不能成为所有 token 都能看见的入口"。
+/// 审计类工具与 `admin_*` 维护工具必须留在上游组里按组授权，
+/// 否则 `basic` 会变成绕过 admin 的旁路。上游本身是否只读无法由外部 MCP 保证，
+/// 因此不再参与判定：加入 `basic` 是管理员的显式选择。
 pub fn basic_eligible(def: &McpUpstream, tool: &UpstreamTool) -> bool {
-    def.read_only
-        && def.category != crate::catalog::CATEGORY_ADMIN
+    def.category != crate::catalog::CATEGORY_ADMIN
         && !tool.name.starts_with("admin_")
         && is_upstream_tool_name(&exposed_tool_name(&def.id, &tool.name))
 }
@@ -182,8 +182,6 @@ struct Inner {
 /// 上游管理器：配置现查 SQLite，连接池与工具缓存按配置指纹失效。
 pub struct UpstreamManager {
     store: Arc<CapabilityStore>,
-    /// 是否允许 `read_only=false` 的上游进入投影/调用面（部署开关的运行时副本）。
-    write_allowed: bool,
     http: reqwest::Client,
     inner: Mutex<Inner>,
     /// 每个上游一把建连锁：并发请求不会为同一上游拉起两个 stdio 进程/两条初始化链。
@@ -193,7 +191,7 @@ pub struct UpstreamManager {
 }
 
 impl UpstreamManager {
-    pub fn new(store: Arc<CapabilityStore>, write_allowed: bool) -> Self {
+    pub fn new(store: Arc<CapabilityStore>) -> Self {
         // 重定向只允许同 host（跨 host 一律停止）：上游地址由管理面填写，必须防被重定向到内网。
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -211,7 +209,6 @@ impl UpstreamManager {
             .expect("reqwest client 初始化失败");
         Self {
             store,
-            write_allowed,
             http,
             inner: Mutex::new(Inner::default()),
             connect_locks: Mutex::new(HashMap::new()),
@@ -278,7 +275,7 @@ impl UpstreamManager {
         };
         let overrides = self.tool_group_overrides();
         defs.iter().any(|def| {
-            if !def.enabled || !(def.read_only || self.write_allowed) {
+            if !def.enabled {
                 return false;
             }
             if !name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id)) {
@@ -309,7 +306,6 @@ impl UpstreamManager {
         defs.into_iter()
             .find(|def| {
                 def.enabled
-                    && (def.read_only || self.write_allowed)
                     && name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id))
             })
             .map(|def| def.id)
@@ -532,9 +528,6 @@ impl UpstreamManager {
                 .into_iter()
                 .filter(|d| {
                     d.enabled
-                        // 写上游的准入是部署开关：DB 里残留的 read_only=false 在开关关闭时
-                        // 既不投影也不可调（不能只靠写入期校验）。
-                        && (d.read_only || self.write_allowed)
                         && (scope.groups.contains(&d.group) || overrides.contains_key(&d.id))
                 })
                 .collect(),
@@ -662,13 +655,6 @@ impl UpstreamManager {
                     "上游不存在或已停用",
                 )
             })?;
-        if !def.read_only && !self.write_allowed {
-            return Err(UpstreamFailure::error(
-                &def.id,
-                "MCP_UPSTREAM_WRITE_FORBIDDEN",
-                "上游声明可写，但本部署未开启 JUMCP_MCP_ALLOW_WRITE_UPSTREAM",
-            ));
-        }
         let (client, generation) = self.client_for(&def).await?;
         match client.call(&def.id, &call.tool, arguments).await {
             Ok(result) => Ok((result, generation)),

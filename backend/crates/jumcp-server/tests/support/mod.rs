@@ -442,7 +442,7 @@ impl BuiltinHarness {
         let endpoint = BuiltinEndpoint::new(format!("http://{addr}"), "tok_internal_test");
 
         let upstreams =
-            Arc::new(UpstreamManager::new(store.clone(), false).with_builtin(endpoint.clone()));
+            Arc::new(UpstreamManager::new(store.clone()).with_builtin(endpoint.clone()));
         let registry = Arc::new(TemplateRegistry::new(store.clone()));
         let service = Arc::new(
             Service::new(settings)

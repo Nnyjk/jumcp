@@ -1,6 +1,6 @@
 # 当前工具面盘点（改造成 MCP router / 三组切分前的基线）
 
-> **当前事实（覆盖下文历史盘点）**：ClickHouse 内置只读查询 `db_query_readonly` 已移除；模板执行 `db_run_template` **已恢复**（`b32e1bb` 删除，本次按 `b32e1bb^` 的语义重写接入），它是"从审计提取高频查询 → 注册成模板 → agent 调用"闭环的执行臂。现在常驻内置工具是四个：`search_capabilities`、`describe_capability`、`list_groups`、`db_run_template`；`basic` 作为代码内置组与契约继续存在（不可配置、不可授权），上游 MCP 只读工具可按工具逐项加入 `basic`（`<server_id>__<tool>`）。自由拼 SQL 仍无内置入口，需要上游 MCP server 提供工具。下文是改造前的工具面基线，除 `db_run_template` 的执行链外仅作历史参考。
+> **当前事实（覆盖下文历史盘点）**：ClickHouse 内置只读查询 `db_query_readonly` 已移除；模板执行 `db_run_template` **已恢复**（`b32e1bb` 删除，本次按 `b32e1bb^` 的语义重写接入），它是"从审计提取高频查询 → 注册成模板 → agent 调用"闭环的执行臂。现在常驻内置工具是四个：`search_capabilities`、`describe_capability`、`list_groups`、`db_run_template`；`basic` 作为代码内置组与契约继续存在（不可配置、不可授权），上游 MCP 工具可按工具逐项加入 `basic`（`<server_id>__<tool>`）。自由拼 SQL 仍无内置入口，需要上游 MCP server 提供工具。下文是改造前的工具面基线，除 `db_run_template` 的执行链外仅作历史参考。
 
 结论先行：内置工具共 **9 个**（常驻 5 + 维护 4），全部硬编码在 `mcp.rs`，**没有 group 字段**、**没有上游转发**、**没有动态注册**。
 组语义只有两档：`builtin`（常驻、恒可见）与 `admin`（组内可见），`basic/analysis/admin` 三分不存在；

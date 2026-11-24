@@ -117,7 +117,7 @@ async fn install_writes_http_upstream_with_encrypted_secret() {
     let upstream = &body["upstream"];
     assert_eq!(upstream["transport"], "http");
     assert_eq!(upstream["catalog_id"], "clickhouse-basic");
-    assert_eq!(upstream["read_only"], true);
+    assert!(upstream.get("read_only").is_none(), "上游不再声明只读");
     assert_eq!(
         upstream["url"],
         harness
@@ -689,7 +689,6 @@ fn manual_upstream(id: &str) -> McpUpstream {
         headers: BTreeMap::new(),
         group: "db.read.core".into(),
         category: "custom".into(),
-        read_only: true,
         enabled: true,
         timeout_ms: 30_000,
         catalog_id: None,
@@ -717,7 +716,6 @@ fn legacy_upstream(id: &str, dsn: &str) -> McpUpstream {
         headers: BTreeMap::new(),
         group: "db.read.core".into(),
         category: "custom".into(),
-        read_only: true,
         enabled: true,
         timeout_ms: 30_000,
         catalog_id: Some("clickhouse-basic".into()),

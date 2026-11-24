@@ -912,7 +912,6 @@ fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
         headers: std::collections::BTreeMap::new(),
         group: "db.read.core".into(),
         category: "custom".into(),
-        read_only: true,
         enabled: true,
         timeout_ms: 30_000,
         catalog_id: None,

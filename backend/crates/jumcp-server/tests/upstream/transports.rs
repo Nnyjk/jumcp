@@ -85,7 +85,7 @@ async fn unreachable_upstream_is_isolated_and_reported() {
 }
 
 #[tokio::test]
-async fn stdio_and_write_upstreams_are_gated_by_deployment_switches() {
+async fn stdio_upstreams_are_gated_by_deployment_switch() {
     let h = harness();
     let mut stdio = upstream_body("local", "");
     stdio["transport"] = json!("stdio");
@@ -95,18 +95,8 @@ async fn stdio_and_write_upstreams_are_gated_by_deployment_switches() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error["error"]["code"], json!("MCP_UPSTREAM_STDIO_DISABLED"));
 
-    let (url, _fake) = spawn_fake(false).await;
-    let mut write = upstream_body("writer", &url);
-    write["read_only"] = json!(false);
-    let (status, error) = create_upstream(&h, write.clone()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        error["error"]["code"],
-        json!("MCP_UPSTREAM_WRITE_FORBIDDEN")
-    );
-
     // 开关打开后同样的请求可通过（stdio 仍会因为进程不存在而 error，但不是配置拒绝）。
-    let h = harness_with(true, true);
+    let h = harness_with(true);
     let (status, created) = create_upstream(&h, stdio).await;
     assert_eq!(status, StatusCode::OK, "{created}");
     assert_eq!(created["transport"], json!("stdio"));
@@ -121,7 +111,4 @@ async fn stdio_and_write_upstreams_are_gated_by_deployment_switches() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(refreshed["status"], json!("error"));
-    let (status, created) = create_upstream(&h, write).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
-    assert_eq!(created["read_only"], json!(false));
 }
