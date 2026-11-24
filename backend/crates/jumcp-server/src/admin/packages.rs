@@ -444,7 +444,6 @@ pub(super) async fn install_package(
         headers: BTreeMap::new(),
         group: group.clone(),
         category: crate::catalog::CATEGORY_CUSTOM.to_string(),
-        read_only: true,
         enabled,
         timeout_ms: 30_000,
         catalog_id: Some(pkg.id.to_string()),

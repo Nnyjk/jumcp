@@ -17,7 +17,6 @@ const UPSTREAM_CHANGE_FIELDS: &[&str] = &[
     "args",
     "group",
     "category",
-    "read_only",
     "enabled",
     "timeout_ms",
 ];
@@ -54,7 +53,6 @@ pub struct McpUpstream {
     pub headers: std::collections::BTreeMap<String, String>,
     pub group: String,
     pub category: String,
-    pub read_only: bool,
     pub enabled: bool,
     pub timeout_ms: i64,
     /// 安装来源：内置包的 id（`None` = 手工创建）。安装语义只读这两列，运行时一律按普通上游。
@@ -270,7 +268,6 @@ impl McpUpstream {
             "headers": self.headers,
             "group": self.group,
             "category": self.category,
-            "read_only": self.read_only,
             "enabled": self.enabled,
             "timeout_ms": self.timeout_ms
         }))
@@ -289,7 +286,6 @@ impl McpUpstream {
             "headers": masked_map(&self.headers, &[]),
             "group": self.group,
             "category": self.category,
-            "read_only": self.read_only,
             "enabled": self.enabled,
             "timeout_ms": self.timeout_ms,
             "catalog_id": self.catalog_id.as_deref(),
@@ -306,7 +302,6 @@ impl McpUpstream {
             "transport": self.transport,
             "group": self.group,
             "category": self.category,
-            "read_only": self.read_only,
             "enabled": self.enabled
         });
         if let Some(map) = data.as_object_mut() {
@@ -418,7 +413,6 @@ fn empty_upstream() -> McpUpstream {
         headers: std::collections::BTreeMap::new(),
         group: String::new(),
         category: String::new(),
-        read_only: true,
         enabled: true,
         timeout_ms: 0,
         catalog_id: None,
@@ -491,7 +485,7 @@ impl CapabilityStore {
             }
             let now = now_iso();
             conn.execute(
-                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, group_code, category, read_only, enabled, timeout_ms, created_at, updated_at, catalog_id, catalog_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?16)",
+                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, group_code, category, enabled, timeout_ms, created_at, updated_at, catalog_id, catalog_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13,?14,?15)",
                 rusqlite::params![
                     upstream.id,
                     upstream.name,
@@ -503,7 +497,6 @@ impl CapabilityStore {
                     serde_json::to_string(&upstream.headers).map_err(|e| McpError::store(e.to_string()))?,
                     upstream.group,
                     upstream.category,
-                    upstream.read_only as i64,
                     upstream.enabled as i64,
                     upstream.timeout_ms,
                     now,
@@ -544,7 +537,7 @@ impl CapabilityStore {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
             let changed = conn
                 .execute(
-                    "UPDATE mcp_upstreams SET name=?2, transport=?3, url=?4, command=?5, args_json=?6, env_json=?7, headers_json=?8, group_code=?9, category=?10, read_only=?11, enabled=?12, timeout_ms=?13, updated_at=?14 WHERE id=?1",
+                    "UPDATE mcp_upstreams SET name=?2, transport=?3, url=?4, command=?5, args_json=?6, env_json=?7, headers_json=?8, group_code=?9, category=?10, enabled=?11, timeout_ms=?12, updated_at=?13 WHERE id=?1",
                     rusqlite::params![
                         upstream.id,
                         upstream.name,
@@ -556,7 +549,6 @@ impl CapabilityStore {
                         serde_json::to_string(&upstream.headers).map_err(|e| McpError::store(e.to_string()))?,
                         upstream.group,
                         upstream.category,
-                        upstream.read_only as i64,
                         upstream.enabled as i64,
                         upstream.timeout_ms,
                         now_iso()
@@ -870,7 +862,6 @@ fn row_to_upstream(row: &Row) -> rusqlite::Result<McpUpstream> {
         headers,
         group: row.get("group_code")?,
         category: row.get("category")?,
-        read_only: row.get::<_, i64>("read_only")? != 0,
         enabled: row.get::<_, i64>("enabled")? != 0,
         timeout_ms: row.get("timeout_ms")?,
         catalog_id: non_empty_opt(row.get::<_, String>("catalog_id")?),

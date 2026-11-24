@@ -113,7 +113,7 @@ async fn bootstrap_token_reaches_upstream_installed_later() {
     let boot = "tok_boot_000000000000";
     let tokens = AgentTokens::parse(&format!("agent-boot:analyst:{boot}")).expect("agent tokens");
     h.store
-        .import_bootstrap_tokens(tokens.principals(), &settings(false, false).policy)
+        .import_bootstrap_tokens(tokens.principals(), &settings(false).policy)
         .expect("bootstrap import");
     assert!(
         !tool_names(&h.app, boot)
@@ -144,13 +144,13 @@ async fn bootstrap_token_reaches_upstream_installed_later() {
 }
 
 /// 授予面与 `tools/list` 的可见性必须一致：覆盖到 basic 但已不合格的工具
-/// （上游改成可写）在公共通道里看不到，`/admin/tokens/options` 也不能再列出它，
+/// （上游改成 admin 类别）在公共通道里看不到，`/admin/tokens/options` 也不能再列出它，
 /// 否则管理员勾选后得到"授权了却调不到"。
 #[tokio::test]
 async fn options_hides_basic_overrides_that_tools_list_drops() {
-    let h = harness_with(false, true);
+    let h = harness_with(false);
 
-    // 合法覆盖：只读上游、名字合规 → 生效组就是 basic。
+    // 合法覆盖：非 admin 类别、名字合规 → 生效组就是 basic。
     let (url, _fake) = spawn_fake_named(&["echo", "plain"]).await;
     let (status, item) = create_upstream(&h, upstream_body("stable", &url)).await;
     assert_eq!(status, StatusCode::OK, "{item}");
@@ -158,7 +158,7 @@ async fn options_hides_basic_overrides_that_tools_list_drops() {
     let (status, body) = put_basic_tools(&h, "stable", json!({"echo": true})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // 覆盖之后上游改成可写：覆盖行保留，但不再能作为公共通道成员。
+    // 覆盖之后上游改成 admin 类别：覆盖行保留，但不再能作为公共通道成员。
     let (url, _fake) = spawn_fake_named(&["echo"]).await;
     let (status, item) = create_upstream(&h, upstream_body("turn", &url)).await;
     assert_eq!(status, StatusCode::OK, "{item}");
@@ -166,7 +166,7 @@ async fn options_hides_basic_overrides_that_tools_list_drops() {
     let (status, body) = put_basic_tools(&h, "turn", json!({"echo": true})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let mut body = upstream_body("turn", &url);
-    body["read_only"] = json!(false);
+    body["category"] = json!("admin");
     let (status, resp) = call(
         &h.app,
         "PUT",

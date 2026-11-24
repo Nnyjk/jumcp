@@ -209,7 +209,6 @@ fn status_for(code: &str) -> StatusCode {
         | "MCP_PREFLIGHT_REQUIRED"
         | "MCP_SCHEMA_OUT_OF_SCOPE"
         | "MCP_UPSTREAM_INVALID"
-        | "MCP_UPSTREAM_WRITE_FORBIDDEN"
         | "MCP_UPSTREAM_STDIO_DISABLED"
         | "MCP_TRANSPORT_CIPHERTEXT_REQUIRED"
         | "MCP_TRANSPORT_DECRYPT_FAILED" => StatusCode::BAD_REQUEST,
@@ -222,7 +221,6 @@ fn status_for(code: &str) -> StatusCode {
         "MCP_UPSTREAM_CONFLICT"
         | "MCP_UPSTREAM_PACKAGE_MANAGED"
         | "MCP_UPSTREAM_TOOL_UNKNOWN"
-        | "MCP_UPSTREAM_TOOL_NOT_READ_ONLY"
         | "MCP_UPSTREAM_TOOL_NOT_ELIGIBLE" => StatusCode::CONFLICT,
         "MCP_TOKEN_ALREADY_REVOKED" => StatusCode::CONFLICT,
         // 账号操作的冲突：重名、会留下零启用账号、删除自己；都是"请求合法但不许这么做"。

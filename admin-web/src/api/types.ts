@@ -640,7 +640,6 @@ export interface UpstreamItem {
   headers: Record<string, string>
   group: string
   category: UpstreamCategory
-  read_only: boolean
   enabled: boolean
   timeout_ms: number
   status: UpstreamStatus
@@ -671,7 +670,6 @@ export interface UpstreamInput {
   headers: Record<string, string>
   group: string
   category: UpstreamCategory
-  read_only: boolean
   enabled: boolean
   timeout_ms: number
 }
@@ -692,8 +690,7 @@ export interface UpstreamToolItem {
   basic: boolean
   /** 是否存在 basic 覆盖行（不一定当前生效：工具可能现在是写工具/管理类）。 */
   overridden: boolean
-  read_only: boolean
-  /** 后端判定是否满足归入基础组的条件（只读、非管理类等）。 */
+  /** 后端判定是否满足归入基础组的条件（非管理类、名字合规等）。 */
   eligible: boolean
   /** 缓存里存在但上游已不再暴露的工具。 */
   orphaned: boolean

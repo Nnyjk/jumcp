@@ -104,7 +104,7 @@ AES-256-GCM，AAD 为空，hex 小写，12 字节随机 nonce。
   （监听通配地址时用回环 `127.0.0.1`）→ 注入 `UpstreamManager` → 挂载端点 router。
 - 安装/改配置/卸载都拒绝把包管理字段交给通用 `PUT`：`transport`、`url`、`command`、`args`、
   `env`、`headers` 任一被改动即 `409 MCP_UPSTREAM_PACKAGE_MANAGED`；`name`/`group`/`enabled`/
-  `read_only`/`timeout_ms` 仍可改。
+  `timeout_ms` 仍可改。
 - 上游缓存按 `definition_hash`（完整配置 sha256）失效：改配置后下一次 `tools/list`/`tools/call`
   自动重连，不需要重启进程，也不需要调用 refresh。
 - 卸载只删 `catalog_id` 匹配的行；手工上游不受影响。

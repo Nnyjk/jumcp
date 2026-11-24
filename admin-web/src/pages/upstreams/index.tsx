@@ -219,13 +219,6 @@ export default function UpstreamsPage() {
       cell: (row) => <CategoryBadge category={row.category} />,
     },
     {
-      key: 'read_only',
-      header: '只读',
-      width: '64px',
-      cell: (row) => (row.read_only ? '是' : '否'),
-      title: (row) => `read_only=${row.read_only}`,
-    },
-    {
       key: 'actions',
       header: '操作',
       width: '328px',

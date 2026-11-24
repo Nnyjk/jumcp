@@ -25,7 +25,6 @@ async fn upstream_crud_masks_secrets_and_preserves_them_on_put() {
         },
         "group": "db.read.analytics",
         "category": "analysis",
-        "read_only": true,
         "enabled": true,
         "timeout_ms": 3000
     });
@@ -71,7 +70,6 @@ async fn upstream_crud_masks_secrets_and_preserves_them_on_put() {
         "headers": {"Authorization": "***", "X-Trace": "trace-2"},
         "group": "db.read.analytics",
         "category": "analysis",
-        "read_only": true,
         "enabled": true,
         "timeout_ms": 3000
     });
@@ -150,7 +148,10 @@ async fn upstream_writes_audit_admin_change_without_secret_values() {
     assert_eq!(create.payload["action"], json!("create"));
     assert_eq!(create.payload["data"]["transport"], json!("http"));
     assert_eq!(create.payload["data"]["group"], json!("db.read.analytics"));
-    assert_eq!(create.payload["data"]["read_only"], json!(true));
+    assert!(
+        create.payload["data"].get("read_only").is_none(),
+        "上游不再声明只读，审计 data 不得再出现 read_only"
+    );
     let serialized = serde_json::to_string(&create.payload).expect("json");
     assert!(
         !serialized.contains("topsecret-token") && !serialized.contains("another-secret"),
@@ -203,7 +204,7 @@ async fn upstream_writes_audit_admin_change_without_secret_values() {
 
 #[tokio::test]
 async fn switching_transport_clears_the_other_side_fields() {
-    let h = harness_with(true, true);
+    let h = harness_with(true);
     let (url, _fake) = spawn_fake(false).await;
 
     // stdio → http：PUT 仍带着旧 command（或 null），落库必须是空。

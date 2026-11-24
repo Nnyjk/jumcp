@@ -15,7 +15,6 @@ pub(super) struct UpstreamInput {
     headers: Option<BTreeMap<String, String>>,
     group: Option<String>,
     category: Option<String>,
-    read_only: Option<bool>,
     enabled: Option<bool>,
     timeout_ms: Option<i64>,
 }
@@ -130,10 +129,6 @@ pub(super) fn build_upstream(
     } else {
         category
     };
-    let read_only = body
-        .read_only
-        .or_else(|| existing.map(|e| e.read_only))
-        .unwrap_or(true);
     let enabled = body
         .enabled
         .or_else(|| existing.map(|e| e.enabled))
@@ -153,7 +148,6 @@ pub(super) fn build_upstream(
         headers,
         group,
         category,
-        read_only,
         enabled,
         timeout_ms,
         // 包坐标由安装/卸载路径维护，普通编辑（PUT）原样带过，绝不在这里清空。
@@ -203,17 +197,6 @@ pub(super) fn build_upstream(
             McpError::new(
                 "MCP_UPSTREAM_STDIO_DISABLED",
                 json!({"id": upstream.id, "hint": "设置 JUMCP_MCP_UPSTREAM_STDIO=1 后重启"}),
-            ),
-            json!({"surface": surface, "id": upstream.id}),
-        ));
-    }
-    if !upstream.read_only && !state.service.settings.upstream_write {
-        return Err(reject(
-            state,
-            actor,
-            McpError::new(
-                "MCP_UPSTREAM_WRITE_FORBIDDEN",
-                json!({"id": upstream.id, "hint": "设置 JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1 后重启"}),
             ),
             json!({"surface": surface, "id": upstream.id}),
         ));
@@ -513,7 +496,6 @@ pub(super) async fn refresh_upstream(
             "transport": def.transport,
             "group": def.group,
             "category": def.category,
-            "read_only": def.read_only,
             "tool_count": runtime.tool_count,
             "status": runtime.status
         }),
@@ -536,8 +518,8 @@ pub(super) async fn refresh_upstream(
 ///
 /// 一行一个工具：`group` 是生效组（有 basic 覆盖且仍可加入时为 `basic`，否则继承上游组）；
 /// `group_source` 说明这个组是逐工具覆盖来的还是继承上游的；`eligible=false` 表示该工具
-/// 不能加入 basic（上游非只读、上游类别是 admin、或工具名以 `admin_` 开头——后两者是维护
-/// 通道，不能借 basic 变成对所有 agent 可见）；`orphaned=true` 表示有覆盖行但当前缓存里
+/// 不能加入 basic（上游类别是 admin、或工具名以 `admin_` 开头——这些是维护通道，
+/// 不能借 basic 变成对所有 agent 可见）；`orphaned=true` 表示有覆盖行但当前缓存里
 /// 已没有这个工具（上游改名/刷新失败），留给管理面清理，不静默删用户配置。
 pub(super) fn upstream_tools_view(
     def: &McpUpstream,
@@ -550,7 +532,7 @@ pub(super) fn upstream_tools_view(
             row.tool_name == tool.name && row.group_code == crate::discovery::BASIC_GROUP
         });
         // 与 `/admin/tokens/options`、`tools/list` 共用同一份生效组判定；`None` 表示覆盖行
-        // 已因上游改成可写/改类别/名字非法而失效，此时按上游组展示，`eligible=false` 提示清理。
+        // 已因上游改成 admin 类别/名字非法而失效，此时按上游组展示，`eligible=false` 提示清理。
         let group = crate::upstream::effective_tool_group(def, tool, overridden);
         let basic = group == Some(crate::discovery::BASIC_GROUP);
         tools.push(json!({
@@ -560,7 +542,6 @@ pub(super) fn upstream_tools_view(
             "group_source": if basic { "basic" } else { "upstream" },
             "basic": basic,
             "overridden": overridden,
-            "read_only": def.read_only,
             "eligible": crate::upstream::basic_eligible(def, tool),
             "orphaned": false,
             "description": tool.description,
@@ -577,7 +558,6 @@ pub(super) fn upstream_tools_view(
             "group_source": "basic",
             "basic": true,
             "overridden": true,
-            "read_only": def.read_only,
             "eligible": false,
             "orphaned": true,
             "description": "",
@@ -730,17 +710,6 @@ pub(super) async fn set_upstream_basic_tools(
             &state,
             &actor,
             McpError::new("MCP_UPSTREAM_TOOL_UNKNOWN", json!({"unknown": unknown})),
-            json!({"surface": SURFACE, "id": id}),
-        ));
-    }
-    if let Some(name) = add.first().filter(|_| !def.read_only) {
-        return Err(reject(
-            &state,
-            &actor,
-            McpError::new(
-                "MCP_UPSTREAM_TOOL_NOT_READ_ONLY",
-                json!({"tool": name, "upstream": id}),
-            ),
             json!({"surface": SURFACE, "id": id}),
         ));
     }

@@ -235,9 +235,6 @@ export function BasicToolsModal({
                 width: '170px',
                 cell: (tool) => (
                   <span className="detail-badges">
-                    <Badge tone={tool.read_only ? 'neutral' : 'warning'} title={tool.read_only ? '只读工具' : '写工具'}>
-                      {tool.read_only ? '只读' : '写'}
-                    </Badge>
                     {tool.orphaned && (
                       <Badge tone="danger" title="上游已不再暴露该工具">
                         孤儿

@@ -52,7 +52,6 @@ pub fn default_message(code: &str) -> &str {
         "MCP_TRANSPORT_DECRYPT_FAILED" => "secret 字段密文无法解密",
         "MCP_UPSTREAM_CONFLICT" => "上游 id 或工具名冲突",
         "MCP_UPSTREAM_INVALID" => "上游配置不合法",
-        "MCP_UPSTREAM_WRITE_FORBIDDEN" => "上游声明可写需要 JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1",
         "MCP_UPSTREAM_STDIO_DISABLED" => "stdio 上游默认关闭（需 JUMCP_MCP_UPSTREAM_STDIO=1）",
         "MCP_BUILTIN_UNAVAILABLE" => "内置 MCP 端点或配置密钥不可用",
         "MCP_UPSTREAM_DISABLED" => "上游 MCP server 已停用",
@@ -60,7 +59,6 @@ pub fn default_message(code: &str) -> &str {
         "MCP_UPSTREAM_ERROR" => "上游 MCP server 返回错误",
         "MCP_UPSTREAM_PACKAGE_MANAGED" => "包管理字段不可手改",
         "MCP_UPSTREAM_TOOL_UNKNOWN" => "上游没有这些工具",
-        "MCP_UPSTREAM_TOOL_NOT_READ_ONLY" => "可写上游的工具不能放进基础组",
         "MCP_UPSTREAM_TOOL_NOT_ELIGIBLE" => "admin 类上游或 admin_ 前缀工具不可逐工具开放",
         _ => "MCP error",
     }

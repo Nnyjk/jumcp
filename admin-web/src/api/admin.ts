@@ -381,7 +381,7 @@ export async function fetchUpstreamTools(
 
 /**
  * 批量调整上游工具的基础组归属：只提交变更键。
- * 404=上游不存在；409 为 UNKNOWN / NOT_READ_ONLY / NOT_ELIGIBLE；超过 64 键为 400。
+ * 404=上游不存在；409 为 UNKNOWN / NOT_ELIGIBLE；超过 64 键为 400。
  */
 export async function updateUpstreamBasicTools(
   id: string,

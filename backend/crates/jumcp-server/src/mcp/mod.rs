@@ -20,7 +20,7 @@ pub const READONLY_ANNOTATIONS: &str =
 /// 维护通道写工具（`admin_register_template` / `admin_set_visibility`）的注解：会改本项目
 /// 自有数据（非只读、非幂等），但不触碰接入数据源，因此 `destructiveHint=false`。
 pub const WRITE_ANNOTATIONS: &str = r#"{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}"#;
-/// 未声明注解且非只读的投影（非只读上游 / sensitive 能力）：按协议最保守缺省值，
+/// 未声明注解且非内置包来源的投影（手工外部 MCP / sensitive 能力）：按协议最保守缺省值，
 /// 让客户端要求人工确认；绝不冒充只读。
 const DESTRUCTIVE_ANNOTATIONS: &str =
     r#"{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}"#;
