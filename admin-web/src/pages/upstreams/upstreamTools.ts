@@ -35,7 +35,6 @@ export function toInput(item: UpstreamItem, enabled: boolean): UpstreamInput {
     headers: item.headers,
     group: item.group,
     category: item.category,
-    read_only: item.read_only,
     enabled,
     timeout_ms: item.timeout_ms,
   }
@@ -80,9 +79,7 @@ export function basicDisabledReason(tool: UpstreamToolItem): string | undefined 
     return '上游已不再暴露该工具，只能清理基础组覆盖'
   }
   let reason: string | undefined
-  if (!tool.read_only) {
-    reason = '写工具不能加入基础组'
-  } else if (tool.group === 'admin' || tool.name.startsWith('admin_')) {
+  if (tool.group === 'admin' || tool.name.startsWith('admin_')) {
     reason = '管理类工具不能加入基础组'
   } else if (!tool.eligible) {
     reason = '后端判定该工具不满足基础组条件'

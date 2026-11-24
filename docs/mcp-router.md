@@ -18,7 +18,9 @@
 注解与行为一致：`admin_register_template` / `admin_set_visibility` / `admin_publish_capability`
 实际写库，声明 `readOnlyHint=false`（`destructiveHint=false`，不触碰数据源）；`admin_review_queue` /
 `admin_tool_candidates` / `admin_audit_queries` 与其余内置工具保持只读注解。上游工具自带 `annotations` 时原样透传，
-未声明时按上游 `read_only` 保守生成（`read_only=false` → `destructiveHint=true`、`readOnlyHint=false`）。
+未声明时按来源保守生成：内置包安装的上游（`catalog_id` 非空）给只读注解，手工接入的外部 MCP
+给协议缺省值（`destructiveHint=true`、`readOnlyHint=false`）。上游本身没有"只读声明"字段：
+外部 MCP 的执行语义不可审计，本服务不替它担保。
 
 维护通道的分工：`admin_register_template` 只产草案（`status=draft`，不改已发布版本）、
 `admin_set_visibility` 只改 `discoverable`/`callable`、`admin_publish_capability` 可发布——
@@ -30,7 +32,7 @@
 ### `basic` 是代码内置组，不是授权组
 
 `basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻四件内置工具的 `group`
-就是 `basic`，上游可以把**个别**只读工具逐工具加入 `basic`（见 §2.1）。它不是配置组
+就是 `basic`，上游可以把**个别**工具逐工具加入 `basic`（见 §2.1）。它不是配置组
 （`config/policy.toml` 不得定义）、不是管理组、也不是可授权组：
 
 - `GET /admin/groups` 固定返回一条合成条目：`{code:"basic", name:"基础工具", source:"builtin",
@@ -48,9 +50,10 @@
 与 allowlist 双重判定），分类标签既不放宽也不收紧这条规则。
 
 `basic` 组成员则相反：**不要求 `scope.groups` 含 `basic`（或含上游组）**，只要 allowlist
-命中、上游 `enabled`、`read_only`/写开关允许，就对所有 scope 可见/可调；`X-MCP-Tool-Groups`
-收窄不能隐藏它们。`basic` 只承载只读工具，且拒绝 `category=admin` 的上游与 `admin_` 前缀的
-工具，因此不会成为绕过维护通道（组 `admin`）的旁路。
+命中、上游 `enabled`，就对所有 scope 可见/可调；`X-MCP-Tool-Groups`
+收窄不能隐藏它们。`basic` 拒绝 `category=admin` 的上游与 `admin_` 前缀的
+工具，因此不会成为绕过维护通道（组 `admin`）的旁路；加入 `basic` 是管理员的显式选择，
+上游是否只读不由本服务判断。
 
 token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与上游暴露名
 （`<server_id>__<tool>`）。条目有三种形态：
@@ -161,7 +164,6 @@ database = "analytics"    # 可选：透传给上游的默认库
 | `env` / `headers` | 值可为字面量或 `env:NAME` 引用；各上限 64 项，key/value 非空 |
 | `group` | 必须存在于 effective policy（配置组或管理组）；决定上游工具的授权范围。**不得为 `basic`**：`POST`/`PUT` 返回 `400 MCP_UPSTREAM_INVALID`（`data.field="group"`），个别工具要走 §2.1 |
 | `category` | `basic` / `analysis` / `admin` / `custom` |
-| `read_only` | 默认 `true`；`false` 仅在 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` 时允许注册 |
 | `enabled` | 默认 `true`；`false` 时不投影也不转发 |
 | `timeout_ms` | 1..120000，默认 10000；作用于建连、`tools/list` 与 `tools/call` |
 | `catalog_id` / `catalog_version` | 只读坐标，由内置包安装时写入（§3）；不在 `PUT` 的可写字段里，手工创建为 `null` |
@@ -178,14 +180,14 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 
 - 生效组：有覆盖且工具**仍可加入**（`eligible`）→ `basic`；否则继承上游组。管理视图用
   `overridden`（有覆盖行）与 `basic`（覆盖生效）两个独立字段区分"覆盖存在但已失效"，避免
-  上游配置漂移后静默丢失用户意图。`eligible` = 上游 `read_only=true` **且**上游 `category≠admin` **且**工具名
-  不以 `admin_` 开头（后两条保证 `basic` 不会变成维护通道旁路）。
+  上游配置漂移后静默丢失用户意图。`eligible` = 上游 `category≠admin` **且**工具名
+  不以 `admin_` 开头（保证 `basic` 不会变成维护通道旁路）。
 - `basic` 成员对所有 scope 可见/可调，不要求 `scope.groups` 含 `basic` 或上游组；但仍要求
-  token allowlist 命中、上游 `enabled`、`read_only`/写开关允许。
+  token allowlist 命中、上游 `enabled`。
 - 覆盖是**合并**语义：`{"tools": {"<raw_tool_name>": true|false|null}}`，`true` 写入、
   `false`/`null` 删除（回到继承）。幂等：无真实变化不写库、不写审计。
 - 校验是整请求粒度（不做部分写入）：未知工具 `409 MCP_UPSTREAM_TOOL_UNKNOWN`
-  （`data.unknown`）、写工具 `409 MCP_UPSTREAM_TOOL_NOT_READ_ONLY`、admin 类别或 `admin_`
+  （`data.unknown`）、admin 类别或 `admin_`
   前缀 `409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`（`data.reason=upstream_category_admin|admin_prefix`）、
   单次超过 64 键 `400 MCP_VALIDATION_ERROR`、上游不存在 `404 MCP_UPSTREAM_NOT_FOUND`。
 - 上游改名/刷新失败导致覆盖行对不上当前缓存时：覆盖**保留**并在视图里标 `orphaned=true`
@@ -254,7 +256,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
   `default_upstream_id`，`name` 缺省取包的展示名，`enabled` 缺省 `true`。
 - 生成的上下游固定为：`transport="http"`、`url={端点}/internal/mcp/{package_id}/{upstream_id}`、
   `command`/`args` 为空；`env` 由 `config` 按字段映射生成（值会 `trim`；未填且字段有 `default` 时用
-  默认值；仍为空的可选字段不写入 `env`；secret 值加密后写入）；`category="custom"`、`read_only=true`、
+  默认值；仍为空的可选字段不写入 `env`；secret 值加密后写入）；`category="custom"`、
   `timeout_ms=30000`；`catalog_id`/`catalog_version` 记录安装来源；id/name 校验与 `validate()` 与手工创建一致。
 - 成功 `200 {"upstream": UpstreamItem}`（敏感 env 已脱敏），审计沿用 upstream `create`，
   `data` 带 `catalog_id`。
@@ -320,7 +322,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 
 安装产物没有特殊运行期路径，但有**包管理字段**：`transport`、`url`、`command`、`args`、`env`、
 `headers` 由包维护，`PUT /admin/upstreams/{id}` 改它们会 `409 MCP_UPSTREAM_PACKAGE_MANAGED`
-（`data.fields` 列出被改的字段）。`name`、`group`、`enabled`、`read_only`、`timeout_ms` 仍可改，
+（`data.fields` 列出被改的字段）。`name`、`group`、`enabled`、`timeout_ms` 仍可改，
 启停按钮照常可用；要改配置请走 §3.2 的 PATCH。`PUT` 保留 `catalog_id`/`catalog_version`
 （UPDATE 语句不含这两列），`DELETE /admin/upstreams/{id}` 也能删。
 
@@ -392,8 +394,8 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
   或 `*`，见上文 allowlist 语义）。
   `tools/call` 的 allowlist 判定先于上游解析（只查 SQLite 前缀），被拒绝的名字不会产生
   任何上游连接或 `tools/list` 拉取；不在任何上游前缀上的名字仍返回 `-32602`。
-- `read_only=false` 的上游在投影与调用两处都要求 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1`：
-  数据库里残留的写上游在开关关闭时既不可见也不可调，不只是写入期校验。
+- 上游没有"只读声明"：`enabled`、组、token allowlist 是唯一的准入条件；SQL/文件/接口前置
+  拦截仍按入参形状生效，但不承诺识别上游内部语义（见 `docs/preflight.md` 的边界说明）。
 - `search_capabilities` / `describe_capability` / `list_groups` / `tools/list` 都包含上游工具；
   `list_groups` 按上游注册的组计数。
 - `tools/call` 名字解析：当前投影精确匹配 → 按 `<server_id>__` 前缀回退（吃住客户端缓存的
@@ -451,7 +453,7 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 - 管理面写操作写 `admin_change`：`object_type="upstream"`，`action` ∈
   `create|update|delete|refresh|update_tool_groups`；`changes` 只含真实变化的字段（env/headers 只输出键与
   脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`group`/`category`/
-  `read_only`/`enabled`（refresh 另含 `tool_count`/`status`；`update_tool_groups` 另含
+  `enabled`（refresh 另含 `tool_count`/`status`；`update_tool_groups` 另含
   `basic_total`；由内置包安装的上游另含 `catalog_id`/`catalog_version`）。
 - 逐工具加入 `basic` 的 `changes` 每条是 `{field:"tool_group", tool:<原始工具名>,
   before:<原组或 null>, after:<"basic" 或 null>}`（`after=null` 表示移出 `basic` 回到继承）；
@@ -535,7 +537,7 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 orphaned_total, tools:[UpstreamToolItem]}`；`UpstreamToolItem` = `name`（原始工具名）、
 `exposed_name`（`<server_id>__<tool>`）、`group`（生效组）、`group_source`
 （`basic|upstream`）、`basic`（覆盖且当前 `eligible` 的生效状态）、`overridden`（**存在**
-basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（是否**可以**加入 `basic`）、
+basic 覆盖行，不论当前是否 `eligible`）、`eligible`（是否**可以**加入 `basic`）、
 `orphaned`（有覆盖行但当前缓存无此工具）、`description`。
 
 `overridden=true, basic=false` 表示上游配置漂移导致旧覆盖失效（上游改成写、`category=admin`
@@ -544,7 +546,7 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 `PUT .../tools/basic` 的 body 是 `{tools:{"<原始工具名>": true|false|null}}`（`true` 加入、
 `false`/`null` 移出），合并语义、幂等；`changed` 每条 `{name, before, after}`（组名或
 `null`）。校验整请求粒度：`409 MCP_UPSTREAM_TOOL_UNKNOWN`（`data.unknown`）、
-`409 MCP_UPSTREAM_TOOL_NOT_READ_ONLY`、`409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`
+`409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`
 （`data.reason`）、超过 64 键 `400 MCP_VALIDATION_ERROR`。
 
 `UpstreamInput` = `UpstreamItem` 去掉 `status`/`status_message`/`tool_count`/`last_checked_at`/
@@ -552,7 +554,7 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 
 `UpstreamItem` 字段（snake_case）：`id`、`name`、`transport`、`url`（http 才有值，否则
 `null`）、`command`（stdio 才有值，否则 `null`）、`args`、`env`、`headers`、`group`、
-`category`、`read_only`、`enabled`、`timeout_ms`、`status`、`status_message`、`tool_count`、
+`category`、`enabled`、`timeout_ms`、`status`、`status_message`、`tool_count`、
 `last_checked_at`、`updated_at`、`catalog_id`、`catalog_version`（后两者由内置包安装写入，手工创建为 `null`）。
 
 ### 密钥脱敏与 PUT 保留语义
@@ -575,7 +577,6 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 | `http` 缺 url / 非 http(s) / 带 userinfo；`stdio` 缺 command 或带 url | `400 MCP_UPSTREAM_INVALID` |
 | `transport=stdio` 但 `JUMCP_MCP_UPSTREAM_STDIO!=1` | `400 MCP_UPSTREAM_STDIO_DISABLED` |
 | 切换 transport 时另一侧字段（http 的 `command`、stdio 的 `url`） | 归一化为空后落库，不报错 |
-| `read_only=false` 但 `JUMCP_MCP_ALLOW_WRITE_UPSTREAM!=1` | `400 MCP_UPSTREAM_WRITE_FORBIDDEN` |
 | 上游不存在 | `404 MCP_UPSTREAM_NOT_FOUND` |
 
 ## 10. 部署开关
@@ -583,7 +584,6 @@ basic 覆盖行，不论当前是否 `eligible`）、`read_only`、`eligible`（
 | 变量 | 作用 |
 |---|---|
 | `JUMCP_MCP_UPSTREAM_STDIO=1` | 允许注册/连接 stdio 上游（默认关闭） |
-| `JUMCP_MCP_ALLOW_WRITE_UPSTREAM=1` | 允许注册 `read_only=false` 的上游（默认关闭） |
 | `JUMCP_SECRET_KEY=<64 位 hex>` | 内置包密码字段的加密密钥；HTTP 模式必需，缺失/非法即拒绝启动（fail-closed） |
 | `JUMCP_TRANSPORT_KEY=<64 位 hex>` | 传输密钥，管理台加密 `secret` 字段请求体用；HTTP 模式必需，缺失/非法即拒绝启动（fail-closed） |
 | `JUMCP_MCP_BUNDLED_BIN_DIR=<目录>` | 手工 stdio 上游命令解析的第一个候选，用于随包分发或非常规部署；每次解析时读取，未设置则只看服务同目录与 `PATH` |

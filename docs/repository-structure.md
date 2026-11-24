@@ -8,7 +8,7 @@ jumcp 是一个 Rust workspace + React 管理台的单仓库：后端负责 MCP 
 |---|---|
 | `backend/` | Rust workspace：MCP server、治理域、SQL 只读校验（`jumcp-sqlguard`）与内置库形式的 ClickHouse 执行件 |
 | `admin-web/` | React + Vite 管理台（构建产物 `admin-web/dist` 由后端同源提供） |
-| `config/` | 部署策略：`policy.toml`（组、角色、预算与只读策略）；不含数据源声明 |
+| `config/` | 部署策略：`policy.toml`（组、角色、预算）；不含数据源声明 |
 | `deploy/` | 部署定义：`portainer-stack.yml`（Portainer / Docker Swarm stack，单副本 + 命名卷），见 [portainer-swarm.md](portainer-swarm.md) |
 | `scripts/` | 本地与 CI 共用的启动/测试/冒烟脚本（PowerShell + Bash 双份） |
 | `docs/` | 当前有效的方案、契约与运维文档 |
@@ -112,7 +112,7 @@ React 19 + Vite + TypeScript，无 UI 组件库，样式与动画自持。
 
 ## 其他目录边界
 
-- `config/`：只放部署策略文件。`policy.toml` 是唯一的策略入口（`[[groups]]`、`[[roles]]`、预算与只读开关）。数据库只经已接入的上游 MCP 工具访问，策略文件里不再声明数据源。镜像把它复制到 `/app/config/policy.toml`。
+- `config/`：只放部署策略文件。`policy.toml` 是唯一的策略入口（`[[groups]]`、`[[roles]]`、预算）。数据库只经已接入的上游 MCP 工具访问，策略文件里不再声明数据源。镜像把它复制到 `/app/config/policy.toml`。
 - `deploy/`：只放部署定义。`portainer-stack.yml` 是 Portainer（Stacks）与 `docker stack deploy` 共用的 Swarm 定义：单副本、`stop-first` 更新/回滚、命名卷 `/data`、`JUMCP_ADMIN_USERNAME`/`JUMCP_ADMIN_PASSWORD` fail-fast，`docker stack config` 可离线校验（CI 的 `image` job 会跑）。平台用 placement constraints 固定 linux/amd64，因为 Swarm 的 stack 格式不接受 `platform`。前置条件与运维边界见 [portainer-swarm.md](portainer-swarm.md)。
 - `scripts/`：`dev.ps1`/`dev.sh`（一键启动后端与管理台）、`test-all.ps1`/`test-all.sh`（一键测试）、`release-tags.sh`（发布 tag 与 `VERSION` 的唯一规则来源）、`test-release-tags.sh`（它的离线用例）、`smoke-headless-web.sh`（校验 `admin-web/dist` 能当静态站点跑）、`smoke-image.sh`（起容器跑完整断言）。CI 与本地共用同一份脚本，不另写 CI 专用变体。
 - `docs/`：只写**当前有效**的结论（方案、契约、运维与 CI），结论变了就改原文，不保留阶段性设计与变更叙述；这类历史与被否决项放 `notes/`。文档索引在 `README.md`。

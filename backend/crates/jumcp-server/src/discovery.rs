@@ -166,8 +166,9 @@ pub fn project_upstream(
         id: exposed.to_string(),
         kind: "tool".into(),
         group: group.to_string(),
-        // 非只读上游是人工审批放行的高风险能力，沿用闭集里最保守的标签。
-        risk: if upstream.read_only {
+        // 上游无法自行证明只读：只有内置包（代码内静态表、实现随仓库发布）按只读投影，
+        // 手工接入的外部 MCP 一律保守标为 sensitive。
+        risk: if upstream.catalog_id.is_some() {
             "read"
         } else {
             "sensitive"

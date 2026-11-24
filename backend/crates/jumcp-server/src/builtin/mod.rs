@@ -448,7 +448,6 @@ mod tests {
             headers: BTreeMap::new(),
             group: "db.read.core".to_string(),
             category: "custom".to_string(),
-            read_only: true,
             enabled: true,
             timeout_ms: 30_000,
             catalog_id: Some("clickhouse-basic".to_string()),

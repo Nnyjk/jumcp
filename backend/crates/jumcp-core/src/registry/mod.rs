@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS mcp_upstreams (
     url TEXT NOT NULL DEFAULT '', command TEXT NOT NULL DEFAULT '',
     args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
     headers_json TEXT NOT NULL DEFAULT '{}', group_code TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT 'custom', read_only INTEGER NOT NULL DEFAULT 1,
+    category TEXT NOT NULL DEFAULT 'custom',
     enabled INTEGER NOT NULL DEFAULT 1, timeout_ms INTEGER NOT NULL DEFAULT 10000,
     created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
     catalog_id TEXT NOT NULL DEFAULT '', catalog_version TEXT NOT NULL DEFAULT ''

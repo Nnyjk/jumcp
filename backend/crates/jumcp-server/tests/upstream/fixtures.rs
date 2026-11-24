@@ -17,7 +17,7 @@ use tower::ServiceExt;
 // 管理面只认会话 cookie：这就是 `seed_admin_accounts` 建好的 alice 会话 id。
 pub(crate) const ALICE_TOKEN: &str = crate::support::ALICE_TOKEN;
 
-pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
+pub(crate) fn settings(stdio: bool) -> Settings {
     let mut roles = std::collections::HashMap::new();
     roles.insert(
         "analyst".into(),
@@ -75,7 +75,6 @@ pub(crate) fn settings(stdio: bool, write: bool) -> Settings {
         },
         budget_overflow: "fail".into(),
         upstream_stdio: stdio,
-        upstream_write: write,
         ..Default::default()
     }
 }
@@ -87,29 +86,25 @@ pub(crate) struct Harness {
 }
 
 pub(crate) fn harness() -> Harness {
-    harness_with(false, false)
+    harness_with(false)
 }
 
-pub(crate) fn harness_with(stdio: bool, write: bool) -> Harness {
-    assemble(stdio, write, None)
+pub(crate) fn harness_with(stdio: bool) -> Harness {
+    assemble(stdio, None)
 }
 
 /// 与 `harness_with(false, false)` 相同，但换成显式的前置拦截配置：
 /// 白名单与上限必须能按用例切换，而 `from_env` 是进程全局的。
 pub(crate) fn harness_with_preflight(guard: jumcp_server::preflight::PreflightConfig) -> Harness {
-    assemble(false, false, Some(Arc::new(guard)))
+    assemble(false, Some(Arc::new(guard)))
 }
 
-fn assemble(
-    stdio: bool,
-    write: bool,
-    guard: Option<Arc<jumcp_server::preflight::PreflightConfig>>,
-) -> Harness {
+fn assemble(stdio: bool, guard: Option<Arc<jumcp_server::preflight::PreflightConfig>>) -> Harness {
     let audit = Arc::new(AuditLog::open(":memory:").expect("audit"));
     let store = Arc::new(CapabilityStore::open(":memory:", Some(audit.clone())).expect("store"));
-    let boot = settings(stdio, write);
+    let boot = settings(stdio);
     let registry = Arc::new(TemplateRegistry::new(store.clone()));
-    let manager = Arc::new(UpstreamManager::new(store.clone(), boot.upstream_write));
+    let manager = Arc::new(UpstreamManager::new(store.clone()));
     let ttl = boot.admin_session_ttl_secs;
     let service = Arc::new(
         Service::new(boot)
@@ -243,7 +238,6 @@ pub(crate) fn upstream_body(id: &str, url: &str) -> Value {
         "headers": {},
         "group": "db.read.analytics",
         "category": "custom",
-        "read_only": true,
         "enabled": true,
         "timeout_ms": 5000
     })

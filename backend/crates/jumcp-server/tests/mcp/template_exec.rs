@@ -103,7 +103,6 @@ fn upstream_body(url: &str, group: &str) -> Value {
         "headers": {},
         "group": group,
         "category": "custom",
-        "read_only": true,
         "enabled": true,
         "timeout_ms": 5000
     })
@@ -129,7 +128,7 @@ async fn fixture_at(url: &str, group: &str, ttl_s: i64) -> Fixture {
         .set_visibility(TEMPLATE_ID, Some(true), Some(true), "alice")
         .expect("visibility");
     let boot = settings();
-    let manager = Arc::new(UpstreamManager::new(store.clone(), false));
+    let manager = Arc::new(UpstreamManager::new(store.clone()));
     let service = Arc::new(
         Service::new(boot.clone())
             .with_audit(audit.clone())

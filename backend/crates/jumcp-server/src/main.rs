@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("内置 MCP 端点不可用: {e}"))?,
         )
     };
-    let mut upstreams = jumcp_server::UpstreamManager::new(store.clone(), settings.upstream_write);
+    let mut upstreams = jumcp_server::UpstreamManager::new(store.clone());
     if let Some(endpoint) = &builtin_endpoint {
         // 迁移必须在管理器建连之前：否则第一次 tools/list 会先按 stdio 旧行拉起子进程并失败。
         let key = settings

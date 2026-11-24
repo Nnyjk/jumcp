@@ -48,7 +48,6 @@ export function UpstreamForm({
   const [headersText, setHeadersText] = useState(formatKeyValueLines(existing?.headers ?? {}))
   const [group, setGroup] = useState(existing?.group ?? '')
   const [category, setCategory] = useState<UpstreamCategory | ''>(existing?.category ?? '')
-  const [readOnly, setReadOnly] = useState(existing?.read_only ?? true)
   const [enabled, setEnabled] = useState(existing?.enabled ?? true)
   const [timeoutMs, setTimeoutMs] = useState(String(existing?.timeout_ms ?? 30000))
   const [formError, setFormError] = useState<string | undefined>(undefined)
@@ -153,7 +152,6 @@ export function UpstreamForm({
       headers: headers.value,
       group,
       category,
-      read_only: readOnly,
       enabled,
       timeout_ms: parsedTimeout,
     })
@@ -312,15 +310,6 @@ export function UpstreamForm({
       </p>
 
       <div className="form-row">
-        <label className="check-item" title="只读上游不允许写操作；写上游还需部署开关">
-          <input
-            type="checkbox"
-            checked={readOnly}
-            onChange={(event) => setReadOnly(event.target.checked)}
-          />
-          <span>只读</span>
-          <span className="hint">写上游还需部署开关</span>
-        </label>
         <label className="check-item">
           <input
             type="checkbox"
