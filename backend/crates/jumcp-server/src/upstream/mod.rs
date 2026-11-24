@@ -304,10 +304,7 @@ impl UpstreamManager {
     pub fn owning_upstream(&self, name: &str) -> Option<String> {
         let defs = self.store.upstreams().ok()?;
         defs.into_iter()
-            .find(|def| {
-                def.enabled
-                    && name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id))
-            })
+            .find(|def| def.enabled && name.starts_with(&format!("{}{UPSTREAM_NAME_SEP}", def.id)))
             .map(|def| def.id)
     }
 
@@ -527,8 +524,7 @@ impl UpstreamManager {
             Ok(rows) => rows
                 .into_iter()
                 .filter(|d| {
-                    d.enabled
-                        && (scope.groups.contains(&d.group) || overrides.contains_key(&d.id))
+                    d.enabled && (scope.groups.contains(&d.group) || overrides.contains_key(&d.id))
                 })
                 .collect(),
             Err(_) => return Vec::new(),

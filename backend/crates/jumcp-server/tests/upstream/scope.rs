@@ -384,4 +384,3 @@ async fn upstream_annotations_default_by_catalog_origin() {
     assert_eq!(manual["idempotentHint"], json!(false));
     assert_eq!(manual["openWorldHint"], json!(true));
 }
-
