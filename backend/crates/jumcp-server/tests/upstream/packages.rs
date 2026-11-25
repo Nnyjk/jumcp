@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 
 fn install_body() -> Value {
     json!({
-        "group": "db.read.core",
         "config": {
             "url": "http://127.0.0.1:8123",
             "username": "default",
@@ -287,18 +286,14 @@ async fn installed_upstream_refreshes_over_loopback_http() {
 #[tokio::test]
 async fn install_rejects_missing_required_and_unknown_keys() {
     let harness = BuiltinHarness::start().await;
-    let (status, body) = install(
-        &harness,
-        json!({"group": "db.read.core", "config": {"username": "default"}}),
-    )
-    .await;
+    let (status, body) = install(&harness, json!({"config": {"username": "default"}})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "MCP_VALIDATION_ERROR");
     assert_eq!(body["error"]["data"]["field"], "url");
 
     let (status, body) = install(
         &harness,
-        json!({"group": "db.read.core", "config": {
+        json!({"config": {
             "url": "http://127.0.0.1:8123",
             "Allowed_Schemas": "analytics",
         }}),
@@ -306,10 +301,6 @@ async fn install_rejects_missing_required_and_unknown_keys() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["data"]["field"], "Allowed_Schemas");
-
-    let (status, body) = install(&harness, json!({"group": "", "config": {}})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"]["data"]["field"], "group");
 
     assert!(
         harness
@@ -687,7 +678,6 @@ fn manual_upstream(id: &str) -> McpUpstream {
         args: Vec::new(),
         env: BTreeMap::new(),
         headers: BTreeMap::new(),
-        group: "db.read.core".into(),
         category: "custom".into(),
         enabled: true,
         timeout_ms: 30_000,
@@ -714,7 +704,6 @@ fn legacy_upstream(id: &str, dsn: &str) -> McpUpstream {
         args: Vec::new(),
         env,
         headers: BTreeMap::new(),
-        group: "db.read.core".into(),
         category: "custom".into(),
         enabled: true,
         timeout_ms: 30_000,

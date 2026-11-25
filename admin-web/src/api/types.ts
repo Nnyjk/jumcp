@@ -47,7 +47,10 @@ export type AuditAction =
   | 'group_create'
   | 'group_update'
   | 'group_delete'
+  | 'group_upstreams'
+  | 'group_tool_rules'
   | 'token_create'
+  | 'token_update'
   | 'token_revoke'
   | 'token_reissue'
   | 'token_delete'
@@ -57,7 +60,6 @@ export type AuditAction =
   | 'list_tools'
   | 'deny'
   | 'refresh'
-  | 'update_tool_groups'
   | 'call'
   | 'admin.create'
   | 'admin.update'
@@ -414,7 +416,7 @@ export interface GroupItem {
   priority: number
   min_budget: number
   roles: string[]
-  /** false 表示该组不可授予（builtin 合成组）：不能改配置，也不能作为上游授权组。 */
+  /** 是否可作为上游/工具的授权组；所有组都可授予（含 basic）。 */
   grantable: boolean
   capability_count: number
   token_count: number
@@ -535,9 +537,18 @@ export interface AccessTokenCreateInput {
   name: string
   role: string
   groups: string[]
-  builtin_tools: string[]
   source: string
   caller: string
+  expires_at?: string | null
+}
+
+/**
+ * PATCH /admin/tokens/{id} 的 body：只改这三个字段，未出现的键不动。
+ * `expires_at: null` 表示清空过期时间（永不过期）。
+ */
+export interface AccessTokenUpdateInput {
+  name?: string
+  groups?: string[]
   expires_at?: string | null
 }
 
@@ -568,53 +579,11 @@ export interface TokenGroupOption {
   token_count: number
 }
 
-/** options 里的内置工具；group=admin 的工具必须同时勾选 admin 组才能授权。 */
-export interface TokenBuiltinToolOption {
-  name: string
-  label: string
-  /** 内置工具的分组：basic 为基础工具，admin 为维护类工具（admin_*）。 */
-  group: 'basic' | 'admin'
-}
-
-/** options 里的通配工具条目：`*` 表示全部工具（含后续安装的上游）。 */
-export interface TokenToolWildcardOption {
-  value: string
-  label: string
-}
-
-/** options.upstreams：已安装上游及其单台通配名 `<id>__*`。 */
-export interface TokenUpstreamOption {
-  id: string
-  name: string
-  group: string
-  enabled: boolean
-  tool_count: number
-  /** 单台上游全部工具的通配名，通常是 `<id>__*`。 */
-  wildcard: string
-}
-
-/** options.upstream_tools：已刷新上游的精确暴露名，可直接写进 allowlist。 */
-export interface TokenUpstreamToolOption {
-  /** 暴露名 `<upstream_id>__<tool>`，即 builtin_tools 里要写入的值。 */
-  name: string
-  upstream_id: string
-  tool: string
-  group: string
-  label: string
-}
-
-/** GET /admin/tokens/options：角色默认组、组来源与可选内置工具。 */
+/** GET /admin/tokens/options：角色与可授权组；工具粒度归组内暴露矩阵管。 */
 export interface TokenOptions {
   roles: TokenRoleOption[]
   /** 组的权威来源是 GET /admin/groups；这里保留后端字段但不作为展示来源。 */
   groups: TokenGroupOption[]
-  builtin_tools: TokenBuiltinToolOption[]
-  /** 通配工具（`*`）；旧后端不返回时按空数组处理。 */
-  tool_wildcards?: TokenToolWildcardOption[]
-  /** 已安装上游及其单台通配名；旧后端不返回时按空数组处理。 */
-  upstreams?: TokenUpstreamOption[]
-  /** 已刷新上游的精确工具；旧后端不返回时按空数组处理。 */
-  upstream_tools?: TokenUpstreamToolOption[]
 }
 
 /* ----------------------------- MCP 上游接入 ------------------------------ */
@@ -638,7 +607,6 @@ export interface UpstreamItem {
   args: string[]
   env: Record<string, string>
   headers: Record<string, string>
-  group: string
   category: UpstreamCategory
   enabled: boolean
   timeout_ms: number
@@ -668,32 +636,19 @@ export interface UpstreamInput {
   args: string[]
   env: Record<string, string>
   headers: Record<string, string>
-  group: string
   category: UpstreamCategory
   enabled: boolean
   timeout_ms: number
 }
 
-/** 上游工具的生效组来源：basic 表示已归入内置基础组，upstream 表示仍跟随上游授权组。 */
-export type UpstreamToolGroupSource = 'basic' | 'upstream'
-
 /** GET /admin/upstreams/{id}/tools 的单条工具；GET 只读缓存，不触网。 */
 export interface UpstreamToolItem {
-  /** 上游原始工具名：PUT 的变更键。 */
+  /** 上游原始工具名。 */
   name: string
   /** 暴露给调用方的工具名。 */
   exposed_name: string
-  /** 生效组 code（basic 或上游授权组）。 */
-  group: string
-  group_source: UpstreamToolGroupSource
-  /** 当前是否归属基础组。 */
-  basic: boolean
-  /** 是否存在 basic 覆盖行（不一定当前生效：工具可能现在是写工具/管理类）。 */
-  overridden: boolean
-  /** 后端判定是否满足归入基础组的条件（非管理类、名字合规等）。 */
-  eligible: boolean
-  /** 缓存里存在但上游已不再暴露的工具。 */
-  orphaned: boolean
+  /** 维护通道工具（admin 类别上游或 `admin_` 前缀）只能进 admin 组。 */
+  admin_only: boolean
   description: string
 }
 
@@ -702,35 +657,66 @@ export interface UpstreamToolsPayload {
   status: UpstreamStatus
   status_message: string
   last_checked_at: string | null
+  /** 已授予该上游的组。 */
+  groups: string[]
   tools: UpstreamToolItem[]
   total: number
-  basic_total: number
-  orphaned_total: number
+}
+
+/** 逐工具规则：include 强制纳入、exclude 强制排除、null 回到继承第一层。 */
+export type GroupToolRuleState = 'include' | 'exclude'
+
+/** GET /admin/groups/{code}/exposure 的上游行：第一层授予。 */
+export interface GroupExposureUpstream {
+  id: string
+  name: string
+  category: UpstreamCategory
+  /** 维护通道上游只能进 admin 组。 */
+  admin_only: boolean
+  /** 停用的上游仍会列出（授予与规则保留，投影阶段被跳过）。 */
+  enabled: boolean
+  granted: boolean
+  tool_count: number
 }
 
 /**
- * PUT /admin/upstreams/{id}/tools/basic 的 body，合并语义。
- * true 写入基础组覆盖；false 与 null 等价，都是删除覆盖、回到继承上游授权组。
- * 校验是整请求粒度：未知工具、写工具或 admin 类上游命中任一条就整体 409，不做部分写入。
+ * GET /admin/groups/{code}/exposure 的逐工具行。
+ * state=inherit 时是否可见由第一层授予决定；孤儿行（orphaned=true）指规则还在、工具已不在缓存里。
  */
-export interface UpdateBasicToolsInput {
-  tools: Record<string, boolean | null>
-}
-
-/** 单条变更的前后值；null 表示没有覆盖。 */
-export interface BasicToolChange {
-  field: 'tool_group'
+export interface GroupExposureTool {
+  upstream_id: string
   tool: string
-  /** 变更前后的逐工具覆盖组；null 表示没有覆盖、继承上游组。 */
-  before: string | null
-  after: string | null
+  exposed: string
+  state: GroupToolRuleState | 'inherit'
+  visible: boolean
+  admin_only: boolean
+  orphaned: boolean
 }
 
-/** PUT /admin/upstreams/{id}/tools/basic 的响应：只回传实际变更项与最新工具清单。 */
-export interface UpdatedBasicTools {
-  changed: BasicToolChange[]
-  basic_total: number
-  tools: UpstreamToolItem[]
+/** GET /admin/groups/{code}/exposure 的响应：两层暴露的合并视图。 */
+export interface GroupExposurePayload {
+  group: string
+  upstreams: GroupExposureUpstream[]
+  tools: GroupExposureTool[]
+}
+
+/**
+ * PUT /admin/groups/{code}/exposure 的 body，合并语义：
+ * `upstreams` 只写出现过的上游；`tools` 的 `null` 表示删除规则、回到继承。
+ * 校验是整请求粒度：任一条不合法（上游不存在、工具未知、维护通道进了非 admin 组）整体 409。
+ */
+export interface GroupExposureInput {
+  upstreams?: Record<string, boolean>
+  tools?: Record<string, Record<string, GroupToolRuleState | null>>
+}
+
+/** PUT 的响应：最新视图 + 实际变更项。 */
+export interface UpdatedGroupExposure {
+  exposure: GroupExposurePayload
+  changes: {
+    upstreams: number
+    tools: number
+  }
 }
 
 /* ----------------------------- MCP 安装目录 ------------------------------ */
@@ -766,7 +752,6 @@ export interface McpCatalogTool {
 export interface McpCatalogInstallation {
   upstream_id: string
   name: string
-  group: string
   enabled: boolean
   transport: 'http'
   url: string
@@ -804,7 +789,6 @@ export interface McpCatalogPage {
 export interface McpInstallInput {
   upstream_id?: string
   name?: string
-  group: string
   enabled?: boolean
   config: Record<string, string>
 }

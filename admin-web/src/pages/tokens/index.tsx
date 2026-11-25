@@ -4,22 +4,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   deleteAccessToken,
   fetchAccessTokens,
-  fetchTokenOptions,
   reissueAccessToken,
   revokeAccessToken,
 } from '../../api/admin'
 import { indexGroups, indexRoles, useGroupsQuery, useRolesQuery } from '../../api/queries'
-import type {
-  AccessTokenCreated,
-  AccessTokenItem,
-  AccessTokenStatus,
-  TokenBuiltinToolOption,
-} from '../../api/types'
+import type { AccessTokenCreated, AccessTokenItem, AccessTokenStatus } from '../../api/types'
 import { Card } from '../../components/Card'
 import { InfoBar } from '../../components/InfoBar'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
 import { MOTION_DURATION, MOTION_EASE, useGsapScope } from '../../motion/useGsap'
-import { noticeFromError, noticeMessage, type Notice } from '../../notice'
+import { noticeMessage, type Notice } from '../../notice'
 import { TokenCard } from './TokenCard'
 import { TokenDialogs } from './TokenDialogs'
 import {
@@ -34,6 +28,7 @@ export default function TokensPage() {
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [createOpen, setCreateOpen] = useState(false)
   const [created, setCreated] = useState<AccessTokenCreated | null>(null)
+  const [editTarget, setEditTarget] = useState<AccessTokenItem | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<AccessTokenItem | null>(null)
   const [reissueTarget, setReissueTarget] = useState<AccessTokenItem | null>(null)
   /**
@@ -52,24 +47,13 @@ export default function TokensPage() {
     queryKey: ['access-tokens'],
     queryFn: ({ signal }) => fetchAccessTokens(signal),
   })
-  const optionsQuery = useQuery({
-    queryKey: ['token-options'],
-    queryFn: ({ signal }) => fetchTokenOptions(signal),
-  })
   const groupsQuery = useGroupsQuery()
   const rolesQuery = useRolesQuery()
 
   const tokens = tokensQuery.data?.items ?? []
-  const options = optionsQuery.data
   const roles = rolesQuery.data?.items ?? []
   const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
   const roleIndex = useMemo(() => indexRoles(rolesQuery.data), [rolesQuery.data])
-
-  const labelByTool = useMemo(() => {
-    const map = new Map<string, TokenBuiltinToolOption>()
-    for (const tool of options?.builtin_tools ?? []) map.set(tool.name, tool)
-    return map
-  }, [options])
 
   const statusCounts = useMemo(() => {
     const counts: Record<'' | AccessTokenStatus, number> = {
@@ -111,12 +95,11 @@ export default function TokensPage() {
   )
 
   /**
-   * 拓扑联动失效约束：访问令牌增删会改变所属组的 token_count 引用计数，
-   * 必须使令牌列表、令牌选项与组清单查询同时失效，确保拓扑计数一致。
+   * 拓扑联动失效约束：访问令牌增删改会改变所属组的 token_count 引用计数，
+   * 必须使令牌列表与组清单查询同时失效，确保拓扑计数一致。
    */
   const refreshTokens = () => {
     void queryClient.invalidateQueries({ queryKey: ['access-tokens'] })
-    void queryClient.invalidateQueries({ queryKey: ['token-options'] })
     void queryClient.invalidateQueries({ queryKey: ['groups'] })
   }
 
@@ -209,10 +192,26 @@ export default function TokensPage() {
     onError: (error) => setDeleteError(tokenDeleteMessage(error)),
   })
 
-  const optionsError =
-    optionsQuery.isError
-      ? noticeFromError(optionsQuery.error, '访问令牌配置项加载失败')
-      : undefined
+  /**
+   * 表单保存的唯一出口：创建返回带明文的 AccessTokenCreated（要弹一次明文弹层），
+   * 编辑返回更新后的条目（只提示已保存）；两条路径都以 id 为键，编辑不改 id 也不轮换密钥。
+   */
+  const handleFormSaved = (result: AccessTokenCreated | AccessTokenItem) => {
+    if ('token' in result) {
+      setCreateOpen(false)
+      setCreated(result)
+      setKnownSecrets((current) => ({ ...current, [result.item.id]: result.token }))
+    } else {
+      setEditTarget(null)
+      setNotice({
+        severity: 'success',
+        title: '访问令牌已保存',
+        description: `访问令牌 ${result.name}（${result.token_prefix}）的名称、组与到期时间已更新，密钥保持不变。`,
+        meta: undefined,
+      })
+    }
+    refreshTokens()
+  }
 
   return (
     <PageShell>
@@ -225,24 +224,6 @@ export default function TokensPage() {
         >
           <button type="button" className="btn btn-subtle btn-sm" onClick={() => setNotice(undefined)}>
             关闭
-          </button>
-        </InfoBar>
-      )}
-
-      {optionsError !== undefined && (
-        <InfoBar
-          severity={optionsError.severity}
-          title={optionsError.title}
-          description={optionsError.description}
-          meta={optionsError.meta}
-        >
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => optionsQuery.refetch()}
-            disabled={optionsQuery.isFetching}
-          >
-            重试
           </button>
         </InfoBar>
       )}
@@ -260,7 +241,7 @@ export default function TokensPage() {
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            disabled={options === undefined || rolesQuery.isPending}
+            disabled={rolesQuery.isPending || groupsQuery.isPending}
             onClick={() => setCreateOpen(true)}
           >
             生成访问令牌
@@ -288,7 +269,6 @@ export default function TokensPage() {
               </button>
             ))}
           </div>
-          <span className="hint token-badge-legend">橙色徽标代表管理类工具</span>
         </div>
 
         {tokensQuery.isPending && <LoadingState rows={6} label="正在加载访问令牌" />}
@@ -300,7 +280,7 @@ export default function TokensPage() {
               <button
                 type="button"
                 className="btn btn-secondary"
-                disabled={options === undefined}
+                disabled={rolesQuery.isPending || groupsQuery.isPending}
                 onClick={() => setCreateOpen(true)}
               >
                 生成访问令牌
@@ -330,11 +310,14 @@ export default function TokensPage() {
               <TokenCard
                 key={item.id}
                 item={item}
-                labelByTool={labelByTool}
                 groupIndex={groupIndex}
                 roleIndex={roleIndex}
                 secretKnown={knownSecrets[item.id] !== undefined}
                 onMcp={() => openMcp(item)}
+                onEdit={() => {
+                  setNotice(undefined)
+                  setEditTarget(item)
+                }}
                 onRevoke={() => {
                   setNotice(undefined)
                   setRevokeError(undefined)
@@ -354,15 +337,11 @@ export default function TokensPage() {
       <TokenDialogs
         createOpen={createOpen}
         onCloseCreate={() => setCreateOpen(false)}
-        options={options}
+        editTarget={editTarget}
+        onCloseEdit={() => setEditTarget(null)}
         roles={roles}
         groups={groupsQuery.data?.items ?? []}
-        onCreated={(result) => {
-          setCreateOpen(false)
-          setCreated(result)
-          setKnownSecrets((current) => ({ ...current, [result.item.id]: result.token }))
-          refreshTokens()
-        }}
+        onSaved={handleFormSaved}
         created={created}
         onCloseCreated={() => {
           setCreated(null)

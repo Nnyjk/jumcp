@@ -44,9 +44,9 @@ pub struct Actor {
     /// 调用来源：MCP token 取 token 配置的 `source`，管理面固定 `admin-api`，stdio 为空。
     pub source: String,
     /// token 配置的组集合 = 本次请求的**硬上限与默认组**；`None` 表示沿用角色默认组。
+    ///
+    /// 组是该身份唯一的授权面：可见/可调的工具由组的暴露矩阵决定，不存在逐工具白名单。
     pub allowed_groups: Option<Vec<String>>,
-    /// token 配置的内置工具精确 allowlist；`None` 表示不限制（stdio / 管理面）。
-    pub allowed_builtin_tools: Option<Vec<String>>,
 }
 impl Actor {
     pub fn new(tenant: &str, role: &str) -> Self {
@@ -88,13 +88,7 @@ impl Actor {
             token_id: token_id.into(),
             source: source.into(),
             allowed_groups: Some(groups),
-            allowed_builtin_tools: None,
         }
-    }
-    /// 附加内置工具 allowlist（token 创建时由 `builtin_tools` 配置填充）。
-    pub fn with_builtin_tools(mut self, tools: Vec<String>) -> Self {
-        self.allowed_builtin_tools = Some(tools);
-        self
     }
 }
 
@@ -105,8 +99,6 @@ pub struct EffectiveScope {
     pub degraded: bool,
     pub source: String,
     pub mode: String,
-    /// 从 `Actor` 透传的内置工具 allowlist；`None` = 不限制。
-    pub allowed_builtin_tools: Option<Vec<String>>,
 }
 
 pub type DegradedSink = Box<dyn Fn(&[String], &[String]) + Send>;
@@ -235,7 +227,6 @@ pub fn resolve_scope(
         degraded,
         source,
         mode: mode.to_string(),
-        allowed_builtin_tools: actor.allowed_builtin_tools.clone(),
     })
 }
 
@@ -425,34 +416,5 @@ mod tests {
                 .groups,
             vec!["db.admin.schema"]
         );
-    }
-
-    /// 内置工具 allowlist 原样进入 scope；无 token 的 actor 保持 `None`（不限制）。
-    #[test]
-    fn builtin_allowlist_propagates_into_scope() {
-        let p = policy(false);
-        let token = Actor::access_token(
-            "t1",
-            "agent-1",
-            "analyst",
-            "tok_1",
-            "agent",
-            vec!["db.read.core".into()],
-        )
-        .with_builtin_tools(vec!["search_capabilities".into()]);
-        let scope = resolve_scope(&token, &GroupRequest::default(), &p, "strict", None).unwrap();
-        assert_eq!(
-            scope.allowed_builtin_tools,
-            Some(vec!["search_capabilities".to_string()])
-        );
-        let plain = resolve_scope(
-            &Actor::new("t1", "analyst"),
-            &GroupRequest::default(),
-            &p,
-            "strict",
-            None,
-        )
-        .unwrap();
-        assert_eq!(plain.allowed_builtin_tools, None);
     }
 }

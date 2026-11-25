@@ -41,7 +41,11 @@ fn settings() -> Settings {
         "analyst".into(),
         RoleDef {
             name: "analyst".into(),
-            default_groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            default_groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             default_budget: 2000,
         },
     );
@@ -50,6 +54,7 @@ fn settings() -> Settings {
         RoleDef {
             name: "admin".into(),
             default_groups: vec![
+                "basic".into(),
                 "db.read.core".into(),
                 "db.read.analytics".into(),
                 "admin".into(),
@@ -118,12 +123,15 @@ fn harness_with_budget(caps: Option<BudgetCaps>) -> Harness {
         .with_audit(audit.clone())
         .with_templates(registry.clone())
         .with_scope(EffectiveScope {
-            groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             budget: 2000,
             degraded: false,
             source: "default".into(),
             mode: "strict".into(),
-            allowed_builtin_tools: None,
         });
     if let Some(caps) = caps {
         service = service.with_budget_caps(caps);
@@ -434,7 +442,7 @@ async fn header_groups_can_only_narrow_the_derived_identity() {
         "POST",
         "/mcp",
         Some(ADMIN_TOKEN),
-        Some("db.read.core"),
+        Some("basic"),
         Some(rpc("tools/list", json!({}))),
     )
     .await;
@@ -866,12 +874,15 @@ fn harness_without_audit() -> NoAuditHarness {
         // 关键：不调用 with_audit，store 也不接审计。
         .with_templates(registry)
         .with_scope(EffectiveScope {
-            groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             budget: 2000,
             degraded: false,
             source: "default".into(),
             mode: "strict".into(),
-            allowed_builtin_tools: None,
         });
     let service = Arc::new(service);
     support::seed_admin_accounts(&store, boot.admin_session_ttl_secs);

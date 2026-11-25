@@ -82,7 +82,8 @@ pub fn settings() -> Settings {
         "analyst".into(),
         RoleDef {
             name: "数据分析".into(),
-            default_groups: vec!["db.read.core".into()],
+            // 常驻元工具属于组 basic：角色默认带上，才谈得上"走查目录"。
+            default_groups: vec!["basic".into(), "db.read.core".into()],
             default_budget: 2000,
         },
     );
@@ -124,12 +125,11 @@ pub fn harness_custom(audit: Arc<AuditLog>, settings: Settings) -> Harness {
             // 模板注册表与 store 同源：人工登记走 `TemplateRegistry::register`。
             .with_templates(registry)
             .with_scope(EffectiveScope {
-                groups: vec!["db.read.core".into()],
+                groups: vec!["basic".into(), "db.read.core".into()],
                 budget: 2000,
                 degraded: false,
                 source: "header".into(),
                 mode: "strict".into(),
-                allowed_builtin_tools: None,
             }),
     );
     seed_admin_accounts(&store, settings.admin_session_ttl_secs);
@@ -450,12 +450,11 @@ impl BuiltinHarness {
                 .with_templates(registry)
                 .with_upstreams(upstreams)
                 .with_scope(EffectiveScope {
-                    groups: vec!["db.read.core".into()],
+                    groups: vec!["basic".into(), "db.read.core".into()],
                     budget: 2000,
                     degraded: false,
                     source: "header".into(),
                     mode: "strict".into(),
-                    allowed_builtin_tools: None,
                 }),
         );
         let admin = router(AdminState {

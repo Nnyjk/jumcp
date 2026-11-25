@@ -115,8 +115,8 @@ export function OverviewTab({
           ) : readOnly && source === 'builtin' && group === 'basic' ? (
             <InfoBar
               severity="info"
-              title="基础内置工具不按管理组授权"
-              description="基础内置工具由发现面直接下发，不归属「组维护」页里的管理组，因此这里没有组→角色映射；维护类内置工具（admin_*）挂在 admin 组，仍受组与 token allowlist 约束。"
+              title="基础组按两层暴露授权"
+              description="令牌只控制可访问的组；工具可见性由组内两层暴露决定（上游整台授予 + 逐工具强制纳入/排除）。"
             />
           ) : groupsLoading ? (
             <LoadingState rows={2} label="正在加载组信息" />

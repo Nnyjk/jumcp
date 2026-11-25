@@ -8,19 +8,7 @@ use crate::fixtures::*;
 #[tokio::test]
 async fn builtin_categories_are_exposed_and_filterable() {
     let h = harness();
-    let token = issue_token(
-        &h,
-        "agent-categories",
-        "analyst",
-        &["db.read.core"],
-        &[
-            "search_capabilities",
-            "describe_capability",
-            "list_groups",
-            "db_run_template",
-        ],
-    )
-    .await;
+    let token = issue_token(&h, "agent-categories", "analyst", &["db.read.core"]).await;
     let resp = mcp(&h.app, &token, "tools/list", json!({})).await;
     let tools = resp["result"]["tools"].as_array().expect("tools");
     let category_of = |name: &str| -> Value {
@@ -65,46 +53,9 @@ async fn builtin_categories_are_exposed_and_filterable() {
     .await;
     assert_eq!(admin["result"]["structuredContent"]["results"], json!([]));
 
-    // 旧 allowlist 里残留的自由 SQL 工具 id：已不是内置工具，签发令牌时直接按未知 id 拒绝
-    // （`db_run_template` 仍是内置工具，不该被拒）。
-    let (status, rejected) = call(
-        &h.app,
-        "POST",
-        "/admin/tokens",
-        Some(ALICE_TOKEN),
-        Some(json!({
-            "name": "legacy data token",
-            "role": "analyst",
-            "groups": ["db.read.core"],
-            "builtin_tools": ["search_capabilities", "db_query_readonly", "db_run_template"],
-            "source": "agent",
-            "caller": "agent-legacy-data"
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
-    assert_eq!(
-        rejected["error"]["data"]["unknown"],
-        json!(["db_query_readonly"]),
-        "{rejected}"
-    );
-
-    // analysis 归工具列表分析与变更提交审计，admin 只剩审计查询：都要 admin 组 +
-    // allowlist 双重命中才可见，分类本身不放宽权限。
-    let admin_token = issue_token(
-        &h,
-        "agent-category-admin",
-        "admin",
-        &["admin"],
-        &[
-            "search_capabilities",
-            "admin_review_queue",
-            "admin_register_template",
-            "admin_set_visibility",
-            "admin_audit_queries",
-        ],
-    )
-    .await;
+    // analysis 归工具列表分析与变更提交审计，admin 只剩审计查询：都要 admin 组在 scope 内才可见，
+    // 分类本身不放宽权限。
+    let admin_token = issue_token(&h, "agent-category-admin", "admin", &["admin"]).await;
     let admin_resp = mcp(&h.app, &admin_token, "tools/list", json!({})).await;
     let admin_tools = admin_resp["result"]["tools"].as_array().expect("tools");
     let admin_category_of = |name: &str| -> Value {
@@ -171,22 +122,8 @@ async fn upstream_tools_follow_the_token_group_scope() {
             .0,
         StatusCode::OK
     );
-    let allowed = issue_token(
-        &h,
-        "agent-scope-full",
-        "analyst",
-        &["db.read.analytics"],
-        &["analytics__echo"],
-    )
-    .await;
-    let core_only = issue_token(
-        &h,
-        "agent-scope-core",
-        "core-only",
-        &["db.read.core"],
-        &["analytics__echo"],
-    )
-    .await;
+    let allowed = issue_token(&h, "agent-scope-full", "analyst", &["db.read.analytics"]).await;
+    let core_only = issue_token(&h, "agent-scope-core", "core-only", &["db.read.core"]).await;
 
     assert!(
         tool_names(&h.app, &allowed)
@@ -263,7 +200,6 @@ async fn upstream_conflicts_with_managed_capability_are_rejected() {
         "agent-managed-conflict",
         "analyst",
         &["db.read.analytics"],
-        &["xy__y"],
     )
     .await;
     let names = tool_names(&h.app, &token).await;
@@ -277,19 +213,7 @@ async fn upstream_conflicts_with_managed_capability_are_rejected() {
 #[tokio::test]
 async fn admin_write_tools_declare_non_readonly_annotations() {
     let h = harness();
-    let token = issue_token(
-        &h,
-        "agent-annotations",
-        "admin",
-        &["admin"],
-        &[
-            "admin_register_template",
-            "admin_review_queue",
-            "admin_audit_queries",
-            "admin_set_visibility",
-        ],
-    )
-    .await;
+    let token = issue_token(&h, "agent-annotations", "admin", &["admin"]).await;
     let resp = mcp(&h.app, &token, "tools/list", json!({})).await;
     let tools = resp["result"]["tools"].as_array().expect("tools");
     let annotations_of = |name: &str| -> Value {
@@ -334,7 +258,6 @@ async fn upstream_annotations_default_by_catalog_origin() {
         args: Vec::new(),
         env: Default::default(),
         headers: Default::default(),
-        group: "db.read.analytics".into(),
         category: "custom".into(),
         enabled: true,
         timeout_ms: 5000,
@@ -344,6 +267,8 @@ async fn upstream_annotations_default_by_catalog_origin() {
         updated_at: String::new(),
     };
     h.store.insert_upstream(&def, &[], "alice").expect("insert");
+    let (granted, error) = set_exposure(&h, DEFAULT_GROUP, json!({"pack": true}), json!({})).await;
+    assert_eq!(granted, StatusCode::OK, "{error}");
     let (status, _) = call(
         &h.app,
         "POST",
@@ -359,7 +284,6 @@ async fn upstream_annotations_default_by_catalog_origin() {
         "agent-risk-annotations",
         "analyst",
         &["db.read.analytics"],
-        &["manual__plain", "pack__plain"],
     )
     .await;
     let resp = mcp(&h.app, &token, "tools/list", json!({})).await;

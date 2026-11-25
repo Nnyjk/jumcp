@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use jumcp_core::audit::Envelope;
-use jumcp_core::registry::{ADMIN_CAPABILITY_IDS, BUILTIN_CAPABILITY_IDS};
+use jumcp_core::registry::ADMIN_CAPABILITY_IDS;
 use serde_json::{Value, json};
 
 use crate::fixtures::*;
@@ -17,8 +17,7 @@ async fn create_list_and_audit_token_without_secrets() {
     let item = &created["item"];
     assert!(item["id"].as_str().unwrap().starts_with("tok_"));
     assert_eq!(item["status"], json!("active"));
-    assert_eq!(item["groups"], json!(["db.read.core"]));
-    assert_eq!(item["builtin_tools"], base_token_body()["builtin_tools"]);
+    assert_eq!(item["groups"], json!(["basic", "db.read.core"]));
     assert_eq!(item["caller"], json!("agent-analyst"));
     assert_eq!(item["expires_at"], Value::Null);
     for forbidden in ["token_hash", "hash", "token"] {
@@ -54,24 +53,21 @@ async fn create_list_and_audit_token_without_secrets() {
     );
     assert!(!event.payload.to_string().contains(&plaintext));
 
-    // 明文 token 可用于 /mcp：tools/list 只输出 allowlist 内的内置工具 + core 组能力。
+    // 明文 token 可用于 /mcp：tools/list 输出 basic 组的常驻工具 + core 组能力。
     let names = tool_names(&h.app, &plaintext).await;
     assert!(
         names.contains(&"search_capabilities".to_string()),
         "{names:?}"
     );
+    assert!(names.contains(&"list_groups".to_string()), "{names:?}");
     assert!(names.contains(&"cap.core".to_string()), "{names:?}");
-    assert!(
-        !names.contains(&"list_groups".to_string()),
-        "allowlist 未配置的 list_groups 不得出现: {names:?}"
-    );
     for id in ADMIN_CAPABILITY_IDS {
         assert!(
             !names.contains(&id.to_string()),
             "admin 工具不得出现: {names:?}"
         );
     }
-    // 调用未授权的内置工具：与不可见同构 + policy_decision。
+    // header 收窄掉 basic 组：常驻工具与不可见同构 + policy_decision。
     let denied = mcp(
         &h.app,
         Some(&plaintext),
@@ -79,7 +75,7 @@ async fn create_list_and_audit_token_without_secrets() {
             "tools/call",
             json!({"name": "list_groups", "arguments": {}}),
         ),
-        &[],
+        &[("x-mcp-tool-groups", "db.read.core")],
     )
     .await;
     assert_eq!(err_code(&denied), "MCP_CAPABILITY_NOT_FOUND", "{denied}");
@@ -177,11 +173,6 @@ async fn create_rejects_invalid_configuration() {
         ("source", json!({"source": "Agent"})),
         ("expires_at", json!({"expires_at": "not-a-time"})),
         ("expires_at", json!({"expires_at": "2020-01-01T00:00:00Z"})),
-        (
-            "builtin_tools",
-            json!({"builtin_tools": ["admin_review_queue"]}),
-        ),
-        ("builtin_tools", json!({"builtin_tools": ["nope"]})),
     ];
     for (field, patch) in cases {
         let mut body = base_token_body();
@@ -199,9 +190,9 @@ async fn create_rejects_invalid_configuration() {
     assert_eq!(h.store.access_token_total().unwrap(), 0, "非法请求不得落库");
 }
 
-/// options：角色/组/内置工具的稳定形状（中文 label、token_count、builtin/admin 分组）。
+/// options：角色 + 可授权组的稳定形状（中文 label、token_count，basic 是代码内置组）。
 #[tokio::test]
-async fn options_lists_roles_groups_and_builtin_labels() {
+async fn options_lists_roles_and_groups() {
     let h = harness();
     let (status, body) = call(
         &h.app,
@@ -213,6 +204,14 @@ async fn options_lists_roles_groups_and_builtin_labels() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["groups", "roles"], "授权面只剩角色与组");
     let roles = body["roles"].as_array().expect("roles");
     // 角色按 code 稳定排序；name 是中文展示名，不是 code 的重复。
     let codes: Vec<&str> = roles.iter().filter_map(|r| r["code"].as_str()).collect();
@@ -235,24 +234,11 @@ async fn options_lists_roles_groups_and_builtin_labels() {
     assert_eq!(core["source"], json!("policy"));
     assert_eq!(core["token_count"], json!(0));
 
-    let builtin = body["builtin_tools"].as_array().expect("builtin_tools");
-    assert_eq!(builtin.len(), BUILTIN_CAPABILITY_IDS.len());
-    let by_name = |id: &str| {
-        builtin
-            .iter()
-            .find(|t| t["name"] == json!(id))
-            .unwrap_or_else(|| panic!("缺少 {id}"))
-    };
-    assert_eq!(by_name("search_capabilities")["label"], json!("检索能力"));
-    assert_eq!(by_name("search_capabilities")["group"], json!("basic"));
-    assert_eq!(by_name("admin_set_visibility")["label"], json!("改可见性"));
-    assert_eq!(by_name("admin_set_visibility")["group"], json!("admin"));
-
-    // 该 harness 没有上游管理器：授予面三个字段退化为空数组，而不是缺字段。
-    let wildcards = body["tool_wildcards"].as_array().expect("tool_wildcards");
-    assert_eq!(wildcards.len(), 0);
-    assert_eq!(body["upstreams"], json!([]));
-    assert_eq!(body["upstream_tools"], json!([]));
+    // basic 是代码内置的真实授权组：出现在清单首位，可写进令牌。
+    assert_eq!(groups[0]["code"], json!("basic"));
+    assert_eq!(groups[0]["name"], json!("基础工具"));
+    assert_eq!(groups[0]["source"], json!("builtin"));
+    assert_eq!(groups[0]["min_budget"], json!(800));
 }
 
 /// active 令牌拒绝删除：409 带状态与提示，记录仍在列表，且不写 token_delete 审计。
@@ -386,8 +372,7 @@ async fn delete_after_revoke_removes_row_and_is_not_idempotent() {
     let data = &event.payload["data"];
     assert_eq!(data["name"], created["item"]["name"]);
     assert_eq!(data["role"], json!("analyst"));
-    assert_eq!(data["groups"], json!(["db.read.core"]));
-    assert_eq!(data["builtin_tools"], base_token_body()["builtin_tools"]);
+    assert_eq!(data["groups"], json!(["basic", "db.read.core"]));
     assert_eq!(data["source"], json!("agent"));
     assert_eq!(data["caller"], json!("agent-analyst"));
     assert_eq!(data["token_prefix"], json!(prefix));

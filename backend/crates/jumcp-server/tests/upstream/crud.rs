@@ -23,7 +23,6 @@ async fn upstream_crud_masks_secrets_and_preserves_them_on_put() {
             "Authorization": "Bearer supersecsret",
             "X-Trace": "trace-1"
         },
-        "group": "db.read.analytics",
         "category": "analysis",
         "enabled": true,
         "timeout_ms": 3000
@@ -68,7 +67,6 @@ async fn upstream_crud_masks_secrets_and_preserves_them_on_put() {
         "args": [],
         "env": {"API_TOKEN": "***", "PLAIN": "v2", "REF": "***"},
         "headers": {"Authorization": "***", "X-Trace": "trace-2"},
-        "group": "db.read.analytics",
         "category": "analysis",
         "enabled": true,
         "timeout_ms": 3000
@@ -147,7 +145,6 @@ async fn upstream_writes_audit_admin_change_without_secret_values() {
     assert_eq!(create.payload["object_type"], json!("upstream"));
     assert_eq!(create.payload["action"], json!("create"));
     assert_eq!(create.payload["data"]["transport"], json!("http"));
-    assert_eq!(create.payload["data"]["group"], json!("db.read.analytics"));
     assert!(
         create.payload["data"].get("read_only").is_none(),
         "上游不再声明只读，审计 data 不得再出现 read_only"
@@ -163,7 +160,6 @@ async fn upstream_writes_audit_admin_change_without_secret_values() {
         "name": "改名",
         "transport": "http",
         "url": url,
-        "group": "db.read.analytics",
         "category": "analysis",
         "headers": {"Authorization": "***"},
         "env": {"API_TOKEN": "***"}
@@ -226,7 +222,6 @@ async fn switching_transport_clears_the_other_side_fields() {
             "transport": "http",
             "url": url,
             "command": "old-binary",
-            "group": "db.read.analytics",
             "category": "custom",
             "timeout_ms": 5000
         })),
@@ -248,7 +243,6 @@ async fn switching_transport_clears_the_other_side_fields() {
             "transport": "stdio",
             "command": "new-binary",
             "url": url,
-            "group": "db.read.analytics",
             "category": "custom",
             "timeout_ms": 5000
         })),
@@ -278,13 +272,6 @@ async fn upstream_validation_rejects_bad_fields() {
     let (status, error) = create_upstream(&h, bad).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error["error"]["code"], json!("MCP_UPSTREAM_INVALID"));
-
-    let mut bad = upstream_body("bad", &url);
-    bad["group"] = json!("db.read.missing");
-    let (status, error) = create_upstream(&h, bad).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(error["error"]["code"], json!("MCP_UPSTREAM_INVALID"));
-    assert!(error["error"]["data"]["known_groups"].is_array());
 
     // http 缺 url / 带 userinfo → 400。
     let mut bad = upstream_body("bad", "");

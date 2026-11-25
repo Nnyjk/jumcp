@@ -5,7 +5,7 @@ pub(super) fn token_item(record: &AccessTokenRecord) -> Value {
     record.to_json()
 }
 
-/// 稳定去重（保序、去空白）：组/内置工具列表都走这一处。
+/// 稳定去重（保序、去空白）：组的提交列表走这一处。
 pub(super) fn normalize_names(values: Vec<String>) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -35,8 +35,6 @@ pub(super) struct CreateTokenBody {
     role: Option<String>,
     #[serde(default)]
     groups: Vec<String>,
-    #[serde(default)]
-    builtin_tools: Vec<String>,
     source: Option<String>,
     caller: Option<String>,
     expires_at: Option<serde_json::Value>,
@@ -94,7 +92,6 @@ pub(super) async fn create_token(
         }
     };
     let groups = normalize_names(body.groups);
-    let builtin_tools = normalize_names(body.builtin_tools);
 
     // role 必须是已定义角色（配置策略；管理面不能凭空造角色）。
     if !state.service.settings.policy.roles.contains_key(&role) {
@@ -112,19 +109,24 @@ pub(super) async fn create_token(
         .service
         .effective_policy()
         .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE})))?;
-    let known_groups: HashSet<&str> = policy.groups.iter().map(|g| g.code.as_str()).collect();
+    // 有效策略的组集合：配置组 + 管理组 + 代码内置的 basic（basic 可被令牌授予）。
+    let known_groups: HashSet<String> = policy.group_codes();
     let unknown: Vec<&String> = groups
         .iter()
         .filter(|g| !known_groups.contains(g.as_str()))
         .collect();
     if !unknown.is_empty() {
-        let mut available: Vec<&str> = known_groups.iter().copied().collect();
+        let mut available: Vec<&str> = known_groups.iter().map(String::as_str).collect();
         available.sort();
         return Err(reject(
             &state,
             &actor,
-            McpError::validation("groups 含未知组".to_string()),
-            json!({"surface": SURFACE, "field": "groups", "unknown": unknown, "available": available}),
+            McpError::with_message(
+                "MCP_VALIDATION_ERROR",
+                "groups 含未知组".to_string(),
+                json!({"field": "groups", "unknown": unknown, "available": available}),
+            ),
+            json!({"surface": SURFACE, "field": "groups"}),
         ));
     }
     if !is_principal_id(&caller) {
@@ -139,7 +141,6 @@ pub(super) async fn create_token(
         name,
         role,
         groups,
-        builtin_tools,
         source,
         caller,
         expires_at,
@@ -154,6 +155,81 @@ pub(super) async fn create_token(
         StatusCode::CREATED,
         Json(json!({"token": issued.token, "item": token_item(&issued.record)})),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct UpdateTokenBody {
+    name: Option<String>,
+    groups: Option<Vec<String>>,
+    /// 缺省 = 不改；`null` / 空串 = 清空有效期限。
+    #[serde(default)]
+    expires_at: Option<Option<String>>,
+}
+
+/// `PATCH /admin/tokens/{id}`：改授权组/名字/有效期，不换密钥、不改角色。
+///
+/// 密钥轮换是独立动作（`/reissue`）；这里是"同一把钥匙换授权"，因此持钥方不需要重配。
+pub(super) async fn update_token(
+    State(state): State<AdminState>,
+    Extension(auth): Extension<AuthenticatedAdmin>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateTokenBody>,
+) -> Result<Json<Value>, ApiError> {
+    const SURFACE: &str = "admin/tokens/update";
+    let actor = actor_of(&auth, &headers)
+        .map_err(|e| reject(&state, &admin_actor(""), e, json!({"surface": SURFACE})))?;
+    require_audit(&state, &actor, SURFACE)?;
+    let groups = match body.groups {
+        Some(groups) => {
+            let groups = normalize_names(groups);
+            let policy = state
+                .service
+                .effective_policy()
+                .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE})))?;
+            let known_groups: HashSet<String> = policy.group_codes();
+            let unknown: Vec<&String> = groups
+                .iter()
+                .filter(|g| !known_groups.contains(g.as_str()))
+                .collect();
+            if !unknown.is_empty() {
+                let mut available: Vec<&str> = known_groups.iter().map(String::as_str).collect();
+                available.sort();
+                return Err(reject(
+                    &state,
+                    &actor,
+                    McpError::validation("groups 含未知组".to_string()),
+                    json!({
+                        "surface": SURFACE,
+                        "field": "groups",
+                        "unknown": unknown,
+                        "available": available
+                    }),
+                ));
+            }
+            Some(groups)
+        }
+        None => None,
+    };
+    let name = body.name.map(|name| name.trim().to_string());
+    let record = state
+        .store
+        .update_access_token(
+            &id,
+            name.as_deref(),
+            groups.as_deref(),
+            body.expires_at,
+            &actor,
+        )
+        .map_err(|e| {
+            let detail = if e.code == "MCP_TOKEN_NOT_FOUND" {
+                json!({"token_id": id})
+            } else {
+                json!({"surface": SURFACE, "token_id": id})
+            };
+            reject(&state, &actor, e, detail)
+        })?;
+    Ok(Json(token_item(&record)))
 }
 
 /// `POST /admin/tokens/{id}/revoke`：前端契约直接返回 `AccessTokenItem`（不包 `item`）。
@@ -231,25 +307,10 @@ pub(super) async fn delete_token(
     Ok(Json(json!({"deleted": true, "id": id})))
 }
 
-/// 内置工具的中文标签（前端令牌表单直接展示；name 与 BUILTIN_CAPABILITY_IDS 一致）。
-pub(super) fn builtin_label(id: &str) -> &'static str {
-    match id {
-        "search_capabilities" => "检索能力",
-        "describe_capability" => "描述能力",
-        "list_groups" => "组索引",
-        "db_run_template" => "模板执行",
-        "admin_register_template" => "登记模板草案",
-        "admin_review_queue" => "审核队列",
-        "admin_audit_queries" => "审计查询",
-        "admin_tool_candidates" => "定制化候选评分",
-        "admin_set_visibility" => "改可见性",
-        "admin_publish_capability" => "发布能力",
-        _ => "内置工具",
-    }
-}
-
-/// `GET /admin/tokens/options`：角色（含默认组/预算）、组（含未撤销 token 引用数）、
-/// 内置工具（中文标签 + builtin/admin 分组）。
+/// `GET /admin/tokens/options`：角色（含默认组/预算）与可授权的组（含 token 引用数）。
+///
+/// 令牌只控制可访问的组：工具级可见性在组视角（`/admin/groups/{code}/exposure`）配置，
+/// 因此这里不再返回内置工具/上游工具清单。
 pub(super) async fn token_options(
     State(state): State<AdminState>,
 ) -> Result<Json<Value>, ApiError> {
@@ -293,101 +354,29 @@ pub(super) async fn token_options(
         .iter()
         .map(|g| g.code.as_str())
         .collect();
-    let groups: Vec<Value> = policy
-        .groups
-        .iter()
-        .map(|group| {
-            json!({
-                "code": group.code,
-                "name": group.name,
-                "source": if policy_codes.contains(group.code.as_str()) { "policy" } else { "managed" },
-                "priority": group.priority,
-                "min_budget": group.min_budget,
-                "token_count": token_counts.get(&group.code).copied().unwrap_or(0)
-            })
+    let mut groups: Vec<Value> = vec![json!({
+        "code": crate::discovery::BASIC_GROUP,
+        "name": policy
+            .group(crate::discovery::BASIC_GROUP)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "基础工具".to_string()),
+        "source": "builtin",
+        "priority": 0,
+        "min_budget": 800,
+        "token_count": token_counts
+            .get(crate::discovery::BASIC_GROUP)
+            .copied()
+            .unwrap_or(0)
+    })];
+    groups.extend(policy.groups.iter().map(|group| {
+        json!({
+            "code": group.code,
+            "name": group.name,
+            "source": if policy_codes.contains(group.code.as_str()) { "policy" } else { "managed" },
+            "priority": group.priority,
+            "min_budget": group.min_budget,
+            "token_count": token_counts.get(&group.code).copied().unwrap_or(0)
         })
-        .collect();
-    let builtin_tools: Vec<Value> = BUILTIN_CAPABILITY_IDS
-        .iter()
-        .map(|id| {
-            json!({
-                "name": id,
-                "label": builtin_label(id),
-                "group": if ADMIN_CAPABILITY_IDS.contains(id) { "admin" } else { crate::discovery::BASIC_GROUP }
-            })
-        })
-        .collect();
-    // 上游工具授予面：只读现有缓存（views/cached_tools 都不触网），未 refresh 的上游
-    // 也出现（tool_count=0、tools 为空），前端才能提示"安装后先刷新一次"。
-    let (tool_wildcards, upstreams, upstream_tools) = match &state.service.upstreams {
-        None => (Vec::new(), Vec::new(), Vec::new()),
-        Some(manager) => {
-            let wildcards = vec![json!({
-                "value": jumcp_core::registry::TOOL_WILDCARD_ALL,
-                "label": "全部工具（含后续安装的上游）"
-            })];
-            let overrides = state.store.upstream_tool_groups().map_err(|e| {
-                reject(
-                    &state,
-                    &actor,
-                    e,
-                    json!({"surface": "admin/tokens/options"}),
-                )
-            })?;
-            let mut views = manager.views().map_err(|e| {
-                reject(
-                    &state,
-                    &actor,
-                    e,
-                    json!({"surface": "admin/tokens/options"}),
-                )
-            })?;
-            views.sort_by(|a, b| a.0.id.cmp(&b.0.id));
-            let mut upstreams: Vec<Value> = Vec::with_capacity(views.len());
-            let mut upstream_tools: Vec<Value> = Vec::new();
-            for (def, runtime) in views {
-                upstreams.push(json!({
-                    "id": def.id,
-                    "name": def.name,
-                    "group": def.group,
-                    "enabled": def.enabled,
-                    "tool_count": runtime.tool_count,
-                    "wildcard": format!("{}__*", def.id),
-                }));
-                for tool in manager.cached_tools(&def.id) {
-                    // 与 tools/list 共用同一条生效组判定：覆盖到 basic 但已不合格的工具
-                    // 在公共通道里不可见，不能出现在可授予清单里（勾选后看不到也调不到）。
-                    let overridden = overrides.iter().any(|o| {
-                        o.upstream_id == def.id
-                            && o.tool_name == tool.name
-                            && o.group_code == crate::discovery::BASIC_GROUP
-                    });
-                    let Some(group) =
-                        crate::upstream::effective_tool_group(&def, &tool, overridden)
-                    else {
-                        continue;
-                    };
-                    upstream_tools.push(json!({
-                        // 暴露名是 allowlist 与 tools/list 的同一形状（非法字符已转 `-`），
-                        // 按原始名拼接会给出一个根本授权不了的字符串。
-                        "name": crate::upstream::exposed_tool_name(&def.id, &tool.name),
-                        "upstream_id": def.id,
-                        "tool": tool.name,
-                        "group": group,
-                        "label": format!("{} / {}", def.name, tool.name),
-                    }));
-                }
-            }
-            upstream_tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-            (wildcards, upstreams, upstream_tools)
-        }
-    };
-    Ok(Json(json!({
-        "roles": roles,
-        "groups": groups,
-        "builtin_tools": builtin_tools,
-        "tool_wildcards": tool_wildcards,
-        "upstreams": upstreams,
-        "upstream_tools": upstream_tools
-    })))
+    }));
+    Ok(Json(json!({"roles": roles, "groups": groups})))
 }

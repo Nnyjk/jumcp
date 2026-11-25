@@ -16,21 +16,27 @@ impl McpServer {
         actor: &Actor,
     ) -> Option<Value> {
         let manager = self.service.upstreams()?;
-        // allowlist 必须先判：被拒绝的名字不得触发任何上游连接/工具拉取（只查 SQLite 前缀）。
-        // 未命中任何上游前缀的名字仍交给 `resolve` 返回 None → -32602（与"不存在"同构）。
-        if !crate::discovery::tool_allowed(scope, name) && manager.matches_upstream(scope, name) {
+        let owner = manager.owning_upstream(name);
+        // 组授权预检必须先判：组内没有授予、或该工具被逐工具规则排除时，直接拒绝而不产生
+        // 任何上游连接/工具拉取（只查 SQLite）。未命中任何上游前缀的名字仍交给 `resolve`
+        // 返回 None → -32602（与"不存在"同构）。
+        if let Some(upstream_id) = owner.as_deref()
+            && !manager.matches_upstream(scope, name)
+        {
+            // 拒绝照记审计，但回包必须与"名字不存在"逐字节同构：否则调用方能用错误形状
+            // 探出某台上游是否存在、是否已接入。
             let e = McpError::new("MCP_CAPABILITY_NOT_FOUND", json!({"tool": name}));
-            return Some(self.reject(
-                id,
+            let _ = self.service.policy_decision(
                 actor,
                 &e,
-                json!({"tool": name, "surface": "mcp/upstream-allowlist"}),
-            ));
+                json!({"tool": name, "surface": "mcp/upstream-groups", "upstream_id": upstream_id}),
+            );
+            return None;
         }
         // 前置拦截（SQL/文件/接口三族）：必须在 `resolve` 之前——它要建连并拉 tools/list，
         // 被拒的调用连"上游存在哪些工具"都不该去问。上游是第三方，本服务是唯一收口点。
         if let Some(guard) = self.preflight.as_deref()
-            && let Some(upstream_id) = manager.owning_upstream(name)
+            && let Some(upstream_id) = owner.as_deref()
             && let Some(crate::preflight::Rejection {
                 family,
                 rule,

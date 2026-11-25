@@ -34,8 +34,7 @@ async fn reissue_rotates_plaintext_and_preserves_configuration() {
     assert_eq!(item["id"], json!(id), "同一记录原地换钥匙");
     assert_eq!(item["name"], created["item"]["name"]);
     assert_eq!(item["role"], json!("analyst"));
-    assert_eq!(item["groups"], json!(["db.read.core"]));
-    assert_eq!(item["builtin_tools"], base_token_body()["builtin_tools"]);
+    assert_eq!(item["groups"], json!(["basic", "db.read.core"]));
     assert_eq!(item["source"], json!("agent"));
     assert_eq!(item["caller"], json!("agent-analyst"));
     assert_eq!(item["expires_at"], Value::Null);

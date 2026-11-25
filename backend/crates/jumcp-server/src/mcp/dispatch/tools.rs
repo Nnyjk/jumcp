@@ -13,7 +13,7 @@ impl McpServer {
             Ok(view) => view,
             Err(e) => return err_tool(id, &e),
         };
-        // 常驻 = allowlist 内的 builtin + 本次 scope 授权的 admin builtin + 全部上游工具
+        // 常驻 = basic 组放行的内置工具 + admin 组放行维护工具 + 全部上游工具
         //（truncate 时保留它们；上游工具本身就是 router 的主能力，不能被预算裁掉）。
         let is_resident = |tool: &Value| {
             if tool.get("source").and_then(|s| s.as_str()) == Some(crate::catalog::SOURCE_UPSTREAM)
@@ -23,10 +23,13 @@ impl McpServer {
             let Some(name) = tool.get("name").and_then(|n| n.as_str()) else {
                 return false;
             };
-            crate::discovery::tool_allowed(scope, name)
-                && (crate::service::RESIDENT_TOOL_NAMES.contains(&name)
-                    || (crate::discovery::admin_enabled(scope)
-                        && crate::service::ADMIN_TOOL_NAMES.contains(&name)))
+            if crate::discovery::basic_enabled(scope)
+                && crate::service::RESIDENT_TOOL_NAMES.contains(&name)
+            {
+                return true;
+            }
+            crate::discovery::admin_enabled(scope)
+                && crate::service::ADMIN_TOOL_NAMES.contains(&name)
         };
         // catalog_view 已按可见集拼好常驻 + 上游 + 平铺定义，无需二次过滤（二次过滤会再查一遍 store）。
         let kept = &view.tools;
@@ -142,16 +145,25 @@ impl McpServer {
     ) -> Value {
         let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
-        // 内置工具的统一调用门禁：token 的 allowlist 是精确白名单，不能"列表里没有但调用放行"。
-        // admin_* 在这里只过第一道门，第二道仍由 `authorize_admin` 判 groups 是否含 admin。
-        if jumcp_core::registry::is_builtin_id(name) && !crate::discovery::tool_allowed(scope, name)
-        {
+        // 内置工具的调用门禁按组判定：常驻工具要 basic 组，admin_* 要 admin 组；
+        // 组不在 scope 内时与"工具不存在"同构（`authorize_admin` 仍是 admin_* 的第二道门）。
+        let allowed = if crate::service::RESIDENT_TOOL_NAMES.contains(&name) {
+            crate::discovery::basic_enabled(scope)
+        } else if crate::service::ADMIN_TOOL_NAMES.contains(&name) {
+            crate::discovery::admin_enabled(scope)
+        } else {
+            true
+        };
+        if !allowed {
             let e = McpError::new("MCP_CAPABILITY_NOT_FOUND", json!({"tool": name}));
-            return self.reject(
+            // 走 `reject_tool_call` 而不是 `reject`：被组挡下的调用也要进工具台账与
+            // policy_decision，否则"探到不该探的工具"在统计里完全不可见。
+            return self.reject_tool_call(
                 id,
                 actor,
                 &e,
-                json!({"tool": name, "surface": "mcp/builtin-allowlist"}),
+                name,
+                json!({"tool": name, "surface": "mcp/builtin-groups", "arguments": args}),
             );
         }
         match name {

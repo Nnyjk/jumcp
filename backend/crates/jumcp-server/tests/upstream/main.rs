@@ -3,14 +3,14 @@
 //! 全程走真实 axum 链路（admin router + `/mcp`）与真实 SQLite 注册表，执行器换成 fake；
 //! 上游侧用本进程内起的 axum fake MCP server（JSON 与 SSE 两种响应），不依赖外部网络。
 //!
-//! token 一律经 `POST /admin/tokens` 现场签发：内置与上游工具共用同一份 allowlist，
-//! 测试必须显式列出它要看的名字（不做"引导令牌默认全量"的假设）。
+//! token 授权面只剩组：`groups` 是唯一硬上限，可见性由组内暴露矩阵决定；
+//! 测试令牌必须显式带 `basic` 才看得见常驻元工具（不做隐式授权假设）。
 
 #[path = "../support/mod.rs"]
 mod support;
 
-mod basic;
 mod crud;
+mod exposure;
 mod fixtures;
 mod packages;
 mod preflight;

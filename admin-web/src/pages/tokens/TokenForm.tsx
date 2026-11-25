@@ -1,106 +1,107 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { createAccessToken } from '../../api/admin'
+import { createAccessToken, updateAccessToken } from '../../api/admin'
 import type {
   AccessTokenCreateInput,
   AccessTokenCreated,
+  AccessTokenItem,
+  AccessTokenUpdateInput,
   GroupItem,
   RoleItem,
-  TokenOptions,
 } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { Field } from '../../components/Field'
 import { localInputToIso } from '../../format'
 import { GROUP_SOURCE_LABEL } from '../../labels'
 import { noticeFromError } from '../../notice'
-import {
-  DEFAULT_BUILTIN_TOOLS,
-  toggle,
-} from './tokenConfig'
+import { toggle } from './tokenConfig'
 
+/**
+ * 提交意图：创建走 POST（角色、来源、调用者只在建档时生效），
+ * 编辑走 PATCH 且只允许名称、组、过期时间三类键（角色与密钥都不在里面）。
+ */
+type SaveRequest =
+  | { mode: 'create'; input: AccessTokenCreateInput }
+  | { mode: 'edit'; id: string; input: AccessTokenUpdateInput }
+
+/**
+ * 后端 expires_at 是带纳秒小数秒的 RFC3339，V8 只稳定解析到毫秒；
+ * 先截断小数部分，再按浏览器本地时区渲染成 datetime-local 需要的 `YYYY-MM-DDTHH:mm`。
+ */
+function isoToLocalInput(value: string | null): string {
+  if (value === null) return ''
+  const date = new Date(value.replace(/(\.\d{3})\d+/, '$1'))
+  if (Number.isNaN(date.getTime())) return ''
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+    date.getDate(),
+  ).padStart(2, '0')}`
+  return `${day}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * 访问令牌表单：创建与编辑共用。
+ * 传 token 即为编辑态——预填名称、组、到期时间，角色只读，来源/调用者属于建档信息不再出现。
+ */
 export function TokenForm({
-  options,
   roles,
   groups: groupOptions,
-  onCreated,
+  token,
+  onSaved,
 }: {
-  options: TokenOptions
   roles: RoleItem[]
   groups: GroupItem[]
-  onCreated: (result: AccessTokenCreated) => void
+  token?: AccessTokenItem | undefined
+  onSaved: (result: AccessTokenCreated | AccessTokenItem) => void
 }) {
-  const [name, setName] = useState('')
+  const editing = token !== undefined
+  const [name, setName] = useState(token?.name ?? '')
   const [caller, setCaller] = useState('')
   const [source, setSource] = useState('')
-  const [role, setRole] = useState('')
-  const [groups, setGroups] = useState<string[]>([])
-  const [builtinTools, setBuiltinTools] = useState<string[]>(() =>
-    options.builtin_tools
-      .filter((tool) => tool.group === 'basic' && DEFAULT_BUILTIN_TOOLS.includes(tool.name))
-      .map((tool) => tool.name),
-  )
-  const [expiresAt, setExpiresAt] = useState('')
-  /** 上游受管工具授权白名单：`*`、`<id>__*` 或具体工具暴露名，提交时与内置工具合并写入 builtin_tools。 */
-  const [grants, setGrants] = useState<string[]>([])
+  const [role, setRole] = useState(token?.role ?? '')
+  const [groups, setGroups] = useState<string[]>(token?.groups ?? [])
+  const [expiresAt, setExpiresAt] = useState(isoToLocalInput(token?.expires_at ?? null))
   const [formError, setFormError] = useState<string | undefined>(undefined)
 
-  const wildcards = options.tool_wildcards ?? []
-  const upstreams = options.upstreams ?? []
-  const upstreamTools = options.upstream_tools ?? []
-  const allToolsSelected = grants.includes('*')
-
   const selectedRole = roles.find((item) => item.code === role)
-  const adminSelected = groups.includes('admin')
-  /** 内置通道隔离约束：basic 等 grantable=false 的组为系统内置保留通道，禁止绑定给访问令牌，UI 过滤不予提供勾选。 */
-  const selectableGroups = groupOptions.filter((group) => group.grantable !== false)
 
   const mutation = useMutation({
-    mutationFn: (input: AccessTokenCreateInput) => createAccessToken(input),
-    onSuccess: onCreated,
+    mutationFn: (request: SaveRequest) =>
+      request.mode === 'create'
+        ? createAccessToken(request.input)
+        : updateAccessToken(request.id, request.input),
+    onSuccess: onSaved,
     onError: (error) => {
-      const failure = noticeFromError(error, '生成访问令牌失败')
+      const failure = noticeFromError(error, editing ? '保存访问令牌失败' : '生成访问令牌失败')
       setFormError(`${failure.description}${failure.meta === undefined ? '' : `（${failure.meta}）`}`)
     },
   })
 
+  /** 换角色时套用角色默认组；只保留组清单里真实存在的组，避免提交出不存在的组码。 */
   const pickRole = (nextRole: string) => {
     setRole(nextRole)
     const defaultGroups = roles.find((item) => item.code === nextRole)?.default_groups ?? []
-    const known = new Set(selectableGroups.map((group) => group.code))
+    const known = new Set(groupOptions.map((group) => group.code))
     setGroups(defaultGroups.filter((group) => known.has(group)))
-  }
-
-  const pickGroup = (groupCode: string, checked: boolean) => {
-    const next = toggle(groups, groupCode, checked)
-    setGroups(next)
-    if (groupCode === 'admin' && !checked) {
-      const adminTools = new Set(
-        options.builtin_tools.filter((tool) => tool.group === 'admin').map((tool) => tool.name),
-      )
-      setBuiltinTools((current) => current.filter((tool) => !adminTools.has(tool)))
-    }
-  }
-
-  /**
-   * 授权互斥约束：`*` 代表全局所有工具白名单，勾选时清空其余细粒度授权项；
-   * 取消勾选时重置为清空状态，避免通配符与精确子项产生冗余配置。
-   */
-  const toggleGrant = (value: string, checked: boolean) => {
-    if (value === '*') {
-      setGrants(checked ? ['*'] : [])
-      return
-    }
-    setGrants((current) => toggle(current, value, checked))
   }
 
   const submit = () => {
     const trimmedName = name.trim()
-    const trimmedCaller = caller.trim()
-    const trimmedSource = source.trim()
     if (trimmedName === '') {
       setFormError('名称不能为空。')
       return
     }
+    const expires = localInputToIso(expiresAt) ?? null
+    if (token !== undefined) {
+      setFormError(undefined)
+      mutation.mutate({
+        mode: 'edit',
+        id: token.id,
+        input: { name: trimmedName, groups, expires_at: expires },
+      })
+      return
+    }
+    const trimmedCaller = caller.trim()
+    const trimmedSource = source.trim()
     if (trimmedCaller === '') {
       setFormError('调用者不能为空。')
       return
@@ -115,18 +116,17 @@ export function TokenForm({
     }
     setFormError(undefined)
     mutation.mutate({
-      name: trimmedName,
-      role,
-      groups,
-      builtin_tools: [...new Set([...builtinTools, ...grants])],
-      source: trimmedSource,
-      caller: trimmedCaller,
-      expires_at: localInputToIso(expiresAt) ?? null,
+      mode: 'create',
+      input: {
+        name: trimmedName,
+        role,
+        groups,
+        source: trimmedSource,
+        caller: trimmedCaller,
+        expires_at: expires,
+      },
     })
   }
-
-  const builtinOptions = options.builtin_tools.filter((tool) => tool.group === 'basic')
-  const adminOptions = options.builtin_tools.filter((tool) => tool.group === 'admin')
 
   return (
     <form
@@ -145,38 +145,49 @@ export function TokenForm({
             placeholder="例如 数据组只读接入"
           />
         </Field>
-        <Field label="调用者">
-          <input
-            className="input"
-            value={caller}
-            onChange={(event) => setCaller(event.target.value)}
-            placeholder="例如 claude-code"
-          />
-        </Field>
-        <Field label="来源">
-          <input
-            className="input"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-            placeholder="例如 mcp"
-          />
-        </Field>
+        {!editing && (
+          <Field label="调用者">
+            <input
+              className="input"
+              value={caller}
+              onChange={(event) => setCaller(event.target.value)}
+              placeholder="例如 claude-code"
+            />
+          </Field>
+        )}
+        {!editing && (
+          <Field label="来源">
+            <input
+              className="input"
+              value={source}
+              onChange={(event) => setSource(event.target.value)}
+              placeholder="例如 mcp"
+            />
+          </Field>
+        )}
       </div>
 
       <div className="form-row">
-        <Field label="角色">
-          <select
-            className="select"
-            value={role}
-            onChange={(event) => pickRole(event.target.value)}
-          >
-            <option value="">请选择角色</option>
-            {roles.map((item) => (
-              <option key={item.code} value={item.code} title={item.code}>
-                {item.name}
-              </option>
-            ))}
-          </select>
+        <Field
+          label="角色"
+          hint={editing ? '角色创建后不可修改；需要换角色请新建一枚令牌。' : undefined}
+        >
+          {editing ? (
+            <input className="input" value={selectedRole?.name ?? role} title={role} readOnly />
+          ) : (
+            <select
+              className="select"
+              value={role}
+              onChange={(event) => pickRole(event.target.value)}
+            >
+              <option value="">请选择角色</option>
+              {roles.map((item) => (
+                <option key={item.code} value={item.code} title={item.code}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          )}
         </Field>
         <Field label="到期时间">
           <input
@@ -188,19 +199,19 @@ export function TokenForm({
         </Field>
       </div>
 
-      {selectedRole !== undefined && (
+      {!editing && selectedRole !== undefined && (
         <p className="hint">角色默认预算 {selectedRole.default_budget}</p>
       )}
 
       <fieldset className="check-fieldset">
         <legend>组</legend>
         <div className="check-grid">
-          {selectableGroups.map((group) => (
+          {groupOptions.map((group) => (
             <label key={group.code} className="check-item" title={group.code}>
               <input
                 type="checkbox"
                 checked={groups.includes(group.code)}
-                onChange={(event) => pickGroup(group.code, event.target.checked)}
+                onChange={(event) => setGroups(toggle(groups, group.code, event.target.checked))}
               />
               <span>{group.name}</span>
               <Badge tone={group.source === 'policy' ? 'accent' : 'neutral'} title={group.source}>
@@ -211,123 +222,13 @@ export function TokenForm({
         </div>
       </fieldset>
 
-      <fieldset className="check-fieldset">
-        <legend>内置工具</legend>
-        <div className="check-grid">
-          {builtinOptions.map((tool) => (
-            <label key={tool.name} className="check-item" title={tool.name}>
-              <input
-                type="checkbox"
-                checked={builtinTools.includes(tool.name)}
-                onChange={(event) =>
-                  setBuiltinTools((current) =>
-                    toggle(current, tool.name, event.target.checked),
-                  )
-                }
-              />
-              <span>{tool.label}</span>
-            </label>
-          ))}
-        </div>
-        {adminSelected && adminOptions.length > 0 && (
-          <div className="check-grid">
-            {adminOptions.map((tool) => (
-              <label key={tool.name} className="check-item" title={tool.name}>
-                <input
-                  type="checkbox"
-                  checked={builtinTools.includes(tool.name)}
-                  onChange={(event) =>
-                    setBuiltinTools((current) =>
-                      toggle(current, tool.name, event.target.checked),
-                    )
-                  }
-                />
-                <span>{tool.label}</span>
-                <Badge tone="warning">管理</Badge>
-              </label>
-            ))}
-          </div>
-        )}
-      </fieldset>
-
-      <fieldset className="check-fieldset">
-        <legend>上游工具</legend>
-        {wildcards.length === 0 && upstreams.length === 0 && (
-          <p className="hint">暂无可授予的上游工具。请先在「上游」页面配置并刷新上游工具。</p>
-        )}
-        {wildcards.length > 0 && (
-          <div className="check-grid">
-            {wildcards.map((wildcard) => (
-              <label
-                key={wildcard.value}
-                className="check-item"
-                title={`${wildcard.label}（${wildcard.value}）`}
-              >
-                <input
-                  type="checkbox"
-                  checked={grants.includes(wildcard.value)}
-                  onChange={(event) => toggleGrant(wildcard.value, event.target.checked)}
-                />
-                <span>{wildcard.label}</span>
-                <code className="mono upstream-grant-value">{wildcard.value}</code>
-              </label>
-            ))}
-          </div>
-        )}
-        {upstreams.length > 0 && (
-          <div className="upstream-grants">
-            {upstreams.map((upstream) => {
-              const wildcard =
-                upstream.wildcard === '' ? `${upstream.id}__*` : upstream.wildcard
-              const tools = upstreamTools.filter((tool) => tool.upstream_id === upstream.id)
-              return (
-                <div className="upstream-grant" key={upstream.id} data-disabled={allToolsSelected}>
-                  <label className="check-item upstream-grant-head" title={wildcard}>
-                    <input
-                      type="checkbox"
-                      disabled={allToolsSelected}
-                      checked={grants.includes(wildcard)}
-                      onChange={(event) => toggleGrant(wildcard, event.target.checked)}
-                    />
-                    <span>{upstream.name} 全部工具</span>
-                    <code className="mono upstream-grant-value">{wildcard}</code>
-                    {!upstream.enabled && <Badge tone="neutral">已停用</Badge>}
-                  </label>
-                  {tools.length === 0 ? (
-                    <p className="upstream-grant-hint">
-                      {upstream.tool_count === 0
-                        ? '尚未刷新，先授予通配或到「上游」页面刷新后再按工具授予。'
-                        : '该上游暂无暴露工具。'}
-                    </p>
-                  ) : (
-                    <div className="check-grid">
-                      {tools.map((tool) => (
-                        <label key={tool.name} className="check-item check-item-stacked" title={tool.name}>
-                          <input
-                            type="checkbox"
-                            disabled={allToolsSelected}
-                            checked={grants.includes(tool.name)}
-                            onChange={(event) => toggleGrant(tool.name, event.target.checked)}
-                          />
-                          <span className="cell-stack">
-                            <span>{tool.label}</span>
-                            <span className="cell-sub mono">
-                              {tool.name} · {tool.group}
-                            </span>
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <p className="hint">
-          通配 `*` 与单台上游 `&lt;id&gt;__*` 会同时覆盖后续新安装或新刷新的工具；与上方勾选的内置工具合并提交。
-        </p>
-      </fieldset>
+      <p className="hint">
+        令牌只决定能进入哪些组；组内可见的上游与工具由「组」页的暴露矩阵决定——整台上游可见性，
+        以及单工具按需 include / exclude。这里不再单独勾选工具。
+      </p>
+      {editing && (
+        <p className="hint">编辑不会轮换密钥；需要换新明文请使用卡片上的「重新签发」。</p>
+      )}
 
       {formError !== undefined && (
         <p className="inline-error" role="alert">
@@ -336,7 +237,7 @@ export function TokenForm({
       )}
       <div className="form-actions">
         <button type="submit" className="btn btn-primary" disabled={mutation.isPending}>
-          {mutation.isPending ? '生成中…' : '生成访问令牌'}
+          {mutation.isPending ? '保存中…' : editing ? '保存修改' : '生成访问令牌'}
         </button>
       </div>
     </form>

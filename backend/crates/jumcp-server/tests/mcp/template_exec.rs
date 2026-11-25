@@ -41,7 +41,11 @@ fn settings() -> Settings {
         "analyst".into(),
         RoleDef {
             name: "数据分析".into(),
-            default_groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            default_groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             default_budget: 2000,
         },
     );
@@ -92,7 +96,7 @@ fn template_value(ttl_s: i64) -> Value {
     })
 }
 
-fn upstream_body(url: &str, group: &str) -> Value {
+fn upstream_body(url: &str) -> Value {
     json!({
         "id": UPSTREAM_ID,
         "name": "ClickHouse 查询",
@@ -101,7 +105,6 @@ fn upstream_body(url: &str, group: &str) -> Value {
         "args": [],
         "env": {},
         "headers": {},
-        "group": group,
         "category": "custom",
         "enabled": true,
         "timeout_ms": 5000
@@ -135,12 +138,15 @@ async fn fixture_at(url: &str, group: &str, ttl_s: i64) -> Fixture {
             .with_templates(registry)
             .with_upstreams(manager)
             .with_scope(EffectiveScope {
-                groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+                groups: vec![
+                    "basic".into(),
+                    "db.read.core".into(),
+                    "db.read.analytics".into(),
+                ],
                 budget: 2000,
                 degraded: false,
                 source: "default".into(),
                 mode: "strict".into(),
-                allowed_builtin_tools: None,
             }),
     );
     seed_admin_accounts(&store, boot.admin_session_ttl_secs);
@@ -157,10 +163,21 @@ async fn fixture_at(url: &str, group: &str, ttl_s: i64) -> Fixture {
         "/admin/upstreams",
         Some(ALICE_TOKEN),
         &[("x-admin-actor", "alice")],
-        Some(upstream_body(url, group)),
+        Some(upstream_body(url)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "接入上游失败: {created}");
+    // 接入不再绑定组：模板 target 所在的上游由组的暴露矩阵授权。
+    let (status, error) = send(
+        &app,
+        "PUT",
+        &format!("/admin/groups/{group}/exposure"),
+        Some(ALICE_TOKEN),
+        &[("x-admin-actor", "alice")],
+        Some(json!({"upstreams": {UPSTREAM_ID: true}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "组授权失败: {error}");
 
     Fixture {
         app,
@@ -177,6 +194,9 @@ async fn fixture(ttl_s: i64) -> Fixture {
 }
 
 async fn issue_token(app: &Router, groups: Vec<&str>, caller: &str) -> String {
+    // basic 放行 db_run_template 这个常驻工具本身；模板可见性仍由各自的组决定。
+    let mut all = vec!["basic"];
+    all.extend(groups);
     let (status, body) = send(
         app,
         "POST",
@@ -186,8 +206,7 @@ async fn issue_token(app: &Router, groups: Vec<&str>, caller: &str) -> String {
         Some(json!({
             "name": format!("token {caller}"),
             "role": "analyst",
-            "groups": groups,
-            "builtin_tools": ["db_run_template"],
+            "groups": all,
             "source": "agent",
             "caller": caller,
             "expires_at": null

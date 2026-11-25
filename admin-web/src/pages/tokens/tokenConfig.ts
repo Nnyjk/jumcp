@@ -39,16 +39,6 @@ export async function copyToClipboard(value: string): Promise<boolean> {
   }
 }
 
-/**
- * 默认授权契约：三个元工具（search_capabilities、describe_capability、list_groups）默认勾选，
- * 满足 MCP 基础能力发现协议；admin_* 与上游受管工具需由管理员显式按需授权。
- */
-export const DEFAULT_BUILTIN_TOOLS = [
-  'search_capabilities',
-  'describe_capability',
-  'list_groups',
-]
-
 /** 客户端筛选：访问令牌列表全量拉取，状态筛选仅在前端内存计算，避免向后端发起重复查询。 */
 export const STATUS_FILTERS: Array<{ value: '' | AccessTokenStatus; label: string }> = (
   ['', 'active', 'revoked', 'expired'] as const
@@ -60,16 +50,6 @@ export const STATUS_FILTERS: Array<{ value: '' | AccessTokenStatus; label: strin
 export function toggle(list: string[], value: string, checked: boolean): string[] {
   if (checked) return list.includes(value) ? list : [...list, value]
   return list.filter((item) => item !== value)
-}
-
-/**
- * allowlist 通配名的显示文案：`*` → 全部工具，`<id>__*` → `<id> 全部工具`。
- * 精确名返回 undefined，由调用方按原样或内置工具的 label 展示。
- */
-export function wildcardToolLabel(name: string): string | undefined {
-  if (name === '*') return '全部工具'
-  if (name.endsWith('__*')) return `${name.slice(0, -3)} 全部工具`
-  return undefined
 }
 
 /**

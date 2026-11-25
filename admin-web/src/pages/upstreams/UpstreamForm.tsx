@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { createUpstream, updateUpstream } from '../../api/admin'
 import type {
-  GroupItem,
   UpstreamCategory,
   UpstreamInput,
   UpstreamItem,
@@ -22,17 +21,11 @@ import {
 
 export function UpstreamForm({
   target,
-  groups,
-  groupsLoading,
-  groupsError,
   onSaved,
   onError,
   onCancel,
 }: {
   target: EditorTarget
-  groups: GroupItem[]
-  groupsLoading: boolean
-  groupsError: boolean
   onSaved: (item: UpstreamItem) => void
   onError: (notice: Notice) => void
   onCancel: () => void
@@ -46,25 +39,10 @@ export function UpstreamForm({
   const [argsText, setArgsText] = useState((existing?.args ?? []).join('\n'))
   const [envText, setEnvText] = useState(formatKeyValueLines(existing?.env ?? {}))
   const [headersText, setHeadersText] = useState(formatKeyValueLines(existing?.headers ?? {}))
-  const [group, setGroup] = useState(existing?.group ?? '')
   const [category, setCategory] = useState<UpstreamCategory | ''>(existing?.category ?? '')
   const [enabled, setEnabled] = useState(existing?.enabled ?? true)
   const [timeoutMs, setTimeoutMs] = useState(String(existing?.timeout_ms ?? 30000))
   const [formError, setFormError] = useState<string | undefined>(undefined)
-
-  /**
-   * 只允许选择可授予的组：builtin 合成组（basic）不是上游级组，不能作为授权组。
-   * 编辑中的组若不在当前清单里（例如清单加载失败），以 code 兜底展示，避免保存时静默改组。
-   */
-  const groupChoices = useMemo(() => {
-    const choices = groups
-      .filter((item) => item.grantable !== false)
-      .map((item) => ({ code: item.code, name: item.name }))
-    if (existing !== undefined && !choices.some((choice) => choice.code === existing.group)) {
-      choices.push({ code: existing.group, name: existing.group })
-    }
-    return choices
-  }, [groups, existing])
 
   const mutation = useMutation({
     mutationFn: (input: UpstreamInput) => {
@@ -92,10 +70,6 @@ export function UpstreamForm({
     }
     if (trimmedName === '') {
       setFormError('名称不能为空。')
-      return
-    }
-    if (group === '') {
-      setFormError('必须选择一个授权组。')
       return
     }
     if (category === '') {
@@ -150,7 +124,6 @@ export function UpstreamForm({
           : [],
       env: env.value,
       headers: headers.value,
-      group,
       category,
       enabled,
       timeout_ms: parsedTimeout,
@@ -196,32 +169,10 @@ export function UpstreamForm({
             <option value="stdio">{UPSTREAM_TRANSPORT_LABEL.stdio}</option>
           </select>
         </Field>
-        <Field label="授权组" title="group" required>
-          <select
-            className="select"
-            value={group}
-            onChange={(event) => setGroup(event.target.value)}
-            disabled={groupsLoading}
-            required
-          >
-            <option value="">
-              {groupsLoading
-                ? '正在加载组…'
-                : groupsError
-                  ? '组清单加载失败'
-                  : '请选择组'}
-            </option>
-            {groupChoices.map((item) => (
-              <option key={item.code} value={item.code} title={item.code}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </Field>
       </div>
-      {groupsError && (
-        <p className="hint">组清单加载失败：授权组下拉不可用，请修复后重试。</p>
-      )}
+      <p className="hint">
+        接入只描述连接本身；哪些组能看到这台上游及其工具，由「组维护」页的暴露矩阵配置。
+      </p>
 
       {transport === 'http' ? (
         <Field label="URL" title="url">

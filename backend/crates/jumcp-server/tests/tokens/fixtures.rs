@@ -81,12 +81,11 @@ pub(crate) fn harness() -> Harness {
             .with_audit(audit.clone())
             .with_templates(registry)
             .with_scope(EffectiveScope {
-                groups: vec!["db.read.core".into()],
+                groups: vec!["basic".into(), "db.read.core".into()],
                 budget: 2000,
                 degraded: false,
                 source: "default".into(),
                 mode: "strict".into(),
-                allowed_builtin_tools: None,
             }),
     );
     crate::support::seed_admin_accounts(&store, boot.admin_session_ttl_secs);
@@ -183,8 +182,8 @@ pub(crate) fn base_token_body() -> Value {
     json!({
         "name": "分析型只读",
         "role": "analyst",
-        "groups": ["db.read.core"],
-        "builtin_tools": ["search_capabilities", "describe_capability"],
+        // basic 是常驻元工具所在的组：不给 basic 就看不到 search/describe/list。
+        "groups": ["basic", "db.read.core"],
         "source": "agent",
         "caller": "agent-analyst",
         "expires_at": null

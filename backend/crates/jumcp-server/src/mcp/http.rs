@@ -116,8 +116,7 @@ async fn post_mcp(
         &record.id,
         &record.source,
         record.groups.clone(),
-    )
-    .with_builtin_tools(record.builtin_tools.clone());
+    );
     let header_map: HashMap<String, String> = headers
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))

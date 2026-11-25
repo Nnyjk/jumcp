@@ -12,20 +12,7 @@ async fn inserted_upstream_tools_are_listed_and_forwarded() {
     body["headers"] = json!({"X-Trace": "router"});
     let (status, item) = create_upstream(&h, body).await;
     assert_eq!(status, StatusCode::OK, "{item}");
-    let token = issue_token(
-        &h,
-        "agent-upstream",
-        "analyst",
-        &["db.read.analytics"],
-        &[
-            "search_capabilities",
-            "describe_capability",
-            "list_groups",
-            "analytics__echo",
-            "analytics__weird-name",
-        ],
-    )
-    .await;
+    let token = issue_token(&h, "agent-upstream", "analyst", &["db.read.analytics"]).await;
 
     // 下一次 tools/list 立即出现前缀工具（无需重启）。
     let names = tool_names(&h.app, &token).await;
@@ -120,29 +107,44 @@ async fn inserted_upstream_tools_are_listed_and_forwarded() {
 }
 
 #[tokio::test]
-async fn upstream_tools_respect_the_token_allowlist() {
+async fn upstream_tools_respect_group_exposure() {
     let h = harness();
     let (url, fake) = spawn_fake(false).await;
     let (status, _) = create_upstream(&h, upstream_body("analytics", &url)).await;
     assert_eq!(status, StatusCode::OK);
-
-    // allowlist 不含上游暴露名：列表/检索不可见，调用回 MCP_CAPABILITY_NOT_FOUND 并写 policy_decision。
-    let denied = issue_token(
+    let token = issue_token(
         &h,
-        "agent-no-upstream",
+        "agent-upstream-groups",
         "analyst",
         &["db.read.analytics"],
-        &["search_capabilities"],
     )
     .await;
-    let names = tool_names(&h.app, &denied).await;
+    assert!(
+        tool_names(&h.app, &token)
+            .await
+            .contains(&"analytics__echo".to_string()),
+        "组内整台授予后应立刻可见"
+    );
+    let calls_before = fake
+        .requests
+        .lock()
+        .expect("lock")
+        .iter()
+        .filter(|r| r["method"] == json!("tools/call"))
+        .count();
+
+    // 撤销第一层授予：列表/检索不可见，调用回 MCP_CAPABILITY_NOT_FOUND 并写 policy_decision。
+    let (status, error) =
+        set_exposure(&h, DEFAULT_GROUP, json!({"analytics": false}), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{error}");
+    let names = tool_names(&h.app, &token).await;
     assert!(
         !names.iter().any(|n| n.contains("__")),
-        "allowlist 之外的上游工具不得出现: {names:?}"
+        "组内未授予的上游工具不得出现: {names:?}"
     );
     let searched = call_tool(
         &h.app,
-        &denied,
+        &token,
         "search_capabilities",
         json!({"query":"analytics__", "limit":10}),
     )
@@ -152,15 +154,21 @@ async fn upstream_tools_respect_the_token_allowlist() {
         json!([])
     );
 
-    let resp = call_tool(&h.app, &denied, "analytics__echo", json!({})).await;
-    assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
+    let resp = call_tool(&h.app, &token, "analytics__echo", json!({})).await;
     assert_eq!(
-        resp["result"]["structuredContent"]["error"]["code"],
-        json!("MCP_CAPABILITY_NOT_FOUND")
+        resp["error"]["code"],
+        json!(-32602),
+        "未授予的调用名与不存在同构: {resp}"
     );
-    assert!(
-        fake.requests.lock().expect("lock").is_empty(),
-        "allowlist 拒绝必须先于上游解析：不得产生任何上游调用"
+    assert_eq!(
+        fake.requests
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|r| r["method"] == json!("tools/call"))
+            .count(),
+        calls_before,
+        "组内未授予的调用必须先于上游解析被拒绝"
     );
     let decisions = h
         .audit
@@ -170,32 +178,32 @@ async fn upstream_tools_respect_the_token_allowlist() {
         .expect("audit query");
     assert!(
         !decisions.is_empty(),
-        "allowlist 拒绝必须写 policy_decision"
+        "组内未授予的调用必须写 policy_decision"
     );
     assert_eq!(
         decisions.last().expect("decision").payload["error_code"],
         json!("MCP_CAPABILITY_NOT_FOUND")
     );
 
-    // allowlist 含该名：正常可见/可调。
-    let allowed = issue_token(
-        &h,
-        "agent-with-upstream",
-        "analyst",
-        &["db.read.analytics"],
-        &["analytics__echo"],
-    )
-    .await;
+    // 重新授予：恢复可见、可调。
+    let (status, error) =
+        set_exposure(&h, DEFAULT_GROUP, json!({"analytics": true}), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{error}");
     assert!(
-        tool_names(&h.app, &allowed)
+        tool_names(&h.app, &token)
             .await
             .contains(&"analytics__echo".to_string())
     );
-    let resp = call_tool(&h.app, &allowed, "analytics__echo", json!({})).await;
+    let resp = call_tool(&h.app, &token, "analytics__echo", json!({})).await;
     assert_eq!(resp["result"]["isError"], json!(false), "{resp}");
     assert_eq!(
-        fake.requests.lock().expect("lock").len(),
-        1,
+        fake.requests
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|r| r["method"] == json!("tools/call"))
+            .count(),
+        calls_before + 1,
         "放行后只应产生一次上游调用"
     );
 }
@@ -210,14 +218,7 @@ async fn upstream_errors_become_is_error_and_prefix_fallback_works() {
             .0,
         StatusCode::OK
     );
-    let token = issue_token(
-        &h,
-        "agent-errors",
-        "analyst",
-        &["db.read.analytics"],
-        &["analytics__explode", "analytics__ghost"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-errors", "analyst", &["db.read.analytics"]).await;
     let _ = tool_names(&h.app, &token).await;
 
     // 上游 JSON-RPC error → isError 结果 + MCP_UPSTREAM_ERROR（不冒泡成本服务协议错误）。
@@ -316,14 +317,7 @@ async fn refresh_reconnects_and_refetches_tools() {
         create_upstream(&h, upstream_body("refresh", &url)).await.0,
         StatusCode::OK
     );
-    let token = issue_token(
-        &h,
-        "agent-refresh",
-        "analyst",
-        &["db.read.analytics"],
-        &["refresh__alpha_tool", "refresh__beta_tool"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-refresh", "analyst", &["db.read.analytics"]).await;
     let names = tool_names(&h.app, &token).await;
     assert!(
         names.contains(&"refresh__alpha_tool".to_string()),
@@ -372,14 +366,7 @@ async fn naming_conflicts_are_rejected_instead_of_renamed() {
             .0,
         StatusCode::OK
     );
-    let token = issue_token(
-        &h,
-        "agent-conflict",
-        "analyst",
-        &["db.read.analytics"],
-        &["ab___b", "dup__dup-name"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-conflict", "analyst", &["db.read.analytics"]).await;
 
     // 先触发一次投影（并行首拉两台上游），状态才有内容。
     let names = tool_names(&h.app, &token).await;
@@ -506,14 +493,7 @@ async fn concurrent_first_fetch_never_exposes_duplicate_names() {
             .0,
         StatusCode::OK
     );
-    let token = issue_token(
-        &h,
-        "agent-concurrent",
-        "analyst",
-        &["db.read.analytics"],
-        &["ab___b"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-concurrent", "analyst", &["db.read.analytics"]).await;
 
     // 一次 tools/list：projection 用 JoinSet 并行首拉两台上游（竞争同一暴露名）。
     let names = tool_names(&h.app, &token).await;

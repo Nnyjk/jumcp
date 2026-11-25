@@ -7,7 +7,7 @@ import {
   refreshUpstream,
   updateUpstream,
 } from '../../api/admin'
-import { UPSTREAMS_KEY, groupLabel, indexGroups, useGroupsQuery } from '../../api/queries'
+import { UPSTREAMS_KEY } from '../../api/queries'
 import type { UpstreamItem } from '../../api/types'
 import { Badge, CategoryBadge, UpstreamStatusBadge } from '../../components/Badge'
 import { Card } from '../../components/Card'
@@ -18,16 +18,15 @@ import { InfoBar } from '../../components/InfoBar'
 import { Modal } from '../../components/Modal'
 import { EmptyState, ErrorState, LoadingState, PageShell } from '../../components/PageShell'
 import { TabBar, TabPanel, type TabItem } from '../../components/TabBar'
-import { DASH, formatDateTime } from '../../format'
+import { formatDateTime } from '../../format'
 import { UPSTREAM_CATEGORY_LABEL, UPSTREAM_STATUS_LABEL, UPSTREAM_TRANSPORT_LABEL } from '../../labels'
 import { noticeFromError, type Notice } from '../../notice'
-import { BasicToolsModal } from './BasicToolsModal'
+import { UpstreamToolsModal } from './UpstreamToolsModal'
 import { CatalogTab } from './CatalogTab'
 import { Field } from '../../components/Field'
 import { UpstreamForm } from './UpstreamForm'
 import {
   CATEGORY_OPTIONS,
-  GROUP_OPTIONS_LIMIT,
   targetText,
   toInput,
   type EditorTarget,
@@ -45,23 +44,15 @@ export default function UpstreamsPage() {
   const [tab, setTab] = useState<UpstreamTab>('list')
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [editor, setEditor] = useState<EditorTarget | null>(null)
-  const [basicTarget, setBasicTarget] = useState<UpstreamItem | null>(null)
+  const [toolsTarget, setToolsTarget] = useState<UpstreamItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<UpstreamItem | null>(null)
   const [deleteError, setDeleteError] = useState<unknown>(undefined)
-  const [filter, setFilter] = useState({ q: '', group: '', category: '', status: '' })
+  const [filter, setFilter] = useState({ q: '', category: '', status: '' })
 
   const upstreamsQuery = useQuery({
     queryKey: UPSTREAMS_KEY,
     queryFn: ({ signal }) => fetchUpstreams(signal),
   })
-  const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
-  const groups = useMemo(() => groupsQuery.data?.items ?? [], [groupsQuery.data])
-  const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
-  /** 筛选下拉只列可授予的组；组清单拉取失败时下拉退化为空，不会静默过滤掉行。 */
-  const groupChoices = useMemo(
-    () => groups.filter((item) => item.grantable !== false).map((item) => ({ code: item.code, name: item.name })),
-    [groups],
-  )
   const rows = useMemo(() => upstreamsQuery.data?.items ?? [], [upstreamsQuery.data])
 
   /** 筛选只影响展示，不改后端查询；状态与分类沿用契约里的原始取值。 */
@@ -71,15 +62,14 @@ export default function UpstreamsPage() {
       if (keyword !== '' && !row.name.toLowerCase().includes(keyword) && !row.id.toLowerCase().includes(keyword)) {
         return false
       }
-      if (filter.group !== '' && row.group !== filter.group) return false
       if (filter.category !== '' && row.category !== filter.category) return false
       if (filter.status === 'enabled' && !row.enabled) return false
       if (filter.status === 'disabled' && row.enabled) return false
       return true
     })
   }, [rows, filter])
-  const filterActive = filter.q !== '' || filter.group !== '' || filter.category !== '' || filter.status !== ''
-  const filterSignature = `${filter.q}|${filter.group}|${filter.category}|${filter.status}`
+  const filterActive = filter.q !== '' || filter.category !== '' || filter.status !== ''
+  const filterSignature = `${filter.q}|${filter.category}|${filter.status}`
   const rowSignature = rows.map((row) => row.id).join('\u0000')
 
   /** 列表进入动效：数据或筛选变化时重播一次，表格自身的行动画在其内部叠加。 */
@@ -153,8 +143,8 @@ export default function UpstreamsPage() {
   })
 
   /**
-   * 列宽合计 1184px：名称 180 + 传输 64 + 状态 120 + 目标 220 + 授权组 120 +
-   * 分类 88 + 只读 64 + 操作 328，1440 视口下全部可见（操作列仍 sticky 兜底窄屏）。
+   * 列宽合计 1000px：名称 180 + 传输 64 + 状态 120 + 目标 220 +
+   * 分类 88 + 操作 328，1440 视口下全部可见（操作列仍 sticky 兜底窄屏）。
    */
   const columns: Array<DataTableColumn<UpstreamItem>> = [
     {
@@ -205,14 +195,6 @@ export default function UpstreamsPage() {
       title: (row) => targetText(row),
     },
     {
-      key: 'group',
-      header: '授权组',
-      width: '120px',
-      cell: (row) =>
-        row.group === '' ? DASH : <span title={row.group}>{groupLabel(groupIndex, row.group)}</span>,
-      title: (row) => row.group,
-    },
-    {
       key: 'category',
       header: '分类',
       width: '88px',
@@ -240,10 +222,10 @@ export default function UpstreamsPage() {
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              onClick={() => setBasicTarget(row)}
-              aria-label={`管理 ${row.id} 的基础工具`}
+              onClick={() => setToolsTarget(row)}
+              aria-label={`查看 ${row.id} 的工具`}
             >
-              基础工具
+              工具
             </button>
             <button
               type="button"
@@ -359,20 +341,6 @@ export default function UpstreamsPage() {
                       placeholder="按名称或 id 过滤"
                     />
                   </Field>
-                  <Field label="授权组" title="group">
-                    <select
-                      className="select"
-                      value={filter.group}
-                      onChange={(event) => setFilter((previous) => ({ ...previous, group: event.target.value }))}
-                    >
-                      <option value="">全部组</option>
-                      {groupChoices.map((item) => (
-                        <option key={item.code} value={item.code} title={item.code}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
                   <Field label="分类" title="category">
                     <select
                       className="select"
@@ -404,7 +372,7 @@ export default function UpstreamsPage() {
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => setFilter({ q: '', group: '', category: '', status: '' })}
+                      onClick={() => setFilter({ q: '', category: '', status: '' })}
                       disabled={!filterActive}
                     >
                       清空筛选
@@ -420,7 +388,7 @@ export default function UpstreamsPage() {
                         <button
                           type="button"
                           className="btn btn-secondary"
-                          onClick={() => setFilter({ q: '', group: '', category: '', status: '' })}
+                          onClick={() => setFilter({ q: '', category: '', status: '' })}
                         >
                           清空筛选
                         </button>
@@ -433,7 +401,7 @@ export default function UpstreamsPage() {
                       columns={columns}
                       rows={filteredRows}
                       rowKey={(row) => row.id}
-                      minWidth="1184px"
+                      minWidth="1000px"
                     />
                   )}
                 </div>
@@ -459,9 +427,6 @@ export default function UpstreamsPage() {
           <UpstreamForm
             onCancel={() => setEditor(null)}
             target={editor}
-            groups={groups}
-            groupsLoading={groupsQuery.isPending}
-            groupsError={groupsQuery.isError}
             onSaved={(item) => {
               const created = editor.mode === 'create'
               setEditor(null)
@@ -478,8 +443,8 @@ export default function UpstreamsPage() {
         </Modal>
       )}
 
-      {basicTarget !== null && (
-        <BasicToolsModal upstream={basicTarget} onClose={() => setBasicTarget(null)} />
+      {toolsTarget !== null && (
+        <UpstreamToolsModal upstream={toolsTarget} onClose={() => setToolsTarget(null)} />
       )}
 
       {deleteTarget !== null && (

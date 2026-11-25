@@ -3,7 +3,6 @@ import type {
   AccessTokenItem,
   GroupItem,
   RoleItem,
-  TokenOptions,
 } from '../../api/types'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { InfoBar } from '../../components/InfoBar'
@@ -16,16 +15,17 @@ import { MCP_CONFIG_KEY, mcpConfigJson, mcpConfigValue } from './tokenConfig'
 
 /**
  * 访问令牌生命周期弹窗集合：
- * 包含创建令牌、单次明文呈现、删除确认、撤销确认、重新签发确认五种交互模态；
+ * 包含创建令牌、编辑令牌、单次明文呈现、删除确认、撤销确认、重新签发确认六种交互模态；
  * 状态与突变逻辑由父页面统一托管，本组件负责安全警示渲染与提交中（pending）交互锁定。
  */
 export function TokenDialogs({
   createOpen,
   onCloseCreate,
-  options,
+  editTarget,
+  onCloseEdit,
   roles,
   groups,
-  onCreated,
+  onSaved,
   created,
   onCloseCreated,
   deleteTarget,
@@ -46,10 +46,12 @@ export function TokenDialogs({
 }: {
   createOpen: boolean
   onCloseCreate: () => void
-  options: TokenOptions | undefined
+  editTarget: AccessTokenItem | null
+  onCloseEdit: () => void
   roles: RoleItem[]
   groups: GroupItem[]
-  onCreated: (result: AccessTokenCreated) => void
+  /** 创建与编辑共用：创建返回带明文的 AccessTokenCreated，编辑返回更新后的条目。 */
+  onSaved: (result: AccessTokenCreated | AccessTokenItem) => void
   created: AccessTokenCreated | null
   onCloseCreated: () => void
   deleteTarget: AccessTokenItem | null
@@ -70,14 +72,20 @@ export function TokenDialogs({
 }) {
   return (
     <>
-      {createOpen && options !== undefined && (
+      {createOpen && (
         <Modal size="lg" title="生成访问令牌" onClose={onCloseCreate}>
-          <TokenForm
-            options={options}
-            roles={roles}
-            groups={groups}
-            onCreated={onCreated}
-          />
+          <TokenForm roles={roles} groups={groups} onSaved={onSaved} />
+        </Modal>
+      )}
+
+      {editTarget !== null && (
+        <Modal
+          size="lg"
+          title={`编辑访问令牌 · ${editTarget.name}`}
+          subtitle="只改名称、组与到期时间；角色与密钥保持原样，换密钥走「重新签发」。"
+          onClose={onCloseEdit}
+        >
+          <TokenForm token={editTarget} roles={roles} groups={groups} onSaved={onSaved} />
         </Modal>
       )}
 
@@ -161,7 +169,7 @@ export function TokenDialogs({
       {reissueTarget !== null && (
         <ConfirmDialog
           title={`重新签发访问令牌 · ${reissueTarget.name}`}
-          subtitle="原地轮转凭据：名称、角色、组、工具白名单与到期时间保持不变，仅更新 token、哈希与前缀，清空最近使用时间。"
+          subtitle="原地轮转凭据：名称、角色、组授权与到期时间保持不变，仅更新 token、哈希与前缀，清空最近使用时间。"
           confirmLabel="确认重新签发"
           pendingLabel="重新签发中…"
           pending={reissuePending}

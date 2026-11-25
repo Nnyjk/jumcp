@@ -15,16 +15,13 @@ use crate::mcp::{admin_tool_definitions, builtin_category, tool_definitions};
 use crate::service::{ADMIN_TOOL_NAMES, RESIDENT_TOOL_NAMES};
 use jumcp_core::entry::EffectiveScope;
 use jumcp_core::errors::McpError;
-use jumcp_core::registry::{
-    CapabilityRecord, CapabilityStore, McpUpstream, UpstreamTool, tool_allowlist_matches,
-};
+use jumcp_core::registry::{CapabilityRecord, CapabilityStore, McpUpstream, UpstreamTool};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
-/// `basic` 组：常驻内置工具与"逐工具开放的上游工具"的公共基础通道。
+/// `basic` 组：常驻内置工具所在的组，也是管理员可显式纳入上游工具的普通授权组。
 ///
-/// 它不是可授权组：`scope.groups` 里永远不需要（也不应该）出现 `basic`，
-/// 成员恒可见，只受 token 的 `builtin_tools` allowlist 与上游自身开关约束。
+/// 它没有隐式可见性：`scope.groups` 不含 `basic` 时，常驻元工具同样不可见、不可调用。
 pub const BASIC_GROUP: &str = jumcp_core::config::BASIC_GROUP_NAME;
 
 /// 维护通道的组名：内置 admin 工具只在 `scope.groups` 含它时可见可调。
@@ -38,20 +35,12 @@ pub fn admin_enabled(scope: &EffectiveScope) -> bool {
     scope.groups.iter().any(|g| g == ADMIN_GROUP)
 }
 
-/// 工具 allowlist 的唯一判定：`None` = 不限制（stdio / 管理面），`Some` = 白名单。
+/// 常驻元工具（`search_capabilities` / `describe_capability` / `list_groups` /
+/// `db_run_template`）的唯一开关：组 `basic` 在 scope 内。
 ///
-/// 条目可以是内置 id、上游暴露名（`<server_id>__<tool>`），或两种通配：`*`（全部工具）与
-/// `<server_id>__*`（某个上游暴露的全部工具）。匹配语义在
-/// `jumcp_core::registry::tool_allowlist_matches` 里实现一次（与创建令牌时的校验共用同一套
-/// 通配解析）：`tools/list`、发现面投影与 `tools/call` 三处共用这一处实现，避免
-/// "列表里没有、调用却放行"。
-/// 与 `admin_enabled` 是**双重判定**：admin_* 既要 allowlist 命中，也要 admin 组在 scope 内；
-/// 两者都不能由请求头/`_meta` 扩大（allowlist 来自 token 配置，header 只能收窄组）。
-pub fn tool_allowed(scope: &EffectiveScope, id: &str) -> bool {
-    match &scope.allowed_builtin_tools {
-        None => true,
-        Some(allow) => allow.iter().any(|entry| tool_allowlist_matches(entry, id)),
-    }
+/// 与 `admin_enabled` 同构：组是唯一授权面，没有任何"恒可见"的工具。
+pub fn basic_enabled(scope: &EffectiveScope) -> bool {
+    scope.groups.iter().any(|g| g == BASIC_GROUP)
 }
 
 fn empty_schema() -> Value {
@@ -87,21 +76,25 @@ fn project_builtin(def: &Value, group: &str, category: &str) -> Option<Capabilit
 /// builtin 能力投影：直接复用 `mcp::tool_definitions()` / `mcp::admin_tool_definitions()`
 /// （`tools/list` 的同一份定义），不在这里再写一份 schema，否则同一工具会有两个定义源。
 ///
-/// 分组规则（唯一实现）：`group == BASIC_GROUP` 的常驻工具恒在；维护工具属于
-/// `ADMIN_GROUP`，只有 `scope.groups` 含 admin 时才进可见集/调用集。
+/// 分组规则（唯一实现）：常驻工具属于 `BASIC_GROUP`，只有 `scope.groups` 含 basic 时才进
+/// 可见集/调用集；维护工具属于 `ADMIN_GROUP`，同理只在 scope 含 admin 时出现。
 pub fn builtin_capabilities(scope: &EffectiveScope) -> Vec<Capability> {
-    let mut out: Vec<Capability> = tool_definitions()
-        .iter()
-        .filter(|def| {
-            def.get("name")
-                .and_then(|n| n.as_str())
-                .is_some_and(|id| RESIDENT_TOOL_NAMES.contains(&id) && tool_allowed(scope, id))
-        })
-        .filter_map(|def| {
-            let id = def.get("name").and_then(|n| n.as_str())?;
-            project_builtin(def, BASIC_GROUP, builtin_category(id))
-        })
-        .collect();
+    let mut out: Vec<Capability> = Vec::new();
+    if basic_enabled(scope) {
+        out.extend(
+            tool_definitions()
+                .iter()
+                .filter(|def| {
+                    def.get("name")
+                        .and_then(|n| n.as_str())
+                        .is_some_and(|id| RESIDENT_TOOL_NAMES.contains(&id))
+                })
+                .filter_map(|def| {
+                    let id = def.get("name").and_then(|n| n.as_str())?;
+                    project_builtin(def, BASIC_GROUP, builtin_category(id))
+                }),
+        );
+    }
     if admin_enabled(scope) {
         out.extend(
             admin_tool_definitions()
@@ -109,7 +102,7 @@ pub fn builtin_capabilities(scope: &EffectiveScope) -> Vec<Capability> {
                 .filter(|def| {
                     def.get("name")
                         .and_then(|n| n.as_str())
-                        .is_some_and(|id| ADMIN_TOOL_NAMES.contains(&id) && tool_allowed(scope, id))
+                        .is_some_and(|id| ADMIN_TOOL_NAMES.contains(&id))
                 })
                 .filter_map(|def| {
                     let id = def.get("name").and_then(|n| n.as_str())?;
@@ -154,7 +147,8 @@ pub fn project_record(rec: &CapabilityRecord) -> Capability {
 /// 上游 `tools/list` 的一条工具 → 发现面能力。
 ///
 /// 名由 manager 先按 `<server_id>__<tool>` 规则规范化并查重；这里只做投影。
-/// `group` 是**生效组**：默认是上游注册时的 `group`，被逐工具覆盖到 `basic` 时由调用方传入。
+/// `group` 是**生效组**：这次请求里放行该工具的那个组（多元可见时取字典序最小），
+/// 只用于展示与计数，不参与判定。
 pub fn project_upstream(
     upstream: &McpUpstream,
     tool: &UpstreamTool,
@@ -467,15 +461,15 @@ mod tests {
             degraded: false,
             source: "default".into(),
             mode: "strict".into(),
-            allowed_builtin_tools: None,
         }
     }
 
-    /// admin 组的内置工具必须受 scope.groups 过滤：非 admin scope 下它们既不可见也不可调。
+    /// 内置工具也按组出现：常驻工具要 `basic`，维护工具要 `admin`。
     #[test]
-    fn builtin_projection_gates_admin_tools_by_scope() {
+    fn builtin_projection_gates_tools_by_group() {
         let catalog = Catalog::default();
-        let analyst = visible_capabilities(&catalog, None, &scope(&["db.read.core"])).unwrap();
+        let analyst =
+            visible_capabilities(&catalog, None, &scope(&["basic", "db.read.core"])).unwrap();
         assert_eq!(
             analyst.len(),
             crate::service::RESIDENT_TOOL_NAMES.len(),
@@ -490,8 +484,14 @@ mod tests {
                 .iter()
                 .all(|c| !crate::service::ADMIN_TOOL_NAMES.contains(&c.id.as_str()))
         );
+        assert!(
+            visible_capabilities(&catalog, None, &scope(&["db.read.core"]))
+                .unwrap()
+                .is_empty(),
+            "没有 basic 组就没有常驻元工具"
+        );
 
-        let admin = visible_capabilities(&catalog, None, &scope(&["admin"])).unwrap();
+        let admin = visible_capabilities(&catalog, None, &scope(&["basic", "admin"])).unwrap();
         assert_eq!(
             admin.len(),
             crate::service::RESIDENT_TOOL_NAMES.len() + crate::service::ADMIN_TOOL_NAMES.len()
@@ -505,8 +505,8 @@ mod tests {
             assert_eq!(cap.source, SOURCE_BUILTIN);
         }
         // 调用面与发现面同口径：非 admin 的调用集里没有 admin 工具。
-        let analyst_callable =
-            callable_capabilities(&catalog, None, &scope(&["db.read.core"])).unwrap();
+        let analyst_callable = callable_capabilities(&catalog, None, &scope(&["basic"])).unwrap();
+        assert!(!analyst_callable.is_empty(), "basic 组应放行常驻工具");
         assert!(
             analyst_callable
                 .iter()

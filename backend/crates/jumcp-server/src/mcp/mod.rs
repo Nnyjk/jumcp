@@ -93,8 +93,7 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 ///
 /// - `basic`（基础查询、计算）：走查目录的工具——`search_capabilities` /
 ///   `describe_capability` / `list_groups` 回答"有什么、怎么调"；`db_run_template` 是唯一的
-///   模板取数入口（版本钉住 + 结果缓存，SQL 注册期已过 sqlguard）。上游工具按 `group_code`
-///   归组，不占 `basic`。
+///   模板取数入口（版本钉住 + 结果缓存，SQL 注册期已过 sqlguard）。这四个工具属于组 `basic`。
 /// - `analysis`（工具列表分析、变更提交审计）：面向工具目录与变更流的观察/提交动作——
 ///   `admin_review_queue` 看队列、`admin_tool_candidates` 给出"哪张表/哪个接口值得固化成
 ///   定制 tool"的加权排名（只读，供审计 agent 少走人工评审轮次）、`admin_register_template`
@@ -103,9 +102,8 @@ fn write_tool(name: &str, description: &str, input_schema: Value) -> Value {
 ///   都不改已登记的定义。
 /// - `admin`（仅审计操作）：`admin_audit_queries`，查询调用审计流水。
 ///
-/// 分类与授权解耦，只是展示/检索标签：它**不是** `scope.groups` 的授权组，Header 收窄不会
-/// 改变常驻工具的可见性（常驻性由 `RESIDENT_TOOL_NAMES` 判定）；`admin_*` 的可见性与调用
-/// 权限仍由 `discovery::admin_enabled`（组 `admin` 在 scope 内）与 token allowlist 双重判定。
+/// 分类与授权解耦，只是展示/检索标签：它**不是** `scope.groups` 的授权组。可见性只由组决定：
+/// 常驻工具要组 `basic`、`admin_*` 要组 `admin`，Header 收窄同样按组收窄。
 /// 未知 id 落到 `custom`：新增内置工具忘记归类时不会冒充 `admin`。
 pub fn builtin_category(id: &str) -> &'static str {
     use crate::catalog::{CATEGORY_ADMIN, CATEGORY_ANALYSIS, CATEGORY_BASIC, CATEGORY_CUSTOM};

@@ -19,13 +19,16 @@ mod tests;
 pub const MAX_GROUPS: usize = 20;
 /// 管理面新增组名的长度上限（字符数；组名只允许 ASCII，等价于字节数）。
 pub const MAX_GROUP_NAME_LEN: usize = 64;
-/// 保留组名：`basic` 是常驻工具与"逐工具开放的上游工具"的公共基础通道，
-/// `builtin` 只是保留名（不能作为任何工具的组值），`admin` 是维护通道的安全边界。
+/// 保留组名：`basic` 是代码内置的基础组（常驻元工具 + 管理员显式纳入的上游工具），
+/// `builtin` 只是保留名（不能作为任何组值），`admin` 是维护通道的安全边界。
 /// 管理 API 不得创建、修改或删除它们；配置文件另行禁止定义 `basic`/`builtin`
 /// （`admin` 仍可由策略定义，见 `TenantPolicy::validate`）。
 pub const RESERVED_GROUP_NAMES: &[&str] = &["basic", "builtin", "admin"];
 
-/// 代码内置的公共基础组：组本身不是可授权组，成员对所有 token 可见（仍受 allowlist 约束）。
+/// 代码内置的基础组：恒存在于策略里（`group_codes` 永远包含它），令牌可显式勾选。
+///
+/// 组内成员 = 四个常驻元工具 + 管理员通过组暴露矩阵纳入的上游工具。它和普通组走同一套
+/// 授权判定：令牌 `groups` 里没有 `basic` 就看不到这些工具，没有任何隐式可见通道。
 pub const BASIC_GROUP_NAME: &str = "basic";
 
 /// 仅用于拒绝创建的保留名：组值不得为 `builtin`。

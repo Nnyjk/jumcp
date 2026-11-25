@@ -1,32 +1,30 @@
-import type { AccessTokenItem, GroupItem, RoleItem, TokenBuiltinToolOption } from '../../api/types'
+import type { AccessTokenItem, GroupItem, RoleItem } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { DASH, dashText, formatDateTime } from '../../format'
 import { groupLabel, roleLabel } from '../../api/queries'
 import { STATUS_TONE, TOKEN_STATUS_LABEL } from '../../labels'
 import { useAdminView } from '../../viewStack'
-import { wildcardToolLabel } from './tokenConfig'
 
 export function TokenCard({
   item,
-  labelByTool,
   groupIndex,
   roleIndex,
   secretKnown,
   onMcp,
+  onEdit,
   onRevoke,
   onDelete,
 }: {
   item: AccessTokenItem
-  labelByTool: Map<string, TokenBuiltinToolOption>
   groupIndex: Map<string, GroupItem>
   roleIndex: Map<string, RoleItem>
   secretKnown: boolean
   onMcp: () => void
+  onEdit: () => void
   onRevoke: () => void
   onDelete: () => void
 }) {
   const { openAudit } = useAdminView()
-  const builtinTools = item.builtin_tools ?? []
   return (
     <article className="token-card">
       <header className="token-card-head">
@@ -83,29 +81,6 @@ export function TokenCard({
             )}
           </dd>
         </div>
-        <div className="token-field token-field-wide">
-          <dt>工具白名单</dt>
-          <dd>
-            {builtinTools.length === 0 ? (
-              DASH
-            ) : (
-              <span className="token-badges">
-                {builtinTools.map((name) => {
-                  const option = labelByTool.get(name)
-                  return (
-                    <Badge
-                      key={name}
-                      tone={option?.group === 'admin' ? 'warning' : 'neutral'}
-                      title={name}
-                    >
-                      {option?.label ?? wildcardToolLabel(name) ?? name}
-                    </Badge>
-                  )
-                })}
-              </span>
-            )}
-          </dd>
-        </div>
       </dl>
 
       <footer className="token-card-foot">
@@ -121,6 +96,14 @@ export function TokenCard({
           </span>
         )}
         <div className="row-actions">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            title="修改名称、组与到期时间；角色与密钥不变"
+            onClick={onEdit}
+          >
+            编辑
+          </button>
           <button
             type="button"
             className="btn btn-secondary btn-sm"

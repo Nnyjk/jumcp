@@ -446,7 +446,6 @@ mod tests {
             args: Vec::new(),
             env: BTreeMap::new(),
             headers: BTreeMap::new(),
-            group: "db.read.core".to_string(),
             category: "custom".to_string(),
             enabled: true,
             timeout_ms: 30_000,

@@ -143,13 +143,36 @@ fn default_cap() -> i64 {
     2000
 }
 
+/// 代码内置 `basic` 组的定义：scope 解析只读它的数值字段，展示名固定。
+///
+/// 配置文件不得定义 `basic`（见 `validate`），因此这里是它唯一的来源；
+/// 与普通组同形是为了让 `resolve_scope` 的预算/优先级计算不必为它开分支。
+fn basic_group_def() -> &'static GroupDef {
+    static BASIC: std::sync::LazyLock<GroupDef> = std::sync::LazyLock::new(|| GroupDef {
+        code: BASIC_GROUP_NAME.to_string(),
+        name: "基础工具".to_string(),
+        priority: 0,
+        min_budget: 800,
+    });
+    &BASIC
+}
+
 impl TenantPolicy {
     /// 已注册组 code 集合：scope 解析/角色默认组/管理组合并一律按 code。
+    ///
+    /// 恒含代码内置的 `basic`：它是真实授权组（令牌可勾选），只是定义不来自配置文件。
     pub fn group_codes(&self) -> HashSet<String> {
-        self.groups.iter().map(|g| g.code.clone()).collect()
+        let mut out: HashSet<String> = self.groups.iter().map(|g| g.code.clone()).collect();
+        out.insert(BASIC_GROUP_NAME.to_string());
+        out
     }
     /// 按 code 查组定义（权限判定只看 code，展示名不参与）。
+    ///
+    /// `basic` 返回内置定义：scope 解析要读它的 `min_budget`/`priority`，配置文件不允许定义它。
     pub fn group(&self, code: &str) -> Option<&GroupDef> {
+        if code == BASIC_GROUP_NAME {
+            return Some(basic_group_def());
+        }
         self.groups.iter().find(|g| g.code == code)
     }
     /// 未定义角色即显式 Err，不静默当无权限角色。
@@ -163,6 +186,8 @@ impl TenantPolicy {
             return Err(format!("组数 {} 超过上限 {MAX_GROUPS}", self.groups.len()));
         }
         let mut registered = HashSet::new();
+        // `basic` 是代码内置的注册组：角色默认组/令牌都可以直接引用它。
+        registered.insert(BASIC_GROUP_NAME.to_string());
         for g in &self.groups {
             // 配置层只保证非空与唯一：旧部署的组名可能不符合新管理面正则，
             // 加载期不因组名非法打死进程（管理面新建仍走 validate_group_name）。

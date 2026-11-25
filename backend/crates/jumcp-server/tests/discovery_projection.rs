@@ -55,12 +55,15 @@ fn settings() -> Settings {
 
 fn scope() -> EffectiveScope {
     EffectiveScope {
-        groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+        groups: vec![
+            "basic".into(),
+            "db.read.core".into(),
+            "db.read.analytics".into(),
+        ],
         budget: 2000,
         degraded: false,
         source: "default".into(),
         mode: "strict".into(),
-        allowed_builtin_tools: None,
     }
 }
 
