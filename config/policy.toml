@@ -13,18 +13,19 @@ allow_intersect = false
 
 [roles.analyst]
 name = "数据分析"
-default_groups = ["db.read.core", "db.read.analytics", "api.internal.read", "kb.search"]
+# 组 "basic" 承载常驻元工具（search/describe/list/db_run_template）；不勾选的令牌看不到它们。
+default_groups = ["basic", "db.read.core", "db.read.analytics", "api.internal.read", "kb.search"]
 default_budget = 2000
 
 [roles.executor]
 name = "执行器"
-default_groups = ["db.read.core"]
+default_groups = ["basic", "db.read.core"]
 default_budget = 1600
 
 [roles.admin]
 name = "管理员"
 # 组 "admin" 是维护通道（admin_* 内置工具）的开关：只有它的成员才看得见/调得动。
-default_groups = ["admin"]
+default_groups = ["basic", "admin"]
 default_budget = 2500
 
 [[groups]]
