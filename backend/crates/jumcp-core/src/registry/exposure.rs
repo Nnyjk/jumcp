@@ -54,6 +54,12 @@ pub struct GroupToolRule {
     pub state: ToolRuleState,
 }
 
+/// 单条逐工具变更：工具名与新状态（`None` = 删除规则、回到继承第一层）。
+pub type ToolRuleChange = (String, Option<ToolRuleState>);
+
+/// 一次提交里某台上游的全部逐工具变更：`(upstream_id, changes)`。
+pub type UpstreamToolRuleChange = (String, Vec<ToolRuleChange>);
+
 /// 组暴露矩阵的运行期索引：`grants[group] = {upstream}`、`rules[(group,upstream,tool)] = state`。
 ///
 /// 索引化而非逐次查库：一次请求内的可见性判定会被 `tools/list` 与 `tools/call` 反复调用，
@@ -333,7 +339,7 @@ impl CapabilityStore {
         &self,
         group: &str,
         upstream_id: &str,
-        changes: &[(String, Option<ToolRuleState>)],
+        changes: &[ToolRuleChange],
         actor: impl IntoAuditOrigin,
     ) -> Result<Vec<Value>, McpError> {
         let origin = actor.into_audit_origin();

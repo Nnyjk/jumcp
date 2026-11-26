@@ -23,7 +23,10 @@ pub use admins::{
     ADMIN_USERNAME_MIN, AdminUser, BOOTSTRAP_ADMIN_REQUIRED, normalize_admin_username,
     validate_admin_password,
 };
-pub use exposure::{GROUP_TOOL_RULE_MAX, GroupExposure, GroupToolRule, ToolRuleState};
+pub use exposure::{
+    GROUP_TOOL_RULE_MAX, GroupExposure, GroupToolRule, ToolRuleChange, ToolRuleState,
+    UpstreamToolRuleChange,
+};
 pub use groups::ManagedGroup;
 pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,

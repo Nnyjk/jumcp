@@ -825,7 +825,7 @@ pub(super) async fn update_group_exposure(
         }
         grants.push((id.clone(), *granted));
     }
-    let mut rules: Vec<(String, Vec<(String, Option<ToolRuleState>)>)> = Vec::new();
+    let mut rules: Vec<UpstreamToolRuleChange> = Vec::new();
     for (id, per_tool) in &body.tools {
         let def = def_of(id)?;
         let cached = router.cached_tools(id);

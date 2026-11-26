@@ -33,7 +33,7 @@ use jumcp_core::errors::McpError;
 use jumcp_core::registry::{
     ADMIN_CAPABILITY_IDS, BUILTIN_CAPABILITY_IDS, CapabilityRecord, CapabilityStore,
     GROUP_TOOL_RULE_MAX, ManagedGroup, McpUpstream, RESIDENT_CAPABILITY_IDS, STATUSES,
-    ToolRuleState, is_builtin_id,
+    ToolRuleState, UpstreamToolRuleChange, is_builtin_id,
 };
 use jumcp_core::secret::SecretKey;
 use serde::Deserialize;
