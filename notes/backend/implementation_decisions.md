@@ -18,7 +18,7 @@
 
 - **单一鉴权分支**：`/mcp` 只查 registry 的 `access_tokens`（sha256 命中 + `active`）；环境变量静态 token 只在启动引导时导入一次，之后不再参与鉴权。集成测试若直接构造 `Service`/`http_router`，必须显式 seed（`import_bootstrap_tokens` 或 `create_access_token`），不要恢复第二套生产分支。
 - **组是硬上限**：token 的 `groups` 同时是默认组与 allowlist，`resolve_scope` 不再回落到角色 `default_groups`；header/`_meta` 只能收窄。否则"按 token 配置收窄可见工具"会被角色默认组悄悄放大。
-- **内置工具是独立 allowlist**：只按组过滤 managed 能力不够——`search_capabilities` / `describe_capability` / `list_groups` / `db_query_readonly` / `db_run_template` 是 builtin，恒在可见集里。`EffectiveScope.allowed_builtin_tools` 必须同时约束 `tools/list` 与 `tools/call`；`admin_*` 再加 `admin` 组双重判定。
+- **内置工具是独立 allowlist**：只按组过滤 managed 能力不够——`search_capabilities` / `describe_capability` / `list_groups` / `db_query_readonly` / `db_run_template` 是 builtin，恒在可见集里。`EffectiveScope.allowed_builtin_tools` 必须同时约束 `tools/list` 与 `tools/call`；`admin_*` 再加 `admin` 组双重判定。**已废弃**：令牌白名单随接入外部 MCP 不可维护，现改为「常驻元工具属于 `basic` 组、工具级可见性在组内两层暴露里配置」，见 `../mcp_plan/group_exposure.md`。
 - **审计来源**：`ActorRef.token_id`/`source` 是可选键（serde `skip_serializing_if`），旧行反序列化不受影响。管理面 `source="admin-api"`；MCP token 用 token 配置的 `source` 与 `id`。store 写 `admin_change` 通过 `IntoAuditOrigin`（`&str` 仅 id，`&Actor` 带全量来源）统一构造，避免各调用点各拼一份。
 - **撤销不删行**：`enabled=0` + `revoked_at`，重复撤销 409 且不写第二条审计；组删除必须同时看 `capability_count` 与 `token_count`。
 - **明文只出现一次**：库里只有 sha256；审计与 HTTP item 只写 `token_prefix`。`AccessTokenRecord` 故意不 derive `Debug`（避免 hash 进日志）。

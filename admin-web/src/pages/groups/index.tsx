@@ -14,6 +14,7 @@ import type { Notice } from '../../notice'
 import { GROUP_SOURCE_LABEL } from '../../labels'
 import { useAdminView } from '../../viewStack'
 import { GroupForm } from './GroupForm'
+import { ExposureDialog } from './ExposureDialog'
 import {
   EMPTY_FILTER,
   SOURCE_OPTIONS,
@@ -27,6 +28,7 @@ export default function GroupsPage() {
   const { openTools } = useAdminView()
   const [notice, setNotice] = useState<Notice | undefined>(undefined)
   const [editor, setEditor] = useState<EditorTarget | null>(null)
+  const [exposureTarget, setExposureTarget] = useState<GroupItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<GroupItem | null>(null)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
   const [draftFilter, setDraftFilter] = useState<GroupFilter>(EMPTY_FILTER)
@@ -92,8 +94,8 @@ export default function GroupsPage() {
   })
 
   /**
-   * 布局与滚动约束：列宽合计 1136px（190+104+80+96+314+84+84+184），严格与 DataTable minWidth 对齐；
-   * 确保 1440px 桌面视口下内容区域自然契合不被异常拉伸，冻结操作列固定 184px，同时在小屏幕下保持横向滚动。
+   * 布局与滚动约束：列宽合计 1204px（190+104+80+96+314+84+84+252），严格与 DataTable minWidth 对齐；
+   * 确保 1440px 桌面视口下内容区域自然契合不被异常拉伸，冻结操作列固定 252px，同时在小屏幕下保持横向滚动。
    */
   const columns: Array<DataTableColumn<GroupItem>> = [
     {
@@ -119,7 +121,7 @@ export default function GroupsPage() {
             row.source === 'policy'
               ? '策略组：由 config/policy.toml 静态配置，不可在管理台编辑'
               : row.source === 'builtin'
-                ? '内置组：后端合成的只读组，不可编辑或删除'
+                ? '内置组：后端内置定义，配置不可编辑；basic 是常驻元工具所属的基础组，可作为授权组'
                 : '受管组：由管理台维护，可编辑或删除'
           }
         >
@@ -182,7 +184,7 @@ export default function GroupsPage() {
     {
       key: 'actions',
       header: '操作',
-      width: '184px',
+      width: '252px',
       sticky: true,
       cell: (row) => (
         <div className="row-actions">
@@ -195,13 +197,25 @@ export default function GroupsPage() {
           >
             查看
           </button>
-          {/* 策略与内置组只读约束：后端拒绝变更或删除，界面直接以说明标签提示，不呈现无效的操作按钮。 */}
+          {/* 暴露矩阵与组来源无关：任何组都能被授予上游与工具，basic 也是普通可授权组。 */}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            title={`调整 ${row.name} 的上游授予与逐工具规则`}
+            onClick={() => setExposureTarget(row)}
+          >
+            暴露
+          </button>
+          {/* 只读约束只针对组定义本身：内置组的名称与角色组合来自后端，不提供编辑/删除按钮。 */}
           {row.source === 'builtin' && (
-            <span className="row-note" title="内置组由后端合成，grantable=false">
-              不可编辑
+            <span
+              className="row-note"
+              title="内置组由后端内置定义，名称与角色组合不可改；basic 是内置基础组：常驻元工具属于它，可作为上游/工具的授权组"
+            >
+              不可改配置
             </span>
           )}
-          {row.source === 'managed' && row.grantable !== false && (
+          {row.source === 'managed' && (
             <>
               <button
                 type="button"
@@ -232,7 +246,7 @@ export default function GroupsPage() {
       ? groupsQuery.isError
         ? '查询失败'
         : '查询中'
-      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，内置组由后端合成；受管组由管理台维护`
+      : `${groupsQuery.data.total} 个组${hasFilter ? ' · 已筛选' : ''} · 策略组来自 config/policy.toml，内置组由后端内置定义；受管组由管理台维护 · 任何组都可授权上游与工具`
 
   const clearFilter = () => {
     setDraftFilter(EMPTY_FILTER)
@@ -354,7 +368,7 @@ export default function GroupsPage() {
         )}
         {groupsQuery.data !== undefined && groups.length === 0 && !hasFilter && (
           <EmptyState
-            hint="暂无组定义。策略组由 config/policy.toml 配置，内置组由后端合成；受管组可点击右上角「新建组」创建。"
+            hint="暂无组定义。策略组由 config/policy.toml 配置，内置组由后端内置定义；受管组可点击右上角「新建组」创建。"
             action={
               <button
                 type="button"
@@ -372,7 +386,7 @@ export default function GroupsPage() {
             columns={columns}
             rows={groups}
             rowKey={(row) => row.code}
-            minWidth="1136px"
+            minWidth="1204px"
           />
         )}
       </Card>
@@ -393,6 +407,24 @@ export default function GroupsPage() {
               meta: `优先级 ${item.priority} · 最小预算 ${item.min_budget} · 角色 ${item.roles
                 .map((code) => roleIndex.get(code)?.name ?? code)
                 .join('、')}`,
+            })
+            refreshAfterWrite()
+          }}
+        />
+      )}
+
+      {exposureTarget !== null && (
+        <ExposureDialog
+          code={exposureTarget.code}
+          name={exposureTarget.name}
+          onClose={() => setExposureTarget(null)}
+          onSaved={() => {
+            setExposureTarget(null)
+            setNotice({
+              severity: 'success',
+              title: '暴露矩阵已更新',
+              description: `组 ${exposureTarget.name}（${exposureTarget.code}）的上游授予与逐工具规则已保存。`,
+              meta: undefined,
             })
             refreshAfterWrite()
           }}

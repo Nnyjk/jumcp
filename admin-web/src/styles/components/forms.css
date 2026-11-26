@@ -68,52 +68,6 @@
   font-weight: 600;
 }
 
-.basic-tools {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.basic-tools-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.basic-tools-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.basic-tools-meta {
-  color: var(--text-secondary);
-  font-size: var(--fs-12);
-  overflow-wrap: anywhere;
-}
-
-.basic-tools-counters {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--fs-12);
-}
-
-.basic-tools-toggle {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.basic-tools-reason {
-  color: var(--warning);
-  font-size: var(--fs-12);
-  font-weight: 600;
-}
-
 .create-form {
   display: grid;
   gap: var(--space-3);
@@ -129,6 +83,64 @@
   color: var(--danger);
   font-size: var(--fs-12);
   font-weight: 600;
+}
+
+/* 组暴露矩阵：第一层上游行分块展示，第二层规则表嵌在块内。 */
+.exposure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.exposure-upstreams {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.exposure-upstream {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-subtle);
+}
+
+.exposure-upstream-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.exposure-upstream-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 160px;
+  font-weight: 600;
+}
+
+.exposure-upstream-actions {
+  margin-left: auto;
+}
+
+.exposure-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.exposure-rules {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .detail-heading {

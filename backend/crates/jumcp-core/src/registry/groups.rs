@@ -191,9 +191,10 @@ impl CapabilityStore {
         Ok(after)
     }
 
-    /// 删除管理组：仍有能力或未撤销令牌引用 → 409（带 `capability_count`/`token_count`）。
+    /// 删除管理组：仍有能力、未撤销令牌或组暴露矩阵引用 → 409（带各项计数）。
     ///
     /// 引用计数与删除在同一把连接锁内完成，避免"查完为 0、删前被别的请求写进一条"的竞态。
+    /// 暴露引用（整台授予 / 逐工具规则）也算占用：静默丢弃它们等于悄悄改授权。
     pub fn remove_managed_group(
         &self,
         code: &str,
@@ -217,13 +218,16 @@ impl CapabilityStore {
                 )
                 .map_err(|e| McpError::store(e.to_string()))?;
             let token_used = crate::access::group_token_count_locked(&conn, code)?;
-            if used > 0 || token_used > 0 {
+            let (upstream_grants, tool_rules) = self.group_exposure_refs(&conn, code)?;
+            if used > 0 || token_used > 0 || upstream_grants > 0 || tool_rules > 0 {
                 return Err(McpError::new(
                     "MCP_GROUP_IN_USE",
                     json!({
                         "group": code,
                         "capability_count": used,
-                        "token_count": token_used
+                        "token_count": token_used,
+                        "upstream_grant_count": upstream_grants,
+                        "tool_rule_count": tool_rules
                     }),
                 ));
             }

@@ -10,8 +10,10 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 
 mod admins;
+mod exposure;
 mod groups;
 mod lifecycle;
+mod migrate;
 mod record;
 mod sessions;
 mod upstreams;
@@ -21,17 +23,19 @@ pub use admins::{
     ADMIN_USERNAME_MIN, AdminUser, BOOTSTRAP_ADMIN_REQUIRED, normalize_admin_username,
     validate_admin_password,
 };
+pub use exposure::{
+    GROUP_TOOL_RULE_MAX, GroupExposure, GroupToolRule, ToolRuleChange, ToolRuleState,
+    UpstreamToolRuleChange,
+};
 pub use groups::ManagedGroup;
 pub use record::{
     AdminChange, CapabilityRecord, CapabilityVersion, change, definition_changes, field_changes,
 };
 pub use sessions::{ADMIN_SESSION_ID_BYTES, AdminSession};
 pub use upstreams::{
-    EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, TOOL_WILDCARD_ALL,
-    UPSTREAM_CATEGORIES, UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP,
-    UPSTREAM_TIMEOUT_MAX_MS, UPSTREAM_TOOL_GROUP_MAX, UPSTREAM_TRANSPORTS, UpstreamTool,
-    UpstreamToolGroup, is_tool_allowlist_entry, is_upstream_tool_name, is_valid_upstream_id,
-    tool_allowlist_matches,
+    EXPOSED_TOOL_NAME_MAX, McpUpstream, RESERVED_UPSTREAM_IDS, UPSTREAM_CATEGORIES,
+    UPSTREAM_ID_MAX_LEN, UPSTREAM_MAX_ITEMS, UPSTREAM_NAME_SEP, UPSTREAM_TIMEOUT_MAX_MS,
+    UPSTREAM_TRANSPORTS, UpstreamTool, is_upstream_tool_name, is_valid_upstream_id,
 };
 
 #[cfg(test)]
@@ -134,18 +138,26 @@ CREATE TABLE IF NOT EXISTS mcp_upstreams (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, transport TEXT NOT NULL,
     url TEXT NOT NULL DEFAULT '', command TEXT NOT NULL DEFAULT '',
     args_json TEXT NOT NULL DEFAULT '[]', env_json TEXT NOT NULL DEFAULT '{}',
-    headers_json TEXT NOT NULL DEFAULT '{}', group_code TEXT NOT NULL,
+    headers_json TEXT NOT NULL DEFAULT '{}',
     category TEXT NOT NULL DEFAULT 'custom',
     enabled INTEGER NOT NULL DEFAULT 1, timeout_ms INTEGER NOT NULL DEFAULT 10000,
     created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
     catalog_id TEXT NOT NULL DEFAULT '', catalog_version TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_upstream_group ON mcp_upstreams(group_code);
--- 逐工具组覆盖：只存显式覆盖（无行 = 继承 mcp_upstreams.group_code），目前只允许 basic。
-CREATE TABLE IF NOT EXISTS mcp_upstream_tool_groups (
-    upstream_id TEXT NOT NULL, tool_name TEXT NOT NULL, group_code TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (upstream_id, tool_name)
+-- 组暴露第一层：授予整台上游（该上游全部工具对该组可见）。
+CREATE TABLE IF NOT EXISTS mcp_group_upstreams (
+    group_code TEXT NOT NULL, upstream_id TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (group_code, upstream_id)
 );
+CREATE INDEX IF NOT EXISTS idx_group_upstreams_upstream ON mcp_group_upstreams(upstream_id);
+-- 组暴露第二层：逐工具三态规则（无行 = 继承第一层；include 强制纳入，exclude 强制排除）。
+CREATE TABLE IF NOT EXISTS mcp_group_tool_rules (
+    group_code TEXT NOT NULL, upstream_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('include','exclude')),
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (group_code, upstream_id, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_group_tool_rules_upstream ON mcp_group_tool_rules(upstream_id);
 -- 平台管理员账号：管理台登录的唯一身份来源；口令只以 Argon2id 哈希落库。
 CREATE TABLE IF NOT EXISTS admin_users (
     id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -187,6 +199,8 @@ CREATE TRIGGER trg_ver_no_update BEFORE UPDATE OF definition_json, definition_ha
         )
         .map_err(|e| McpError::store(e.to_string()))?;
         crate::access::ensure_schema(&conn)?;
+        // 旧模型的列/表在这里一次性迁到组暴露矩阵并删除，跑在 schema 之后、任何读写之前。
+        migrate::run(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             audit,

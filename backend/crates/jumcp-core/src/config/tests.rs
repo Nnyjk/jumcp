@@ -226,8 +226,8 @@ min_budget = 800
     assert_eq!(p.roles["analyst"].name, "数据分析");
     assert_eq!(
         p.group_codes(),
-        HashSet::from(["db.read.core".to_string()]),
-        "内部组集合只含 code"
+        HashSet::from(["db.read.core".to_string(), "basic".to_string()]),
+        "内部组集合 = 配置组 + 内置 basic"
     );
     p.validate().unwrap();
 }

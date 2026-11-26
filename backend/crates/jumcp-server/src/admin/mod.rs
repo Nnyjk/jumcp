@@ -31,9 +31,9 @@ use jumcp_core::config::{
 use jumcp_core::entry::Actor;
 use jumcp_core::errors::McpError;
 use jumcp_core::registry::{
-    ADMIN_CAPABILITY_IDS, BUILTIN_CAPABILITY_IDS, CapabilityRecord, CapabilityStore, ManagedGroup,
-    McpUpstream, RESIDENT_CAPABILITY_IDS, STATUSES, UPSTREAM_TOOL_GROUP_MAX, UpstreamToolGroup,
-    is_builtin_id,
+    ADMIN_CAPABILITY_IDS, BUILTIN_CAPABILITY_IDS, CapabilityRecord, CapabilityStore,
+    GROUP_TOOL_RULE_MAX, ManagedGroup, McpUpstream, RESIDENT_CAPABILITY_IDS, STATUSES,
+    ToolRuleState, UpstreamToolRuleChange, is_builtin_id,
 };
 use jumcp_core::secret::SecretKey;
 use serde::Deserialize;
@@ -56,7 +56,10 @@ mod writes;
 
 use self::admins::{create_admin, delete_admin, list_admins, update_admin};
 use self::capabilities::{capabilities, capability_detail, capability_versions};
-use self::groups::{create_group, delete_group, list_groups, list_roles, update_group};
+use self::groups::{
+    create_group, delete_group, group_exposure, list_groups, list_roles, update_group,
+    update_group_exposure,
+};
 use self::packages::{install_package, list_catalog, uninstall_package, update_package_config};
 use self::session::{login, logout, session_info};
 pub(crate) use self::stats::{
@@ -67,11 +70,12 @@ pub(crate) use self::surface::queue_item;
 use self::surface::{audit_events, health, me, review_queue};
 use self::tokens::{
     create_token, delete_token, list_tokens, reissue_token, revoke_token, token_options,
+    update_token,
 };
 use self::transport::get_transport_key;
 use self::upstreams::{
     create_upstream, delete_upstream, get_upstream, list_upstreams, refresh_upstream,
-    set_upstream_basic_tools, update_upstream, upstream_tools,
+    update_upstream, upstream_tools,
 };
 use self::writes::{
     create_capability, deprecate_capability, publish, reject_capability, submit, update_definition,
@@ -131,11 +135,15 @@ pub fn router(state: AdminState) -> Router {
         .route("/roles", get(list_roles))
         .route("/groups", get(list_groups).post(create_group))
         .route("/groups/{code}", put(update_group).delete(delete_group))
+        .route(
+            "/groups/{code}/exposure",
+            get(group_exposure).put(update_group_exposure),
+        )
         .route("/tokens", get(list_tokens).post(create_token))
         .route("/tokens/options", get(token_options))
         .route("/tokens/{id}/revoke", post(revoke_token))
         .route("/tokens/{id}/reissue", post(reissue_token))
-        .route("/tokens/{id}", delete(delete_token))
+        .route("/tokens/{id}", patch(update_token).delete(delete_token))
         .route("/review-queue", get(review_queue))
         .route("/tools/stats", get(tool_stats))
         .route("/tools/candidates", get(tool_candidates))
@@ -149,7 +157,6 @@ pub fn router(state: AdminState) -> Router {
         )
         .route("/upstreams/{id}/refresh", post(refresh_upstream))
         .route("/upstreams/{id}/tools", get(upstream_tools))
-        .route("/upstreams/{id}/tools/basic", put(set_upstream_basic_tools))
         .route("/mcp/catalog", get(list_catalog))
         .route("/transport-key", get(get_transport_key))
         .route("/mcp/catalog/{id}/install", post(install_package))
@@ -442,9 +449,12 @@ pub fn routes() -> Vec<(&'static str, &'static str)> {
         ("POST", "/admin/groups"),
         ("PUT", "/admin/groups/{code}"),
         ("DELETE", "/admin/groups/{code}"),
+        ("GET", "/admin/groups/{code}/exposure"),
+        ("PUT", "/admin/groups/{code}/exposure"),
         ("GET", "/admin/tokens"),
         ("POST", "/admin/tokens"),
         ("GET", "/admin/tokens/options"),
+        ("PATCH", "/admin/tokens/{id}"),
         ("POST", "/admin/tokens/{id}/revoke"),
         ("POST", "/admin/tokens/{id}/reissue"),
         ("DELETE", "/admin/tokens/{id}"),
@@ -464,7 +474,6 @@ pub fn routes() -> Vec<(&'static str, &'static str)> {
         ("DELETE", "/admin/upstreams/{id}"),
         ("POST", "/admin/upstreams/{id}/refresh"),
         ("GET", "/admin/upstreams/{id}/tools"),
-        ("PUT", "/admin/upstreams/{id}/tools/basic"),
         ("GET", "/admin/mcp/catalog"),
         ("GET", "/admin/transport-key"),
         ("POST", "/admin/mcp/catalog/{id}/install"),

@@ -1,4 +1,4 @@
-//! 上游 MCP server 注册表：配置、脱敏审计 diff 与逐工具组覆盖（router 的动态插入面）。
+//! 上游 MCP server 注册表：配置、脱敏审计 diff（router 的动态插入面）。
 
 use super::record::{AdminChange, field_changes};
 use super::{CapabilityStore, is_builtin_id, now_iso};
@@ -15,7 +15,6 @@ const UPSTREAM_CHANGE_FIELDS: &[&str] = &[
     "url",
     "command",
     "args",
-    "group",
     "category",
     "enabled",
     "timeout_ms",
@@ -29,12 +28,10 @@ pub const UPSTREAM_CATEGORIES: &[&str] = &["basic", "analysis", "admin", "custom
 pub const RESERVED_UPSTREAM_IDS: &[&str] = &["admin", "analysis", "basic", "builtin", "jumcp"];
 pub const UPSTREAM_ID_MAX_LEN: usize = 32;
 pub const UPSTREAM_MAX_ITEMS: usize = 64;
-/// 单台上游可被覆盖到 `basic` 的工具数上限（与 args/env/headers 的条目上限同量级）。
-pub const UPSTREAM_TOOL_GROUP_MAX: usize = 64;
 pub const UPSTREAM_TIMEOUT_MAX_MS: i64 = 120_000;
 /// 对外工具名（`<server_id>__<tool>`）的字节上限；超限拒绝接入，不截断。
 pub const EXPOSED_TOOL_NAME_MAX: usize = 64;
-/// 暴露名分隔符：`tools/call` 的前缀回退与 token allowlist 都按它识别上游工具。
+/// 暴露名分隔符：`tools/call` 的前缀回退按它识别上游工具。
 pub const UPSTREAM_NAME_SEP: &str = "__";
 
 /// 一个上游 MCP server 的持久化配置。
@@ -51,7 +48,6 @@ pub struct McpUpstream {
     pub args: Vec<String>,
     pub env: std::collections::BTreeMap<String, String>,
     pub headers: std::collections::BTreeMap<String, String>,
-    pub group: String,
     pub category: String,
     pub enabled: bool,
     pub timeout_ms: i64,
@@ -72,17 +68,6 @@ pub struct UpstreamTool {
     pub annotations: Option<Value>,
 }
 
-/// 逐工具组覆盖：**只存显式覆盖**，无行 = 继承 `mcp_upstreams.group_code`。
-///
-/// 只允许 `group_code = basic`（其它组值在写入时被拒）：单工具进公共基础通道是"开放一个只读工具"，
-/// 其他组仍按整台上游授权，避免出现"逐工具拆授权组"的第二套模型。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpstreamToolGroup {
-    pub upstream_id: String,
-    pub tool_name: String,
-    pub group_code: String,
-}
-
 /// 上游 id 门禁：`^[a-z][a-z0-9_-]{1,31}$`，且不含连续 `__`。
 ///
 /// 禁止 `__` 是为了让 `<server_id>__<tool>` 的前缀唯一可反解：分隔符只能出现一次在
@@ -100,8 +85,6 @@ pub fn is_valid_upstream_id(id: &str) -> bool {
 }
 
 /// 上游工具暴露名：`<server_id>__<tool>`、整名 ≤64、两侧只含 `[A-Za-z0-9_-]`。
-///
-/// token 的 allowlist 用它识别"这是上游工具名"（内置 id 不含 `__`，两者不会互相误判）。
 pub fn is_upstream_tool_name(name: &str) -> bool {
     if name.len() > EXPOSED_TOOL_NAME_MAX {
         return false;
@@ -116,45 +99,8 @@ pub fn is_upstream_tool_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// allowlist 的"全部工具"条目。
-pub const TOOL_WILDCARD_ALL: &str = "*";
-
-/// `<server_id>__*` → server id；其余形状返回 `None`。
-///
-/// 只接受"整名以 `__*` 结尾、前缀是合法上游 id"的形状。`a__b__*`、`__*`、`*__x` 都不算通配：
-/// server id 本身禁止 `__`，所以前缀能唯一反解到某个上游，不会误伤别的前缀。
-fn upstream_wildcard_server(entry: &str) -> Option<&str> {
-    let server = entry.strip_suffix("__*")?;
-    is_valid_upstream_id(server).then_some(server)
-}
-
-/// allowlist 条目是否合法：内置 id、上游暴露名，或两种通配（`*`、`<server_id>__*`）。
-///
-/// 校验与匹配共用 [`upstream_wildcard_server`] 的解析：各写一遍必然出现
-/// "校验放过、`tools/list` 不认"的双套口径。
-pub fn is_tool_allowlist_entry(entry: &str) -> bool {
-    entry == TOOL_WILDCARD_ALL
-        || upstream_wildcard_server(entry).is_some()
-        || super::is_builtin_id(entry)
-        || is_upstream_tool_name(entry)
-}
-
-/// allowlist 条目是否命中某个工具名（内置 id 或上游暴露名）。
-///
-/// `tools/list`、发现面投影与 `tools/call` 三处共用这一处实现，避免
-/// "列表里没有、调用却放行"。非法条目只可能来自历史数据，按精确匹配处理。
-pub fn tool_allowlist_matches(entry: &str, name: &str) -> bool {
-    if entry == TOOL_WILDCARD_ALL || entry == name {
-        return true;
-    }
-    upstream_wildcard_server(entry).is_some_and(|server| {
-        name.strip_prefix(server)
-            .is_some_and(|rest| rest.starts_with(UPSTREAM_NAME_SEP))
-    })
-}
-
 impl McpUpstream {
-    /// 配置门禁：结构、传输必填项、闭集、上限。组存在性由管理面用 effective policy 判。
+    /// 配置门禁：结构、传输必填项、闭集、上限。
     pub fn validate(&self) -> Result<(), McpError> {
         if !is_valid_upstream_id(&self.id) {
             return Err(McpError::new(
@@ -233,12 +179,6 @@ impl McpUpstream {
                 }
             }
         }
-        if self.group.trim().is_empty() {
-            return Err(McpError::new(
-                "MCP_UPSTREAM_INVALID",
-                json!({"field": "group"}),
-            ));
-        }
         if !UPSTREAM_CATEGORIES.contains(&self.category.as_str()) {
             return Err(McpError::new(
                 "MCP_UPSTREAM_INVALID",
@@ -266,7 +206,6 @@ impl McpUpstream {
             "args": self.args,
             "env": self.env,
             "headers": self.headers,
-            "group": self.group,
             "category": self.category,
             "enabled": self.enabled,
             "timeout_ms": self.timeout_ms
@@ -284,7 +223,6 @@ impl McpUpstream {
             "args": self.args,
             "env": masked_map(&self.env, &[]),
             "headers": masked_map(&self.headers, &[]),
-            "group": self.group,
             "category": self.category,
             "enabled": self.enabled,
             "timeout_ms": self.timeout_ms,
@@ -300,7 +238,6 @@ impl McpUpstream {
     pub fn audit_data(&self) -> Value {
         let mut data = json!({
             "transport": self.transport,
-            "group": self.group,
             "category": self.category,
             "enabled": self.enabled
         });
@@ -411,7 +348,6 @@ fn empty_upstream() -> McpUpstream {
         args: Vec::new(),
         env: std::collections::BTreeMap::new(),
         headers: std::collections::BTreeMap::new(),
-        group: String::new(),
         category: String::new(),
         enabled: true,
         timeout_ms: 0,
@@ -485,7 +421,7 @@ impl CapabilityStore {
             }
             let now = now_iso();
             conn.execute(
-                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, group_code, category, enabled, timeout_ms, created_at, updated_at, catalog_id, catalog_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13,?14,?15)",
+                "INSERT INTO mcp_upstreams (id, name, transport, url, command, args_json, env_json, headers_json, category, enabled, timeout_ms, created_at, updated_at, catalog_id, catalog_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,?13,?14)",
                 rusqlite::params![
                     upstream.id,
                     upstream.name,
@@ -495,7 +431,6 @@ impl CapabilityStore {
                     serde_json::to_string(&upstream.args).map_err(|e| McpError::store(e.to_string()))?,
                     serde_json::to_string(&upstream.env).map_err(|e| McpError::store(e.to_string()))?,
                     serde_json::to_string(&upstream.headers).map_err(|e| McpError::store(e.to_string()))?,
-                    upstream.group,
                     upstream.category,
                     upstream.enabled as i64,
                     upstream.timeout_ms,
@@ -537,7 +472,7 @@ impl CapabilityStore {
             let conn = self.conn.lock().map_err(|_| McpError::lock())?;
             let changed = conn
                 .execute(
-                    "UPDATE mcp_upstreams SET name=?2, transport=?3, url=?4, command=?5, args_json=?6, env_json=?7, headers_json=?8, group_code=?9, category=?10, enabled=?11, timeout_ms=?12, updated_at=?13 WHERE id=?1",
+                    "UPDATE mcp_upstreams SET name=?2, transport=?3, url=?4, command=?5, args_json=?6, env_json=?7, headers_json=?8, category=?9, enabled=?10, timeout_ms=?11, updated_at=?12 WHERE id=?1",
                     rusqlite::params![
                         upstream.id,
                         upstream.name,
@@ -547,7 +482,6 @@ impl CapabilityStore {
                         serde_json::to_string(&upstream.args).map_err(|e| McpError::store(e.to_string()))?,
                         serde_json::to_string(&upstream.env).map_err(|e| McpError::store(e.to_string()))?,
                         serde_json::to_string(&upstream.headers).map_err(|e| McpError::store(e.to_string()))?,
-                        upstream.group,
                         upstream.category,
                         upstream.enabled as i64,
                         upstream.timeout_ms,
@@ -572,7 +506,7 @@ impl CapabilityStore {
         Ok(after)
     }
 
-    /// 删除上游：不存在 → 404；逐工具组覆盖在同一事务里级联删除；删除前的一侧配置进审计 changes。
+    /// 删除上游：不存在 → 404；组暴露矩阵（两层）在同一事务里级联删除；删除前的一侧配置进审计 changes。
     pub fn delete_upstream(&self, id: &str, actor: impl IntoAuditOrigin) -> Result<(), McpError> {
         let origin = actor.into_audit_origin();
         let before = self.require_upstream(id)?;
@@ -581,11 +515,10 @@ impl CapabilityStore {
             let tx = conn
                 .unchecked_transaction()
                 .map_err(|e| McpError::store(e.to_string()))?;
-            tx.execute(
-                "DELETE FROM mcp_upstream_tool_groups WHERE upstream_id=?",
-                [id],
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
+            tx.execute("DELETE FROM mcp_group_tool_rules WHERE upstream_id=?", [id])
+                .map_err(|e| McpError::store(e.to_string()))?;
+            tx.execute("DELETE FROM mcp_group_upstreams WHERE upstream_id=?", [id])
+                .map_err(|e| McpError::store(e.to_string()))?;
             tx.execute("DELETE FROM mcp_upstreams WHERE id=?", [id])
                 .map_err(|e| McpError::store(e.to_string()))?;
             tx.commit().map_err(|e| McpError::store(e.to_string()))?;
@@ -597,210 +530,10 @@ impl CapabilityStore {
                 .with_data(before.audit_data()),
         )
     }
-
-    /// 全部逐工具组覆盖（按 `upstream_id, tool_name` 升序，输出稳定）。
-    ///
-    /// `group_code` 只有 `basic` 一种取值：投影阶段用 `(upstream_id, tool_name) → group_code` 决定
-    /// 单个上游工具的生效组（无行 = 继承上游组）。
-    pub fn upstream_tool_groups(&self) -> Result<Vec<UpstreamToolGroup>, McpError> {
-        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT upstream_id, tool_name, group_code FROM mcp_upstream_tool_groups ORDER BY upstream_id, tool_name",
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
-        let mapped = stmt
-            .query_map([], row_to_tool_group)
-            .map_err(|e| McpError::store(e.to_string()))?;
-        let mut rows = Vec::new();
-        for row in mapped {
-            rows.push(row.map_err(|e| McpError::store(e.to_string()))?);
-        }
-        Ok(rows)
-    }
-
-    /// 单台上游的覆盖行（管理面读视图用），按 `tool_name` 升序。
-    pub fn upstream_tool_groups_of(&self, id: &str) -> Result<Vec<UpstreamToolGroup>, McpError> {
-        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT upstream_id, tool_name, group_code FROM mcp_upstream_tool_groups WHERE upstream_id=? ORDER BY tool_name",
-            )
-            .map_err(|e| McpError::store(e.to_string()))?;
-        let mapped = stmt
-            .query_map([id], row_to_tool_group)
-            .map_err(|e| McpError::store(e.to_string()))?;
-        let mut rows = Vec::new();
-        for row in mapped {
-            rows.push(row.map_err(|e| McpError::store(e.to_string()))?);
-        }
-        Ok(rows)
-    }
-
-    /// 归入 `basic` 的上游工具总数（`GET /admin/groups` 的 basic 条目计数）。
-    pub fn count_basic_upstream_tools(&self) -> Result<i64, McpError> {
-        let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-        conn.query_row(
-            "SELECT COUNT(*) FROM mcp_upstream_tool_groups WHERE group_code=?",
-            [crate::config::BASIC_GROUP_NAME],
-            |r| r.get(0),
-        )
-        .map_err(|e| McpError::store(e.to_string()))
-    }
-
-    /// 合并式写入逐工具组覆盖：`set` 建/改行，`clear` 删行；单台上游上限
-    /// [`UPSTREAM_TOOL_GROUP_MAX`]。
-    ///
-    /// 语义：**合并**，不是整体替换——一次 PUT 只表达"这几个工具进 basic / 出 basic"。
-    /// 幂等：与现状无差异的行不写，无任何变化时不写审计并返回空 changes。
-    /// 上限检查与写入在同一事务内，避免两个并发 PUT 各自看到"未超限"后一起写超。
-    pub fn apply_upstream_tool_groups(
-        &self,
-        id: &str,
-        set: &[(String, String)],
-        clear: &[String],
-        actor: impl IntoAuditOrigin,
-    ) -> Result<Vec<Value>, McpError> {
-        let origin = actor.into_audit_origin();
-        let basic = crate::config::BASIC_GROUP_NAME;
-        for (_, group) in set {
-            if group != basic {
-                return Err(McpError::new(
-                    "MCP_VALIDATION_ERROR",
-                    json!({"field": "tools", "group": group, "hint": "逐工具覆盖只支持 basic"}),
-                ));
-            }
-        }
-        let before = self.upstream_tool_groups_of(id)?;
-        let known: std::collections::HashMap<&str, &str> = before
-            .iter()
-            .map(|r| (r.tool_name.as_str(), r.group_code.as_str()))
-            .collect();
-        {
-            let conn = self.conn.lock().map_err(|_| McpError::lock())?;
-            let tx = conn
-                .unchecked_transaction()
-                .map_err(|e| McpError::store(e.to_string()))?;
-            let exists: i64 = tx
-                .query_row("SELECT COUNT(*) FROM mcp_upstreams WHERE id=?", [id], |r| {
-                    r.get(0)
-                })
-                .map_err(|e| McpError::store(e.to_string()))?;
-            if exists == 0 {
-                return Err(McpError::new("MCP_UPSTREAM_NOT_FOUND", json!({"id": id})));
-            }
-            let now = now_iso();
-            {
-                let mut upsert = tx
-                    .prepare(
-                        "INSERT INTO mcp_upstream_tool_groups (upstream_id, tool_name, group_code, updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(upstream_id, tool_name) DO UPDATE SET group_code=excluded.group_code, updated_at=excluded.updated_at",
-                    )
-                    .map_err(|e| McpError::store(e.to_string()))?;
-                for (tool, group) in set {
-                    if known.get(tool.as_str()) == Some(&group.as_str()) {
-                        continue;
-                    }
-                    upsert
-                        .execute(rusqlite::params![id, tool, group, &now])
-                        .map_err(|e| McpError::store(e.to_string()))?;
-                }
-            }
-            {
-                let mut delete = tx
-                    .prepare(
-                        "DELETE FROM mcp_upstream_tool_groups WHERE upstream_id=?1 AND tool_name=?2",
-                    )
-                    .map_err(|e| McpError::store(e.to_string()))?;
-                for tool in clear {
-                    if !known.contains_key(tool.as_str()) {
-                        continue;
-                    }
-                    delete
-                        .execute(rusqlite::params![id, tool])
-                        .map_err(|e| McpError::store(e.to_string()))?;
-                }
-            }
-            let count: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM mcp_upstream_tool_groups WHERE upstream_id=? AND group_code=?",
-                    rusqlite::params![id, basic],
-                    |r| r.get(0),
-                )
-                .map_err(|e| McpError::store(e.to_string()))?;
-            if count > UPSTREAM_TOOL_GROUP_MAX as i64 {
-                return Err(McpError::new(
-                    "MCP_VALIDATION_ERROR",
-                    json!({
-                        "field": "tools",
-                        "tool_count": count,
-                        "limit": UPSTREAM_TOOL_GROUP_MAX,
-                        "hint": "单台上游的 basic 工具数超过上限",
-                    }),
-                ));
-            }
-            tx.commit().map_err(|e| McpError::store(e.to_string()))?;
-        }
-        let after = self.upstream_tool_groups_of(id)?;
-        let mut changes: Vec<Value> = Vec::new();
-        for row in &after {
-            if known.get(row.tool_name.as_str()) != Some(&row.group_code.as_str()) {
-                changes.push(json!({
-                    "field": "tool_group",
-                    "tool": row.tool_name,
-                    "before": known.get(row.tool_name.as_str()).map(|g| json!(g)),
-                    "after": row.group_code,
-                }));
-            }
-        }
-        for row in &before {
-            if !after.iter().any(|r| r.tool_name == row.tool_name) {
-                changes.push(json!({
-                    "field": "tool_group",
-                    "tool": row.tool_name,
-                    "before": row.group_code,
-                    "after": Value::Null,
-                }));
-            }
-        }
-        changes.sort_by(|a, b| {
-            let key = |v: &Value| {
-                (
-                    v.get("tool")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    v.get("field")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                )
-            };
-            key(a).cmp(&key(b))
-        });
-        if changes.is_empty() {
-            return Ok(changes);
-        }
-        let basic_total = after.iter().filter(|r| r.group_code == basic).count();
-        self.write_admin_audit(
-            AdminChange::new("upstream", id, "update_tool_groups")
-                .with_origin(origin)
-                .with_changes(changes.clone())
-                .with_data(json!({"basic_total": basic_total})),
-        )?;
-        Ok(changes)
-    }
 }
 /// 空串列值 → `None`：SQLite 用 `TEXT NOT NULL DEFAULT ''` 表达"没有"，对外契约用 null。
 fn non_empty_opt(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
-}
-
-fn row_to_tool_group(row: &Row) -> rusqlite::Result<UpstreamToolGroup> {
-    Ok(UpstreamToolGroup {
-        upstream_id: row.get("upstream_id")?,
-        tool_name: row.get("tool_name")?,
-        group_code: row.get("group_code")?,
-    })
 }
 
 fn row_to_upstream(row: &Row) -> rusqlite::Result<McpUpstream> {
@@ -860,7 +593,6 @@ fn row_to_upstream(row: &Row) -> rusqlite::Result<McpUpstream> {
         args,
         env,
         headers,
-        group: row.get("group_code")?,
         category: row.get("category")?,
         enabled: row.get::<_, i64>("enabled")? != 0,
         timeout_ms: row.get("timeout_ms")?,

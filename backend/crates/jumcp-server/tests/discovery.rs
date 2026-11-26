@@ -74,12 +74,15 @@ fn server_with(
     let mut service = Service::new(settings(threshold, overflow))
         .with_catalog(catalog)
         .with_scope(EffectiveScope {
-            groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             budget: 2000,
             degraded: false,
             source: "default".into(),
             mode: "strict".into(),
-            allowed_builtin_tools: None,
         });
     if let Some(c) = caps {
         service = service.with_budget_caps(c);

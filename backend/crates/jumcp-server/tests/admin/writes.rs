@@ -242,12 +242,11 @@ async fn write_endpoints_refuse_when_audit_disabled() {
         Service::new(settings())
             .with_templates(registry)
             .with_scope(EffectiveScope {
-                groups: vec!["db.read.core".into()],
+                groups: vec!["basic".into(), "admin".into(), "db.read.core".into()],
                 budget: 2000,
                 degraded: false,
                 source: "header".into(),
                 mode: "strict".into(),
-                allowed_builtin_tools: None,
             }),
     );
     crate::support::seed_admin_accounts(&store, 3600);

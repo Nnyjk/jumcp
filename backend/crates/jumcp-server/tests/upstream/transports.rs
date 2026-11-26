@@ -10,14 +10,7 @@ async fn sse_upstream_is_supported() {
     let (url, _fake) = spawn_fake(true).await;
     let (status, item) = create_upstream(&h, upstream_body("sse", &url)).await;
     assert_eq!(status, StatusCode::OK, "{item}");
-    let token = issue_token(
-        &h,
-        "agent-sse",
-        "analyst",
-        &["db.read.analytics"],
-        &["sse__echo"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-sse", "analyst", &["db.read.analytics"]).await;
     let names = tool_names(&h.app, &token).await;
     assert!(names.contains(&"sse__echo".to_string()), "{names:?}");
     let resp = call_tool(&h.app, &token, "sse__echo", json!({})).await;
@@ -40,14 +33,7 @@ async fn unreachable_upstream_is_isolated_and_reported() {
             .0,
         StatusCode::OK
     );
-    let token = issue_token(
-        &h,
-        "agent-isolation",
-        "analyst",
-        &["db.read.analytics"],
-        &["good__echo", "dead__echo"],
-    )
-    .await;
+    let token = issue_token(&h, "agent-isolation", "analyst", &["db.read.analytics"]).await;
 
     // tools/list 仍返回内置 + 可达上游；不可达上游只是没有工具。
     let names = tool_names(&h.app, &token).await;

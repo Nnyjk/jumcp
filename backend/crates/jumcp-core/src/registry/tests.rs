@@ -614,6 +614,22 @@ VALUES ('legacy', '旧上游', 'http', 'http://127.0.0.1:9/mcp', 'db.read.legacy
             .unwrap();
         assert_eq!(catalog_id, "", "旧行补列取默认空串");
         assert_eq!(catalog_version, "");
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(mcp_upstreams)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(!columns.iter().any(|c| c == "group_code"), "{columns:?}");
+        let granted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mcp_group_upstreams WHERE group_code='db.read.legacy' AND upstream_id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(granted, 1, "旧 group_code 迁移成组内上游授予");
     }
     let row = s.upstream("legacy").unwrap().expect("旧行仍可读");
     assert!(row.catalog_id.is_none(), "空串读出即无包坐标");
@@ -845,56 +861,6 @@ fn concurrent_submit_lets_exactly_one_win() {
     assert_eq!(s.get("cap1").unwrap().unwrap().status, "review");
 }
 
-/// allowlist 通配的形状：`*` 与 `<server_id>__*` 合法，能反解不到上游的形状一律拒绝。
-#[test]
-fn tool_allowlist_entries_only_wildcard_in_known_shapes() {
-    for ok in [
-        TOOL_WILDCARD_ALL,
-        "search_capabilities",
-        "clickhouse__query",
-        "clickhouse__*",
-    ] {
-        assert!(is_tool_allowlist_entry(ok), "{ok} 应被接受");
-    }
-    for bad in [
-        "",
-        "**",
-        "a__b__*",
-        "*__x",
-        "__*",
-        "clickhouse__",
-        "ClickHouse__*",
-    ] {
-        assert!(!is_tool_allowlist_entry(bad), "{bad} 应被拒绝");
-    }
-}
-
-/// 匹配语义：`*` 命中一切，`<server_id>__*` 只命中该上游的暴露名，其余是精确匹配。
-#[test]
-fn tool_allowlist_matches_wildcards_and_exact_names() {
-    assert!(tool_allowlist_matches("*", "clickhouse__query"));
-    assert!(tool_allowlist_matches("*", "search_capabilities"));
-    assert!(tool_allowlist_matches("clickhouse__*", "clickhouse__query"));
-    assert!(
-        !tool_allowlist_matches("clickhouse__*", "clickhouse2__query"),
-        "前缀必须落在分隔符上"
-    );
-    assert!(!tool_allowlist_matches(
-        "clickhouse__*",
-        "clickhouse_east__query"
-    ));
-    assert!(tool_allowlist_matches(
-        "clickhouse__query",
-        "clickhouse__query"
-    ));
-    assert!(!tool_allowlist_matches(
-        "clickhouse__query",
-        "clickhouse__list_tables"
-    ));
-    // 历史数据里的非法条目按精确匹配处理，不得变成"命中一切"。
-    assert!(!tool_allowlist_matches("a__b__*", "a__b__query"));
-}
-
 /// 显式 secret 集合必须能脱敏"名字不像密钥"的 env（内置包字段声明才是权威）。
 #[test]
 fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
@@ -910,7 +876,6 @@ fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
         args: Vec::new(),
         env: std::collections::BTreeMap::from([("JUMCP_FOO_KEY".to_string(), sealed.to_string())]),
         headers: std::collections::BTreeMap::new(),
-        group: "db.read.core".into(),
         category: "custom".into(),
         enabled: true,
         timeout_ms: 30_000,
@@ -939,4 +904,192 @@ fn audit_masks_declared_secret_env_even_when_name_looks_harmless() {
         .find(|change| change["field"] == json!("env"))
         .expect("env change");
     assert_eq!(env_change["after"]["JUMCP_FOO_KEY"], json!("***"));
+}
+
+/// 两层暴露的判定：规则优先于第一层授予，判定按组独立，任意组放行即可见。
+#[test]
+fn group_exposure_rules_override_grants_per_group() {
+    let s = store();
+    s.apply_group_upstreams("db.core", &[("ch".into(), true)], "alice")
+        .unwrap();
+    s.apply_group_upstreams("db.analytics", &[("ch".into(), true)], "alice")
+        .unwrap();
+    s.apply_group_tool_rules(
+        "db.core",
+        "ch",
+        &[("danger".into(), Some(ToolRuleState::Exclude))],
+        "alice",
+    )
+    .unwrap();
+    s.apply_group_tool_rules(
+        "db.analytics",
+        "ch",
+        &[("extra".into(), Some(ToolRuleState::Include))],
+        "alice",
+    )
+    .unwrap();
+
+    let e = s.group_exposure().unwrap();
+    assert!(e.granted("db.core", "ch"));
+    assert!(e.visible("db.core", "ch", "echo"), "无规则 = 继承授予");
+    assert!(!e.visible("db.core", "ch", "danger"), "排除规则优先");
+    assert!(
+        e.visible("db.analytics", "ch", "danger"),
+        "别的组没有排除规则"
+    );
+    assert!(e.visible("db.analytics", "ch", "extra"));
+    assert_eq!(
+        e.rules_of("db.core", "ch"),
+        vec![("danger", ToolRuleState::Exclude)]
+    );
+
+    // 未授予的组：include 规则仍然放行（第二层不要求第一层）。
+    s.apply_group_tool_rules(
+        "db.core",
+        "other",
+        &[("ping".into(), Some(ToolRuleState::Include))],
+        "alice",
+    )
+    .unwrap();
+    let e = s.group_exposure().unwrap();
+    assert!(!e.granted("db.core", "other"));
+    assert!(e.visible("db.core", "other", "ping"));
+
+    let scope = vec!["db.core".to_string(), "db.analytics".to_string()];
+    assert!(
+        e.visible_any(&scope, "ch", "danger"),
+        "任一组成立即对 scope 可见"
+    );
+    assert_eq!(
+        e.visible_group(&scope, "ch", "echo"),
+        Some("db.analytics"),
+        "多元可见时取字典序最小，保证展示稳定"
+    );
+    assert!(
+        !e.visible_any(&["db.other".to_string()], "ch", "echo"),
+        "未授予的组看不到继承来的工具"
+    );
+    assert_eq!(e.groups_granting("ch"), vec!["db.analytics", "db.core"]);
+    assert_eq!(
+        e.touched_upstreams(&["db.core".to_string()]).len(),
+        2,
+        "授予过的上游 + 有规则的上游都算接触"
+    );
+}
+
+/// 第二层写入是合并式的：重复同值不写库不写审计，`None` 删规则回到继承。
+#[test]
+fn group_tool_rules_merge_and_are_idempotent() {
+    let audit = std::sync::Arc::new(AuditLog::open(":memory:").expect("audit"));
+    let s = CapabilityStore::open(":memory:", Some(audit.clone())).expect("store");
+    let rule_audits = |s: &CapabilityStore| {
+        s.audit
+            .as_ref()
+            .unwrap()
+            .query(Some(&json!({"event_type": "admin_change"})))
+            .expect("query")
+            .into_iter()
+            .filter(|e| e.payload["action"] == json!("group_tool_rules"))
+            .count()
+    };
+    let first = s
+        .apply_group_tool_rules(
+            "db.core",
+            "ch",
+            &[("echo".into(), Some(ToolRuleState::Include))],
+            "alice",
+        )
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["field"], json!("tool_rule"));
+    assert_eq!(first[0]["before"], Value::Null);
+    assert_eq!(first[0]["after"], json!("include"));
+    assert_eq!(rule_audits(&s), 1);
+
+    let same = s
+        .apply_group_tool_rules(
+            "db.core",
+            "ch",
+            &[("echo".into(), Some(ToolRuleState::Include))],
+            "alice",
+        )
+        .unwrap();
+    assert!(same.is_empty(), "同值不产生变更");
+    assert_eq!(rule_audits(&s), 1, "无变化不写审计");
+
+    let flip = s
+        .apply_group_tool_rules(
+            "db.core",
+            "ch",
+            &[("echo".into(), Some(ToolRuleState::Exclude))],
+            "alice",
+        )
+        .unwrap();
+    assert_eq!(flip[0]["before"], json!("include"));
+    assert_eq!(flip[0]["after"], json!("exclude"));
+
+    let cleared = s
+        .apply_group_tool_rules("db.core", "ch", &[("echo".into(), None)], "alice")
+        .unwrap();
+    assert_eq!(cleared[0]["after"], Value::Null);
+    assert!(
+        s.group_exposure()
+            .unwrap()
+            .rules_of("db.core", "ch")
+            .is_empty()
+    );
+}
+
+/// 撤销整台授予时清掉同组同上游的排除规则：留着它会让"撤销后再授予"带回旧规则。
+/// 显式 `include` 是独立授权，撤销整台授予后应当保留。
+#[test]
+fn revoking_a_grant_clears_its_exclude_rules() {
+    let s = store();
+    s.apply_group_upstreams("db.core", &[("ch".into(), true)], "alice")
+        .unwrap();
+    s.apply_group_tool_rules(
+        "db.core",
+        "ch",
+        &[
+            ("danger".into(), Some(ToolRuleState::Exclude)),
+            ("extra".into(), Some(ToolRuleState::Include)),
+        ],
+        "alice",
+    )
+    .unwrap();
+    let changes = s
+        .apply_group_upstreams("db.core", &[("ch".into(), false)], "alice")
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["before"], json!(true));
+    assert_eq!(changes[0]["after"], Value::Null);
+    let e = s.group_exposure().unwrap();
+    assert!(!e.granted("db.core", "ch"));
+    assert_eq!(
+        e.rules_of("db.core", "ch"),
+        vec![("extra", ToolRuleState::Include)],
+        "撤销授予只清 exclude，显式 include 保留：{:?}",
+        e.rules_of("db.core", "ch")
+    );
+    assert!(!e.visible("db.core", "ch", "danger"));
+}
+
+/// 组删除门禁：授予与规则都算引用。
+#[test]
+fn group_exposure_refs_block_group_deletion() {
+    let s = store();
+    s.apply_group_upstreams("db.core", &[("ch".into(), true)], "alice")
+        .unwrap();
+    s.apply_group_tool_rules(
+        "db.core",
+        "ch",
+        &[("echo".into(), Some(ToolRuleState::Include))],
+        "alice",
+    )
+    .unwrap();
+    {
+        let conn = s.db().lock().unwrap();
+        assert_eq!(s.group_exposure_refs(&conn, "db.core").unwrap(), (1, 1));
+        assert_eq!(s.group_exposure_refs(&conn, "db.other").unwrap(), (0, 0));
+    }
 }

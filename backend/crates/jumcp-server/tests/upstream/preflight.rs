@@ -30,7 +30,7 @@ async fn setup(preflight: Option<PreflightConfig>) -> (Harness, FakeUpstream, St
     let (url, fake) = spawn_fake_named(&["query"]).await;
     let (status, item) = create_upstream(&h, upstream_body("analytics", &url)).await;
     assert_eq!(status, StatusCode::OK, "注册上游失败: {item}");
-    let token = issue_token(&h, "agent-sql", "analyst", &["db.read.analytics"], &[TOOL]).await;
+    let token = issue_token(&h, "agent-sql", "analyst", &["db.read.analytics"]).await;
     (h, fake, token)
 }
 

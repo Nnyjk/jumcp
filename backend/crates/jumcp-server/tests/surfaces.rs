@@ -41,12 +41,11 @@ fn build(web_dir: &str) -> Surfaces {
             .with_audit(audit)
             .with_templates(Arc::new(TemplateRegistry::new(store.clone())))
             .with_scope(EffectiveScope {
-                groups: vec!["db.read.core".into()],
+                groups: vec!["basic".into(), "db.read.core".into()],
                 budget: 2000,
                 degraded: false,
                 source: "header".into(),
                 mode: "strict".into(),
-                allowed_builtin_tools: None,
             }),
     );
     let endpoint = BuiltinEndpoint::local(&settings.host, settings.port).expect("builtin endpoint");

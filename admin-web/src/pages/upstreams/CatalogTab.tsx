@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { gsap } from 'gsap'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchMcpCatalog, uninstallMcpCatalogEntry } from '../../api/admin'
-import { groupLabel, indexGroups, useGroupsQuery } from '../../api/queries'
 import type {
   McpCatalogEntry,
   McpCatalogField,
@@ -24,7 +23,6 @@ import { UPSTREAM_TRANSPORT_LABEL } from '../../labels'
 import type { Notice } from '../../notice'
 import { EditConfigForm } from './EditConfigForm'
 import { InstallForm } from './InstallForm'
-import { GROUP_OPTIONS_LIMIT } from './upstreamTools'
 import '../../styles/upstreams.css'
 
 interface InstallationTarget {
@@ -55,12 +53,13 @@ const GROUP_LABEL: Record<string, string> = {
 /**
  * 「MCP 接入」的安装目录页签：小卡片只展示名称/id/版本/摘要/标签/已装数量，
  * 完整定义进「详情」弹窗；安装表单不含上游 id（由目录按已安装实例自动推导）。
- * 安装/卸载/改配置都走目录接口；名称、授权组与启停仍由「接入清单」页签的上游编辑负责。
+ * 安装/卸载/改配置都走目录接口；名称与启停仍由「接入清单」页签的上游编辑负责，
+ * 哪些组能看到该上游由「组维护」页的暴露矩阵配置。
  */
 export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void }) {
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
-  const [groupFilter, setGroupFilter] = useState('')
+  const [tagFilter, setTagFilter] = useState('')
   const [installTarget, setInstallTarget] = useState<McpCatalogEntry | null>(null)
   const [detailTarget, setDetailTarget] = useState<McpCatalogEntry | null>(null)
   const [editTarget, setEditTarget] = useState<InstallationTarget | null>(null)
@@ -71,9 +70,6 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
     queryKey: ['mcp-catalog'],
     queryFn: ({ signal }) => fetchMcpCatalog(signal),
   })
-  const groupsQuery = useGroupsQuery(GROUP_OPTIONS_LIMIT)
-  const groups = groupsQuery.data?.items ?? []
-  const groupIndex = useMemo(() => indexGroups(groupsQuery.data), [groupsQuery.data])
   const entries = useMemo(() => catalogQuery.data?.items ?? [], [catalogQuery.data])
   const totalInstallations = entries.reduce((sum, entry) => sum + entry.installations.length, 0)
 
@@ -113,8 +109,8 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
   }, [entries])
 
   const filteredGroups = useMemo(
-    () => (groupFilter === '' ? catalogGroups : catalogGroups.filter((group) => group.key === groupFilter)),
-    [catalogGroups, groupFilter],
+    () => (tagFilter === '' ? catalogGroups : catalogGroups.filter((group) => group.key === tagFilter)),
+    [catalogGroups, tagFilter],
   )
 
   /** 卡片入场动效：目录或过滤变化时重播一次；只动首屏 20 张卡片，长列表不整屏闪。 */
@@ -131,7 +127,7 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
         clearProps: 'opacity,transform',
       })
     },
-    [visibleEntries.map((entry) => entry.id).join('\u0000'), groupFilter],
+    [visibleEntries.map((entry) => entry.id).join('\u0000'), tagFilter],
   )
 
   // 弹窗持有的是打开时的快照；目录刷新后用最新条目替换，安装表单因此能重新推导 id/名称。
@@ -181,13 +177,6 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
         </span>
       ),
       title: (row) => `${row.name} · ${row.upstream_id}`,
-    },
-    {
-      key: 'group',
-      header: '授权组',
-      width: '120px',
-      cell: (row) => <span title={row.group}>{groupLabel(groupIndex, row.group)}</span>,
-      title: (row) => row.group,
     },
     {
       key: 'enabled',
@@ -326,8 +315,8 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
               <Field label="分组" title="tag">
                 <select
                   className="select"
-                  value={groupFilter}
-                  onChange={(event) => setGroupFilter(event.target.value)}
+                  value={tagFilter}
+                  onChange={(event) => setTagFilter(event.target.value)}
                 >
                   <option value="">全部分组</option>
                   {groupOptions.map(([key, label]) => (
@@ -343,9 +332,9 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
                   className="btn btn-secondary"
                   onClick={() => {
                     setFilter('')
-                    setGroupFilter('')
+                    setTagFilter('')
                   }}
-                  disabled={filter === '' && groupFilter === ''}
+                  disabled={filter === '' && tagFilter === ''}
                 >
                   清空筛选
                 </button>
@@ -443,15 +432,12 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
             key={installEntry.id}
             onCancel={() => setInstallTarget(null)}
             entry={installEntry}
-            groups={groups}
-            groupsLoading={groupsQuery.isPending}
-            groupsError={groupsQuery.isError}
             onInstalled={(upstream: UpstreamItem) => {
               setInstallTarget(null)
               onNotice({
                 severity: 'success',
                 title: '安装完成',
-                description: `已安装 ${upstream.name}（${upstream.id}），可在「接入清单」页签继续启停或测试连接。`,
+                description: `已安装 ${upstream.name}（${upstream.id}）；安装只描述连接，安装后到「组维护」页授予暴露，组令牌才能看到它。`,
                 meta: `目录版本 ${installEntry.version}`,
               })
               refreshAfterWrite()
@@ -556,7 +542,7 @@ export function CatalogTab({ onNotice }: { onNotice: (notice: Notice) => void })
                 columns={installedColumns(detailEntry)}
                 rows={detailEntry.installations}
                 rowKey={(row) => row.upstream_id}
-                minWidth="900px"
+                minWidth="780px"
               />
             )}
           </section>

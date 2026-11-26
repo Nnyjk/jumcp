@@ -19,7 +19,11 @@ fn policy() -> TenantPolicy {
         "analyst".into(),
         RoleDef {
             name: "analyst".into(),
-            default_groups: vec!["db.read.core".into(), "db.read.analytics".into()],
+            default_groups: vec![
+                "basic".into(),
+                "db.read.core".into(),
+                "db.read.analytics".into(),
+            ],
             default_budget: 2000,
         },
     );

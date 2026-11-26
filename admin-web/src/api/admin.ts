@@ -10,6 +10,7 @@ import type {
   AccessTokenCreated,
   AccessTokenItem,
   AccessTokenPage,
+  AccessTokenUpdateInput,
   AdminAccount,
   AdminAccountCreateInput,
   AdminAccountPage,
@@ -25,6 +26,8 @@ import type {
   DeletedAccessToken,
   DeletedMcpInstallation,
   GroupCreateInput,
+  GroupExposureInput,
+  GroupExposurePayload,
   GroupItem,
   GroupPage,
   GroupQuery,
@@ -45,8 +48,7 @@ import type {
   ToolStatsPayload,
   TransportKey,
   UpdatedCapabilityDefinition,
-  UpdatedBasicTools,
-  UpdateBasicToolsInput,
+  UpdatedGroupExposure,
   UpstreamInput,
   UpstreamItem,
   UpstreamToolsPayload,
@@ -320,9 +322,23 @@ export async function deleteAccessToken(id: string): Promise<DeletedAccessToken>
   })
 }
 
-/** 创建表单的可选项：角色默认组、组来源与内置工具清单。 */
+/** 创建表单的可选项：角色与可授权组。 */
 export async function fetchTokenOptions(signal?: AbortSignal): Promise<TokenOptions> {
   return request<TokenOptions>('/admin/tokens/options', { signal })
+}
+
+/**
+ * 修改令牌的名称、组、过期时间：role 不可改，密钥不轮换（换密钥走重签发）。
+ * 只提交要改的键；`expires_at: null` 表示永不过期。
+ */
+export async function updateAccessToken(
+  id: string,
+  input: AccessTokenUpdateInput,
+): Promise<AccessTokenItem> {
+  return request<AccessTokenItem>(`/admin/tokens/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: input,
+  })
 }
 
 /**
@@ -380,15 +396,29 @@ export async function fetchUpstreamTools(
 }
 
 /**
- * 批量调整上游工具的基础组归属：只提交变更键。
- * 404=上游不存在；409 为 UNKNOWN / NOT_ELIGIBLE；超过 64 键为 400。
+ * 组的暴露矩阵：第一层「哪些上游对本组可见」+ 第二层「上游内逐工具强制纳入/排除」。
+ * GET 只读库内规则与上游工具缓存，不触网。
  */
-export async function updateUpstreamBasicTools(
-  id: string,
-  input: UpdateBasicToolsInput,
-): Promise<UpdatedBasicTools> {
-  return request<UpdatedBasicTools>(
-    `/admin/upstreams/${encodeURIComponent(id)}/tools/basic`,
+export async function fetchGroupExposure(
+  code: string,
+  signal?: AbortSignal,
+): Promise<GroupExposurePayload> {
+  return request<GroupExposurePayload>(
+    `/admin/groups/${encodeURIComponent(code)}/exposure`,
+    { signal },
+  )
+}
+
+/**
+ * 调整组的暴露矩阵：合并语义，只提交变更键；工具规则 `null` 表示删除、回到继承。
+ * 404=组或上游不存在；409 为 MCP_UPSTREAM_TOOL_UNKNOWN / MCP_UPSTREAM_TOOL_NOT_ELIGIBLE（整请求拒绝）。
+ */
+export async function updateGroupExposure(
+  code: string,
+  input: GroupExposureInput,
+): Promise<UpdatedGroupExposure> {
+  return request<UpdatedGroupExposure>(
+    `/admin/groups/${encodeURIComponent(code)}/exposure`,
     { method: 'PUT', body: input },
   )
 }

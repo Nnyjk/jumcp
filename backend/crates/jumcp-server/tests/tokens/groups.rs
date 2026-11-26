@@ -3,15 +3,14 @@ use serde_json::json;
 
 use crate::fixtures::*;
 
-/// admin_* 的双重判定：没有 admin 组时创建即 400；有 admin 组 + allowlist 才可见可调。
+/// admin_* 的组判定：admin 组放行全部维护工具；header 收窄掉 admin 组后不可见不可调。
 #[tokio::test]
-async fn admin_tools_require_group_and_allowlist() {
+async fn admin_tools_require_the_admin_group() {
     let h = harness();
     let mut admin_body = base_token_body();
     admin_body["name"] = json!("维护通道");
     admin_body["role"] = json!("admin");
     admin_body["groups"] = json!(["admin", "db.read.core"]);
-    admin_body["builtin_tools"] = json!(["admin_review_queue", "list_groups"]);
     let (status, created) = create_token(&h.app, admin_body).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let plaintext = created["token"].as_str().unwrap().to_string();
@@ -20,13 +19,16 @@ async fn admin_tools_require_group_and_allowlist() {
         names.contains(&"admin_review_queue".to_string()),
         "{names:?}"
     );
-    assert!(names.contains(&"list_groups".to_string()), "{names:?}");
     assert!(
-        !names.contains(&"admin_audit_queries".to_string()),
-        "allowlist 外的 admin 工具不得出现: {names:?}"
+        names.contains(&"admin_audit_queries".to_string()),
+        "admin 组放行全部维护工具: {names:?}"
+    );
+    assert!(
+        !names.contains(&"list_groups".to_string()),
+        "没给 basic 组就没有常驻元工具: {names:?}"
     );
 
-    // admin 组在 scope 内 + allowlist 命中 → 可调。
+    // admin 组在 scope 内 → 可调。
     let ok = mcp(
         &h.app,
         Some(&plaintext),

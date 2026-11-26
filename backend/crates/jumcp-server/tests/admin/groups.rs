@@ -18,7 +18,11 @@ async fn groups_crud_takes_effect_in_effective_policy() {
     assert_eq!(body["items"][0]["priority"], json!(0));
     assert_eq!(body["items"][0]["min_budget"], json!(800));
     assert_eq!(body["items"][0]["roles"], json!([]));
-    assert_eq!(body["items"][0]["grantable"], json!(false));
+    assert_eq!(
+        body["items"][0]["grantable"],
+        json!(true),
+        "basic 是可授权的真实组：常驻元工具靠它放行"
+    );
     assert_eq!(body["items"][0]["token_count"], json!(0));
     assert_eq!(
         body["items"][0]["capability_count"],
@@ -235,7 +239,11 @@ async fn groups_list_filters_by_q_source_and_role() {
     let (_, body) = call(&h.app, Req::get("/admin/groups?source=builtin")).await;
     assert_eq!(body["total"], json!(1), "内置组只有一个 basic");
     assert_eq!(body["items"][0]["code"], json!("basic"));
-    assert_eq!(body["items"][0]["grantable"], json!(false));
+    assert_eq!(
+        body["items"][0]["grantable"],
+        json!(true),
+        "basic 可授予：常驻元工具靠它放行"
+    );
 
     // role 过滤：角色 code 精确匹配授权角色。
     let (_, body) = call(&h.app, Req::get("/admin/groups?role=analyst")).await;
@@ -272,7 +280,7 @@ async fn roles_list_returns_code_and_chinese_name() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["code"], json!("analyst"));
     assert_eq!(items[0]["name"], json!("数据分析"));
-    assert_eq!(items[0]["default_groups"], json!(["db.read.core"]));
+    assert_eq!(items[0]["default_groups"], json!(["basic", "db.read.core"]));
     assert_eq!(items[0]["default_budget"], json!(2000));
 }
 

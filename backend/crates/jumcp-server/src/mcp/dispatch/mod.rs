@@ -237,7 +237,8 @@ impl McpServer {
             .visible_capabilities_with_upstreams(scope)
             .await?;
         let resident = |id: &str| {
-            crate::service::RESIDENT_TOOL_NAMES.contains(&id)
+            (crate::discovery::basic_enabled(scope)
+                && crate::service::RESIDENT_TOOL_NAMES.contains(&id))
                 || (crate::discovery::admin_enabled(scope)
                     && crate::service::ADMIN_TOOL_NAMES.contains(&id))
         };
@@ -256,22 +257,14 @@ impl McpServer {
             .filter(|c| c.source == crate::catalog::SOURCE_UPSTREAM)
             .collect();
         upstream_tools.sort_by(|a, b| a.id.cmp(&b.id));
-        // 常驻/维护工具都受 token 的内置工具 allowlist 约束；维护工具另需 admin 组
-        // （双重判定，客户端看过清单不构成授权）。
-        let mut tools: Vec<Value> = tool_definitions()
-            .into_iter()
-            .filter(|def| {
-                def.get("name")
-                    .and_then(|n| n.as_str())
-                    .is_some_and(|id| crate::discovery::tool_allowed(scope, id))
-            })
-            .collect();
+        // 常驻/维护工具按组出现（basic / admin），组不在 scope 内就不进清单；
+        // 调用面用同一套判定，因此"看见"与"可调用"不会分叉。
+        let mut tools: Vec<Value> = Vec::new();
+        if crate::discovery::basic_enabled(scope) {
+            tools.extend(tool_definitions());
+        }
         if crate::discovery::admin_enabled(scope) {
-            tools.extend(admin_tool_definitions().into_iter().filter(|def| {
-                def.get("name")
-                    .and_then(|n| n.as_str())
-                    .is_some_and(|id| crate::discovery::tool_allowed(scope, id))
-            }));
+            tools.extend(admin_tool_definitions());
         }
         tools.extend(upstream_tools.iter().map(|cap| flattened_tool(cap)));
         if flatten {

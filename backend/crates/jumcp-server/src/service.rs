@@ -557,7 +557,8 @@ mod tests {
 
     #[test]
     fn health_ok() {
-        assert_eq!(health(&settings())["groups"], 1);
+        // 配置里只有 1 个组，加上代码内置的 basic。
+        assert_eq!(health(&settings())["groups"], 2);
     }
     #[test]
     fn resident_tokens_sum_per_tool() {

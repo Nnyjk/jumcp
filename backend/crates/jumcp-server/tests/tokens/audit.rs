@@ -37,7 +37,6 @@ async fn call_details_and_audit_filter_carry_token_origin() {
     let mut body = base_token_body();
     body["role"] = json!("admin");
     body["groups"] = json!(["admin"]);
-    body["builtin_tools"] = json!(["admin_review_queue"]);
     let (status, created) = create_token(&h.app, body).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let plaintext = created["token"].as_str().unwrap().to_string();

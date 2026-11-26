@@ -27,7 +27,6 @@ fn new_token(name: &str) -> NewAccessToken {
         name: name.into(),
         role: "analyst".into(),
         groups: vec!["db.read.core".into()],
-        builtin_tools: vec!["search_capabilities".into()],
         source: "agent".into(),
         caller: "agent-analyst".into(),
         expires_at: None,
@@ -119,10 +118,6 @@ fn reissue_rotates_secret_and_keeps_metadata() {
     assert_eq!(reissued.record.name, "rotate-me");
     assert_eq!(reissued.record.role, "analyst");
     assert_eq!(reissued.record.groups, vec!["db.read.core".to_string()]);
-    assert_eq!(
-        reissued.record.builtin_tools,
-        vec!["search_capabilities".to_string()]
-    );
     assert_eq!(reissued.record.source, "agent");
     assert_eq!(reissued.record.caller, "agent-analyst");
     assert_eq!(reissued.record.expires_at, issued.record.expires_at);
@@ -251,22 +246,15 @@ fn bootstrap_imports_only_once_and_tokens_still_work() {
         .unwrap();
     assert_eq!(rec.role, "admin");
     assert_eq!(rec.source, "bootstrap");
-    assert_eq!(rec.groups, vec!["admin".to_string()]);
     assert_eq!(
-        rec.builtin_tools,
-        vec!["*".to_string()],
-        "引导令牌用全量通配：安装的上游工具才可能被同一身份看见"
-    );
-    assert!(
-        rec.builtin_tools
-            .iter()
-            .any(|t| t == crate::registry::TOOL_WILDCARD_ALL),
-        "admin 组仍受双重判定（组 ∧ allowlist）"
+        rec.groups,
+        vec!["admin".to_string()],
+        "引导令牌只拿角色的 default_groups，不隐式补 basic"
     );
 }
 
 #[test]
-fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
+fn validation_rejects_bad_fields() {
     type Mutation = Box<dyn Fn(&mut NewAccessToken)>;
     let s = store();
     let cases: Vec<Mutation> = vec![
@@ -277,8 +265,6 @@ fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
         Box::new(|t| t.source = "".into()),
         Box::new(|t| t.source = "Agent".into()),
         Box::new(|t| t.groups.clear()),
-        Box::new(|t| t.builtin_tools = vec!["not_a_tool".into()]),
-        Box::new(|t| t.builtin_tools = vec!["admin_review_queue".into()]),
         Box::new(|t| t.expires_at = Some("not-a-time".into())),
         Box::new(|t| t.expires_at = Some("2020-01-01T00:00:00Z".into())),
     ];
@@ -288,17 +274,12 @@ fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
         let e = spec.validate().unwrap_err();
         assert_eq!(e.code, "MCP_VALIDATION_ERROR", "{spec:?}");
     }
-    // 有 admin 组时 admin_* 合法。
-    let mut ok = new_token("admin-tool");
-    ok.groups = vec!["admin".into()];
-    ok.builtin_tools = vec!["admin_review_queue".into()];
-    ok.validate().unwrap();
     // 存储层也会再判一次（不依赖 HTTP 层）。
     let e = s
         .create_access_token(
             &{
                 let mut bad = new_token("bad");
-                bad.builtin_tools = vec!["admin_review_queue".into()];
+                bad.source = "Agent".into();
                 bad
             },
             &actor(),
@@ -307,29 +288,64 @@ fn validation_rejects_bad_fields_and_admin_tools_without_admin_group() {
     assert_eq!(e.code, "MCP_VALIDATION_ERROR");
 }
 
-/// allowlist 通配：`*` 与 `<server_id>__*` 通过创建校验；反解不到上游的形状仍被拒绝。
+/// 授权面只剩 `groups`：改名、换组、改有效期都在同一条记录上完成，密钥与角色不动。
 #[test]
-fn validation_accepts_tool_allowlist_wildcards() {
-    let s = store();
-    for entry in [
-        "*",
-        "clickhouse__*",
-        "search_capabilities",
-        "clickhouse__query",
-    ] {
-        let mut spec = new_token("wildcard");
-        spec.builtin_tools = vec![entry.to_string()];
-        spec.validate()
-            .unwrap_or_else(|e| panic!("{entry} 应被接受: {e:?}"));
-        let issued = s.create_access_token(&spec, &actor()).unwrap();
-        assert_eq!(issued.record.builtin_tools, vec![entry.to_string()]);
-    }
-    for entry in ["", "**", "a__b__*", "*__x", "__*"] {
-        let mut spec = new_token("bad-wildcard");
-        spec.builtin_tools = vec![entry.to_string()];
-        let e = spec.validate().unwrap_err();
-        assert_eq!(e.code, "MCP_VALIDATION_ERROR", "{entry:?}");
-    }
+fn update_changes_groups_name_and_expiry_without_rotating_secret() {
+    let audit = std::sync::Arc::new(crate::audit::AuditLog::open(":memory:").unwrap());
+    let s = CapabilityStore::open(":memory:", Some(audit.clone())).unwrap();
+    let issued = s
+        .create_access_token(&new_token("edit-me"), &actor())
+        .unwrap();
+    let expires = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    let updated = s
+        .update_access_token(
+            &issued.record.id,
+            Some("renamed"),
+            Some(&["basic".to_string(), "admin".to_string()]),
+            Some(Some(expires.clone())),
+            &actor(),
+        )
+        .unwrap();
+    assert_eq!(updated.name, "renamed");
+    assert_eq!(
+        updated.groups,
+        vec!["basic".to_string(), "admin".to_string()]
+    );
+    assert_eq!(updated.role, "analyst", "角色不随组编辑改变");
+    assert_eq!(updated.token_hash, issued.record.token_hash, "换组不动密钥");
+    assert_eq!(updated.expires_at, expires);
+    assert!(
+        s.authenticate_access_token(&issued.token)
+            .unwrap()
+            .is_some(),
+        "旧密钥在改授权后仍然有效"
+    );
+
+    let events = audit
+        .query(Some(&json!({"event_type": "admin_change"})))
+        .unwrap();
+    let update = events
+        .iter()
+        .find(|event| event.payload["action"] == json!("token_update"))
+        .expect("token_update 审计");
+    let fields: Vec<&str> = update.payload["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|change| change["field"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, vec!["name", "groups", "expires_at"]);
+
+    let e = s
+        .update_access_token(&issued.record.id, None, Some(&[]), None, &actor())
+        .unwrap_err();
+    assert_eq!(e.code, "MCP_VALIDATION_ERROR", "不允许把组清空");
+
+    s.revoke_access_token(&issued.record.id, &actor()).unwrap();
+    let e = s
+        .update_access_token(&issued.record.id, Some("late"), None, None, &actor())
+        .unwrap_err();
+    assert_eq!(e.code, "MCP_STATE_TRANSITION_INVALID", "已撤销不可编辑");
 }
 
 #[test]

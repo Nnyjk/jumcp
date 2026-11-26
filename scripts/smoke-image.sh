@@ -168,6 +168,18 @@ patch_json() {
   esac
 }
 
+put_json() {
+  # put_json <url> <outfile> <body>；管理面写请求带会话 cookie + 同源 Origin（CSRF）。结果写入 CODE
+  local url="$1" out="$2" body="$3"
+  CODE="$(curl -sS --max-time 15 -o "$out" -w '%{http_code}' \
+    -X PUT -H 'Content-Type: application/json' -H "Origin: $BASE" -b "$JAR" \
+    --data "$body" "$url" 2>/dev/null || true)"
+  CODE="${CODE%%$'\n'*}"
+  case "$CODE" in
+    ''|*[!0-9]*) CODE=000 ;;
+  esac
+}
+
 post_json() {
   # post_json <url> <outfile> <body> [bearer token]；管理面用会话 cookie，MCP 面用 agent token。
   # 结果写入 CODE
@@ -360,7 +372,7 @@ LOGIN_AGAIN="$(curl -sS --max-time 10 -c "$JAR" -o /dev/null -w '%{http_code}' \
 [ "$LOGIN_AGAIN" = "204" ] || fail "再次 POST /admin/login 期望 204，实际 $LOGIN_AGAIN"
 
 # 7. /mcp：agent token 走完 initialize + tools/list
-INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["db.read.core"]}}}}'
+INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"mcp":{"groups":["basic","db.read.core"]}}}}'
 post_json "$MCP_BASE/mcp" "$TMP_ROOT/mcp_init.json" "$INIT_BODY" "$AGENT_TOKEN"
 [ "$CODE" = "200" ] || fail "POST /mcp initialize 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/mcp_init.json" '.result.serverInfo != null' '/mcp initialize 响应缺少 result.serverInfo'
@@ -405,7 +417,7 @@ echo "    ok: GET /admin/mcp/catalog → 200 且 ${PKG_ID} 为 HTTP 包（无 bi
 SMOKE_PASS_CIPHERTEXT='enc:v1:000102030405060708090a0bb87517b3dd71670b04fe6aaf42a005e3a0486ebca90f17516cae'
 
 # 明文密码必须被拒：不允许"解不开就当明文用"。
-PLAINTEXT_BODY='{"group":"db.read.core","config":{"url":"http://127.0.0.1:8123","username":"default","password":"smoke-plaintext"}}'
+PLAINTEXT_BODY='{"config":{"url":"http://127.0.0.1:8123","username":"default","password":"smoke-plaintext"}}'
 post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_plaintext.json" "$PLAINTEXT_BODY"
 [ "$CODE" = "400" ] || fail "安装时提交明文 password 期望 400，实际 $CODE"
 json_is "$TMP_ROOT/pkg_plaintext.json" '.error.code == "MCP_TRANSPORT_CIPHERTEXT_REQUIRED"' \
@@ -414,7 +426,7 @@ json_is "$TMP_ROOT/pkg_plaintext.json" '((tostring | contains("smoke-plaintext")
   '明文 password 被回显到了错误响应里'
 echo "    ok: 安装时提交明文 password → 400（MCP_TRANSPORT_CIPHERTEXT_REQUIRED，未回显明文）"
 
-INSTALL_BODY="{\"group\":\"db.read.core\",\"config\":{\"url\":\"http://127.0.0.1:8123\",\"username\":\"default\",\"password\":\"${SMOKE_PASS_CIPHERTEXT}\"}}"
+INSTALL_BODY="{\"config\":{\"url\":\"http://127.0.0.1:8123\",\"username\":\"default\",\"password\":\"${SMOKE_PASS_CIPHERTEXT}\"}}"
 post_json "$BASE/admin/mcp/catalog/${PKG_ID}/install" "$TMP_ROOT/pkg_install.json" "$INSTALL_BODY"
 [ "$CODE" = "200" ] || fail "POST /admin/mcp/catalog/${PKG_ID}/install 期望 200，实际 $CODE"
 json_is "$TMP_ROOT/pkg_install.json" ".upstream.id == \"${PKG_UPSTREAM}\"" \
@@ -433,6 +445,15 @@ json_is "$TMP_ROOT/pkg_refresh.json" '.status == "ok"' \
 json_is "$TMP_ROOT/pkg_refresh.json" '.tool_count == 3' \
   "POST /admin/upstreams/${PKG_UPSTREAM}/refresh 的 tool_count 期望 3（tools/list 不需要真连库）"
 echo "    ok: POST /admin/upstreams/${PKG_UPSTREAM}/refresh → 200（status=ok，tool_count=3）"
+
+# 安装不再绑定授权组：工具要可见，必须由组的暴露矩阵授予整台（第一层）。
+EXPOSURE_BODY="{\"upstreams\":{\"${PKG_UPSTREAM}\":true}}"
+put_json "$BASE/admin/groups/db.read.core/exposure" "$TMP_ROOT/pkg_exposure.json" "$EXPOSURE_BODY"
+[ "$CODE" = "200" ] || fail "PUT /admin/groups/db.read.core/exposure 期望 200，实际 $CODE"
+json_is "$TMP_ROOT/pkg_exposure.json" \
+  "([.exposure.upstreams[] | select(.id == \"${PKG_UPSTREAM}\") | .granted] | any)" \
+  "组暴露矩阵未记录 ${PKG_UPSTREAM} 的授予"
+echo "    ok: PUT /admin/groups/db.read.core/exposure → 200（${PKG_UPSTREAM} 已授予 db.read.core）"
 
 PATCH_BODY='{"config":{"url":"http://127.0.0.1:8124","password":""}}'
 patch_json "$BASE/admin/mcp/catalog/${PKG_ID}/install/${PKG_UPSTREAM}/config" "$TMP_ROOT/pkg_patch.json" "$PATCH_BODY"

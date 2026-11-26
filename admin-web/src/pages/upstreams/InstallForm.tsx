@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { installMcpCatalogEntry } from '../../api/admin'
 import { ApiError } from '../../api/client'
-import type { GroupItem, McpCatalogEntry, UpstreamItem } from '../../api/types'
+import type { McpCatalogEntry, UpstreamItem } from '../../api/types'
 import { Field } from '../../components/Field'
 import { encryptSecret, withTransportRetry } from '../../lib/transport'
 import { noticeFromError, type Notice } from '../../notice'
@@ -17,17 +17,11 @@ import { isSecretField } from './upstreamTools'
  */
 export function InstallForm({
   entry,
-  groups,
-  groupsLoading,
-  groupsError,
   onInstalled,
   onError,
   onCancel,
 }: {
   entry: McpCatalogEntry
-  groups: GroupItem[]
-  groupsLoading: boolean
-  groupsError: boolean
   onInstalled: (upstream: UpstreamItem) => void
   onError: (notice: Notice) => void
   onCancel: () => void
@@ -52,19 +46,11 @@ export function InstallForm({
   /** null 表示未手动改名：目录刷新（如 id 冲突后）时跟随重新推导的名称。 */
   const [nameDraft, setNameDraft] = useState<string | null>(null)
   const name = nameDraft ?? defaultName
-  const [group, setGroup] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [config, setConfig] = useState<Record<string, string>>(() =>
     Object.fromEntries(entry.fields.map((field) => [field.key, field.default ?? ''])),
   )
   const [formError, setFormError] = useState<string | undefined>(undefined)
-
-  /** 只允许可授予的组；组清单拉取失败或无可用项时退化为文本输入，不静默清空已填值。 */
-  const groupChoices = useMemo(
-    () => groups.filter((item) => item.grantable !== false).map((item) => ({ code: item.code, name: item.name })),
-    [groups],
-  )
-  const useGroupSelect = !groupsError && groupChoices.length > 0
 
   const mutation = useMutation({
     mutationFn: (upstreamId: string) =>
@@ -80,7 +66,6 @@ export function InstallForm({
         return installMcpCatalogEntry(entry.id, {
           upstream_id: upstreamId,
           name: name.trim(),
-          group,
           enabled,
           config: values,
         })
@@ -109,10 +94,6 @@ export function InstallForm({
     const nameError = installationNameError(entry, name)
     if (nameError !== undefined) {
       setFormError(nameError)
-      return
-    }
-    if (group === '') {
-      setFormError('必须填写授权组。')
       return
     }
     for (const field of entry.fields) {
@@ -152,41 +133,6 @@ export function InstallForm({
             placeholder={defaultName}
           />
         </Field>
-      </div>
-
-      <div className="form-row">
-        <Field
-          label="授权组"
-          title="group"
-          required
-          hint={groupsError ? '组清单加载失败，按组 code 填写。' : undefined}
-        >
-          {useGroupSelect ? (
-            <select
-              className="select"
-              value={group}
-              onChange={(event) => setGroup(event.target.value)}
-              disabled={groupsLoading}
-              required
-            >
-              <option value="">{groupsLoading ? '正在加载组…' : '请选择组'}</option>
-              {groupChoices.map((item) => (
-                <option key={item.code} value={item.code} title={item.code}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              className="input mono"
-              value={group}
-              onChange={(event) => setGroup(event.target.value.trim())}
-              placeholder={groupsLoading ? '正在加载组…' : '例如 db.read.core'}
-              disabled={groupsLoading}
-              required
-            />
-          )}
-        </Field>
         <label className="check-item">
           <input
             type="checkbox"
@@ -196,6 +142,10 @@ export function InstallForm({
           <span>安装后启用</span>
         </label>
       </div>
+
+      <p className="hint">
+        安装只描述连接本身；安装后到「组维护」页的暴露矩阵授予，组令牌才能看到它。
+      </p>
 
       {entry.fields.map((field) => (
         <CatalogField

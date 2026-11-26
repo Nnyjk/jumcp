@@ -50,8 +50,9 @@ async fn routes_are_documented() {
     assert!(
         table
             .iter()
-            .any(|(_, path)| *path == "/admin/upstreams/{id}/tools/basic")
+            .any(|(_, path)| *path == "/admin/groups/{code}/exposure")
     );
+    assert!(table.iter().any(|(_, path)| *path == "/admin/tokens/{id}"));
     assert!(table.iter().any(|(_, path)| *path == "/admin/mcp/catalog"));
     assert!(
         table
@@ -107,7 +108,7 @@ async fn routes_are_documented() {
             .iter()
             .any(|(method, path)| *method == "DELETE" && *path == "/admin/admins/{id}")
     );
-    assert_eq!(table.len(), 48);
+    assert_eq!(table.len(), 50);
 }
 
 /// 未配置传输密钥时必须是 503 + 专用错误码：前端据此隐藏"密文提交"而不是报通用 500。

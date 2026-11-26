@@ -3,16 +3,15 @@
 **jumcp**（jump + mcp）是**聚合 router**：一个 `/mcp` 同时暴露内置工具与所有启用上游 MCP server 的工具。
 不存在 `/mcp/<upstream>` 透传端点——鉴权、scope、预算与审计只有这一层。
 
-## 1. 内置工具的分类与 `basic` 组
+## 1. 内置工具的分类与 `basic` / `admin` 组
 
 分类按**职责**划分，是 `tools/list` / 搜索 / `/admin/tools/stats` 上的展示与检索标签：
 
-| category | 职责 | 工具 | 可见性判定 |
+| category | 职责 | 工具 | 所属授权组 |
 |---|---|---|---|
-| `basic` | 基础查询与计算：走查工具目录 / 取 schema / 按已发布模板取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_run_template` | 常驻；只要 token 的 `builtin_tools` allowlist 命中即可见 |
-| `analysis` | 工具列表分析、变更提交审计、定制化候选排名 | `admin_review_queue`、`admin_tool_candidates`、`admin_register_template`、`admin_set_visibility`、`admin_publish_capability` | 组 `admin` 在 scope 内 **且** allowlist 命中（双重判定） |
-| `admin` | 仅审计操作 | `admin_audit_queries` | 同上双重判定 |
-
+| `basic` | 基础查询与计算：走查工具目录 / 取 schema / 按已发布模板取数 | `search_capabilities`、`describe_capability`、`list_groups`、`db_run_template` | `basic`（`scope.groups` 含 `basic` 即对 `tools/list` / `search_capabilities` / `tools/call` 可见/可调） |
+| `analysis` | 工具列表分析、变更提交审计、定制化候选排名 | `admin_review_queue`、`admin_tool_candidates`、`admin_register_template`、`admin_set_visibility`、`admin_publish_capability` | `admin`（`scope.groups` 含 `admin` 即对 `tools/list` / `search_capabilities` / `tools/call` 可见/可调） |
+| `admin` | 仅审计操作 | `admin_audit_queries` | `admin`（同上） |
 未知 id 落 `custom`（新增内置工具忘记归类时不会冒充 `admin`）。
 
 注解与行为一致：`admin_register_template` / `admin_set_visibility` / `admin_publish_capability`
@@ -29,56 +28,21 @@
 改 SQL/参数仍需重新登记草案，因此不存在"改完定义立即生效"的旁路。人发布仍走 HTTP 管理面
 `POST /admin/capabilities/{id}/publish`，必带外部单号，留痕 `source="external"`、`verified=false`。
 
-### `basic` 是代码内置组，不是授权组
+### `basic` 与 `admin` 是普通可授权组
 
-`basic` 同时是一个**代码内置组**（`discovery::BASIC_GROUP`）：常驻四件内置工具的 `group`
-就是 `basic`，上游可以把**个别**工具逐工具加入 `basic`（见 §2.1）。它不是配置组
-（`config/policy.toml` 不得定义）、不是管理组、也不是可授权组：
+`basic` 是代码内置的可授权组（`discovery::BASIC_GROUP`，`source:"builtin"`、`grantable:true`），承载上述 4 个常驻元工具；`admin` 组承载 6 个 `admin_*` 工具：
 
-- `GET /admin/groups` 固定返回一条合成条目：`{code:"basic", name:"基础工具", source:"builtin",
-  priority:0, min_budget:800, roles:[], grantable:false, capability_count: 4 + 上游 basic 覆盖数,
-  token_count:0}`；`source` 过滤接受 `policy|managed|builtin`。
-- 创建/改名/删除组一律 409 `MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在
-  `RESERVED_GROUP_NAMES`）；`basic` 不能出现在令牌的 `groups` 里（`token_options.groups`
-  不含它，创建令牌传它会得到"未知组"）。配置文件中出现 `basic` 或 `builtin` 组 → 启动校验失败。
+- `GET /admin/groups` 固定返回 `basic` 条目：`{code:"basic", name:"基础工具", source:"builtin", priority:0, min_budget:800, roles:[], grantable:true, capability_count: 4 + 暴露给 basic 的上游工具数, token_count:<n>}`；`source` 过滤接受 `policy|managed|builtin`。
+- `TenantPolicy::validate` 仍拒绝在配置文件（`config/policy.toml`）中定义 `basic` 或 `builtin`（启动校验失败），创建/改名/删除保留组仍返回 `409 MCP_GROUP_RESERVED`（`basic`/`builtin`/`admin` 都在 `RESERVED_GROUP_NAMES`）。但 `policy.group_codes()` 恒含 `basic`、`policy.group("basic")` 返回内置定义，因此 `basic` 可以被令牌与角色正常引用（`GET /admin/tokens/options` 的 `groups` 含 `basic`）。
 - `builtin` 只作为**拒绝创建的保留名**存在，不作为任何工具的 `group` 值。
 
-分类**不是授权组**，不改变权限判定：`analysis`/`admin` 这两类不是 `scope.groups` 的取值，
-`X-MCP-Tool-Groups` 收窄也不会改变常驻工具的可见性。常驻性由代码常量
-`RESIDENT_TOOL_NAMES` 判定（`basic` 的四件全是常驻工具）；`analysis` 与 `admin` 里的
-`admin_*` 一律要求组 `admin` 在 scope 内 **且** token allowlist 命中（`discovery::admin_enabled`
-与 allowlist 双重判定），分类标签既不放宽也不收紧这条规则。
+`basic` 不再是隐式公共通道，而是普通可授权组：令牌不勾选 `basic` 就看不到常驻元工具，不勾选 `admin` 就看不到 `admin_*`；`X-MCP-Tool-Groups` / `_meta` 收窄掉 `basic` 或 `admin` 时同样会隐藏对应内置工具。`basic` 拒绝 `category=admin` 的上游与 `admin_` 前缀的工具，因此不会成为绕过维护通道（`admin` 组）的旁路。
 
-`basic` 组成员则相反：**不要求 `scope.groups` 含 `basic`（或含上游组）**，只要 allowlist
-命中、上游 `enabled`，就对所有 scope 可见/可调；`X-MCP-Tool-Groups`
-收窄不能隐藏它们。`basic` 拒绝 `category=admin` 的上游与 `admin_` 前缀的
-工具，因此不会成为绕过维护通道（组 `admin`）的旁路；加入 `basic` 是管理员的显式选择，
-上游是否只读不由本服务判断。
+分类（`basic` / `analysis` / `admin`）**不是授权组**，不改变权限判定：`admin_*` 统一归 `admin` 组，分类标签既不放宽也不收紧组门规则。
 
-token 的 `builtin_tools` 是**工具名 allowlist**，同时约束内置 id 与上游暴露名
-（`<server_id>__<tool>`）。条目有三种形态：
+`JUMCP_AGENT_TOKENS` 启动引导导入的身份只取角色 `default_groups`，不再自动补 `basic`（需要 `basic` 时请在角色的 `default_groups` 中显式配置）。
 
-| 条目 | 含义 |
-| --- | --- |
-| `search_capabilities`、`clickhouse__query` | 精确名：内置 id 或某个上游暴露名 |
-| `clickhouse__*` | 该上游的全部工具，含之后才注册/刷新的工具 |
-| `*` | 全部工具，含后续安装的上游 |
-
-前缀按 `__` 边界匹配（`clickhouse__*` 不覆盖 `clickhouse2__query`）；`**`、`a__b__*`、
-`*__x`、`__*`、空串等反解不到上游的形状在创建令牌时拒绝（`MCP_VALIDATION_ERROR`）。
-空名单 `[]` 是"没有任何工具"，与不限制的 `*` 语义相反。未列出的名字在 `tools/list`、
-发现面与 `tools/call` 三处都表现为"不存在"（调用写 `policy_decision`）。
-
-`JUMCP_AGENT_TOKENS` 启动引导导入的身份默认 `*`：环境令牌是部署方自备的身份，工具范围
-交给授权组与上游开关约束；写死内置 id 会让之后安装的上游永远进不了它的可见集。上游安装
-或新增工具之后，授予路径是"先 `POST /admin/upstreams/{id}/refresh` 拉到工具名，再新建令牌
-勾选 `<server_id>__*` 或 `*`"——精确名只对刷新前已存在的工具有效。
-
-`tools/list` 的每条内置工具带 `category`；`search_capabilities` 支持可选 `category` 过滤；
-`describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（注册的能力与 `admin_*` 工具归 `analysis`，`admin_audit_queries` 归 `admin`，其余内置工具按 §1 的分类表）。
-组索引（`list_groups` 与 `tools/list` 的 `groups`）只统计上游等非内置来源：没有上游工具
-加入 `basic` 时索引里没有 `basic`，有覆盖时按生效组计数（常驻内置工具不计入）。
-
+`tools/list` 的每条内置工具带 `category`；`search_capabilities` 支持可选 `category` 过滤；`describe_capability` 与 `/admin/tools/stats` 同样输出 `category`（注册的能力与 `admin_*` 工具归 `analysis`，`admin_audit_queries` 归 `admin`，其余内置工具按 §1 的分类表）。组索引（`list_groups` 与 `tools/list` 的 `groups`）统计包含组内暴露的上游工具（按组暴露矩阵计数，常驻内置工具不计入）。
 ### `db_run_template`：模板执行臂
 
 内置工具里**只有**这一条会碰数据库，也是"从审计提取高频查询 → 注册成模板 → agent 调用"
@@ -142,12 +106,7 @@ database = "analytics"    # 可选：透传给上游的默认库
 （调用方给的原始参数）、`upstream_id`、`upstream_tool`、`tokens`、`cache`、`elapsed_ms`、
 `version`、`row_count`、`truncated`。
 
-**allowlist 与 `db_run_template`**：访问令牌的 `builtin_tools` 是显式白名单时，不含
-`db_run_template`、也不含 `*` 或其它通配的白名单调用它会拿到 `MCP_CAPABILITY_NOT_FOUND`
-（`data.tool="db_run_template"`，拒绝判定记
-`policy_decision.detail.surface="mcp/builtin-allowlist"`），该工具也不会出现在它的
-`tools/list` 里。要放行就重签发令牌并勾选该工具，或把白名单改成含 `*`。
-`tools/list` 与 `tools/call` 用同一处判定，所以"列表里没有"就"调不了"，不会出现半可见。
+**组门与 `db_run_template`**：`db_run_template` 归属 `basic` 组；令牌的 `groups` 不含 `basic`（或请求收窄掉 `basic`）时，调用它会拿到 `MCP_CAPABILITY_NOT_FOUND`（`data.tool="db_run_template"`，拒绝判定记 `policy_decision.detail.surface="mcp/builtin-groups"`），该工具也不会出现在 `tools/list` 里。要放行就通过 `PATCH /admin/tokens/{id}` 为令牌勾选 `basic` 组。`tools/list` 与 `tools/call` 用同一处判定，所以"列表里没有"就"调不了"，不会出现半可见。
 
 ## 2. 上游配置模型
 
@@ -162,7 +121,6 @@ database = "analytics"    # 可选：透传给上游的默认库
 | `url` | `http` 必填，只允许 `http`/`https`、禁止 userinfo；`stdio` 必须为空 |
 | `command` / `args` | `stdio` 必填 command；`http` 的 command 必须为空；args 上限 64 |
 | `env` / `headers` | 值可为字面量或 `env:NAME` 引用；各上限 64 项，key/value 非空 |
-| `group` | 必须存在于 effective policy（配置组或管理组）；决定上游工具的授权范围。**不得为 `basic`**：`POST`/`PUT` 返回 `400 MCP_UPSTREAM_INVALID`（`data.field="group"`），个别工具要走 §2.1 |
 | `category` | `basic` / `analysis` / `admin` / `custom` |
 | `enabled` | 默认 `true`；`false` 时不投影也不转发 |
 | `timeout_ms` | 1..120000，默认 10000；作用于建连、`tools/list` 与 `tools/call` |
@@ -172,29 +130,29 @@ database = "analytics"    # 可选：透传给上游的默认库
 变量缺失即建连失败，不静默空串）。两种传输都在建连时解析 `env` 引用：`http` 不使用 `env`，
 但写错的引用同样会失败（避免切换到 `stdio` 后才暴露配置错误）。
 
-### 2.1 逐工具加入 `basic`
+### 2.1 组暴露矩阵（两层暴露）
 
-配置存在 registry 的 `mcp_upstream_tool_groups(upstream_id, tool_name, group_code, updated_at,
-PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继承 `upstreams.group`。
-`group_code` 目前只允许 `basic`；上游删除时同一事务级联删除；每台上游最多 64 个覆盖。
+控制面采用组内两层暴露矩阵，上游本身不绑定组：
 
-- 生效组：有覆盖且工具**仍可加入**（`eligible`）→ `basic`；否则继承上游组。管理视图用
-  `overridden`（有覆盖行）与 `basic`（覆盖生效）两个独立字段区分"覆盖存在但已失效"，避免
-  上游配置漂移后静默丢失用户意图。`eligible` = 上游 `category≠admin` **且**工具名
-  不以 `admin_` 开头（保证 `basic` 不会变成维护通道旁路）。
-- `basic` 成员对所有 scope 可见/可调，不要求 `scope.groups` 含 `basic` 或上游组；但仍要求
-  token allowlist 命中、上游 `enabled`。
-- 覆盖是**合并**语义：`{"tools": {"<raw_tool_name>": true|false|null}}`，`true` 写入、
-  `false`/`null` 删除（回到继承）。幂等：无真实变化不写库、不写审计。
-- 校验是整请求粒度（不做部分写入）：未知工具 `409 MCP_UPSTREAM_TOOL_UNKNOWN`
-  （`data.unknown`）、admin 类别或 `admin_`
-  前缀 `409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`（`data.reason=upstream_category_admin|admin_prefix`）、
-  单次超过 64 键 `400 MCP_VALIDATION_ERROR`、上游不存在 `404 MCP_UPSTREAM_NOT_FOUND`。
-- 上游改名/刷新失败导致覆盖行对不上当前缓存时：覆盖**保留**并在视图里标 `orphaned=true`
-  （`basic` 仍为 true），由管理面显式清除；不静默删用户配置，也不让孤行参与投影。
-- 工具缓存仍是进程内 30s TTL、无持久化：`GET .../tools` 只读缓存（与 `GET /admin/upstreams`
-  同一语义），需要最新清单时显式 `POST .../refresh`。
+1. 第一层 `mcp_group_upstreams(group_code, upstream_id)`：组对整台上游授予；授予后该上游的全部工具对该组可见（除非被第二层排除）。
+2. 第二层 `mcp_group_tool_rules(group_code, upstream_id, tool_name, state)`，`state ∈ include|exclude`：对单工具的显式规则，**优先于第一层**；无规则行表示继承第一层（即三态：`inherit` / `include` / `exclude`）。
 
+- 判定按组独立求值，互不影响；工具对一次请求可见 ⇔ `scope.groups` 中**至少一个**组判定可见（没有隐式公共通道）。
+- `admin` 类别上游（`category=admin`）与 `admin_` 前缀工具只能进 `admin` 组：授予整台 `admin` 类别上游给非 `admin` 组，或对 `admin` 类别上游 / `admin_` 前缀工具写 `include` 到非 `admin` 组，一律返回 `409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`（`data.reason` 为 `upstream_category_admin` 或 `admin_prefix`）。
+- 单组单上游规则上限 `GROUP_TOOL_RULE_MAX = 128`；单次 `PUT /admin/groups/{code}/exposure` 提交变更上限 `512`（`GROUP_TOOL_RULE_MAX * 4`）。
+- 暴露矩阵变更采用**合并**语义，整请求先校验后落库（不做部分写入）：未知工具 `409 MCP_UPSTREAM_TOOL_UNKNOWN`（`data.unknown`）、不合资格 `409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`、非法规则状态或超限 `400 MCP_VALIDATION_ERROR`、上游不存在 `404 MCP_UPSTREAM_NOT_FOUND`。
+- 上游改名/刷新导致规则行对不上当前缓存时：规则保留并在 `GET /admin/groups/{code}/exposure` 中标 `orphaned=true`，由管理面提交 `null` 显式清理（`orphaned` 工具只允许提交 `null`）；服务端不静默删除配置，也不让孤行参与投影。
+- 工具缓存仍是进程内 30s TTL、无持久化：`GET /admin/upstreams/{id}/tools` 与 `GET /admin/groups/{code}/exposure` 只读缓存（不触网），需要最新清单时显式 `POST /admin/upstreams/{id}/refresh`。
+
+### 2.2 存量库迁移（`CapabilityStore::open`）
+
+旧模型到组暴露矩阵的迁移在 `CapabilityStore::open` 内、任何读写之前自动执行，幂等且只按旧结构是否存在判断（不额外记标记）：
+
+- `mcp_upstream_tool_groups` → 迁入 `mcp_group_tool_rules(state='include')` 后 `DROP TABLE mcp_upstream_tool_groups`；
+- `mcp_upstreams.group_code` → 迁入 `mcp_group_upstreams` 后 `DROP INDEX IF EXISTS idx_upstream_group` 与 `ALTER TABLE mcp_upstreams DROP COLUMN group_code`；
+- `access_tokens.builtin_tools_json` → `ALTER TABLE access_tokens DROP COLUMN builtin_tools_json`。
+
+**不补授权**：旧令牌的工具白名单没有等价物，升级后不会自动回填 `basic`；管理员需为需要常驻元工具的令牌显式勾选 `basic` 组。
 ## 3. 内置 MCP 包
 
 「内置包」把「一个已知的 MCP server + 一份配置模板」收敛成一次安装。目录来自**代码内静态表**
@@ -221,7 +179,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 非密字段，密字段只给 `secrets_set: {key: bool}`——明文与密文都不出现。`config` 的值一律按字符串提交；
 `kind` 只决定表单控件（`password` 是给 `secret` 字段用的输入框），不做取值校验。
 
-`installations` 每条：`upstream_id`、`name`、`group`、`enabled`、`transport`、`url`、
+`installations` 每条：`upstream_id`、`name`、`enabled`、`transport`、`url`、
 `config`（仅非密字段的当前值）、`secrets_set`、`catalog_version`、`created_at`、`updated_at`。
 目录不触网，因此不含探测状态。
 
@@ -240,7 +198,6 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 {
   "upstream_id": "clickhouse",
   "name": "ClickHouse 基础查询",
-  "group": "db.read.core",
   "enabled": true,
   "config": {
     "url": "http://127.0.0.1:8123",
@@ -252,8 +209,8 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 
 - `password` 这类 `secret=true` 字段的值必须是 `JUMCP_TRANSPORT_KEY` 下的 `enc:v1:` 密文；
   `enc:v1` 里没有明文密码，日志/审计/错误响应也不会带上它。空串表示未提供（不写该 env）。
-- `group` 必填，必须是 effective policy 里的组（不能是 `basic`）；`upstream_id` 缺省取目录的
-  `default_upstream_id`，`name` 缺省取包的展示名，`enabled` 缺省 `true`。
+- `upstream_id` 缺省取目录的 `default_upstream_id`，`name` 缺省取包的展示名，`enabled` 缺省 `true`。
+  安装时不绑定授权组，安装后在组暴露矩阵（`PUT /admin/groups/{code}/exposure`）中授权。
 - 生成的上下游固定为：`transport="http"`、`url={端点}/internal/mcp/{package_id}/{upstream_id}`、
   `command`/`args` 为空；`env` 由 `config` 按字段映射生成（值会 `trim`；未填且字段有 `default` 时用
   默认值；仍为空的可选字段不写入 `env`；secret 值加密后写入）；`category="custom"`、
@@ -288,12 +245,11 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 | 包 id 不存在（安装/卸载/改配置） | `404 MCP_CATALOG_NOT_FOUND` |
 | 进程没有内置端点（stdio 模式）或没有 `JUMCP_SECRET_KEY` | `503 MCP_BUILTIN_UNAVAILABLE`（message/hint 说明需要 HTTP 模式 + 密钥） |
 | 进程没有 `JUMCP_TRANSPORT_KEY`（非 HTTP 构造下才会出现） | `503 MCP_TRANSPORT_KEY_MISSING` |
-| 缺 `group`、缺必填字段（`data.field` 指向字段 key，message 用字段 `label`）、`config` 出现包未声明的键（message「未知配置字段：k1,k2」，`data.field` 为首个未知键，`data.unknown` 列出全部、按字典序） | `400 MCP_VALIDATION_ERROR` |
+| 缺必填字段（`data.field` 指向字段 key，message 用字段 `label`）、`config` 出现包未声明的键（message「未知配置字段：k1,k2」，`data.field` 为首个未知键，`data.unknown` 列出全部、按字典序） | `400 MCP_VALIDATION_ERROR` |
 | `secret=true` 字段的非空值不是 `enc:v1:` 密文 | `400 MCP_TRANSPORT_CIPHERTEXT_REQUIRED`（message「secret 字段必须密文传输：&lt;key&gt;」） |
 | `secret` 密文用传输密钥解不开（密钥已轮换/被篡改） | `400 MCP_TRANSPORT_DECRYPT_FAILED`（message「secret 字段密文无法解密：&lt;key&gt;」） |
 | `secret` 密文解出来是空串 | `400 MCP_VALIDATION_ERROR`（message「secret 字段不能为空：&lt;key&gt;」） |
 | `secret` 密文超过 4096 字符 | `400 MCP_VALIDATION_ERROR`（`data.max_len`） |
-| `group` 不在 effective policy 或为 `basic` | `400 MCP_UPSTREAM_INVALID` |
 | `upstream_id` 已存在或为保留 id | `409 MCP_UPSTREAM_CONFLICT` |
 | 卸载/改配置时该上游不是这个包安装的 | `404 MCP_UPSTREAM_NOT_FOUND` |
 
@@ -322,7 +278,7 @@ PRIMARY KEY(upstream_id, tool_name))`：**只存显式覆盖**，没有行 = 继
 
 安装产物没有特殊运行期路径，但有**包管理字段**：`transport`、`url`、`command`、`args`、`env`、
 `headers` 由包维护，`PUT /admin/upstreams/{id}` 改它们会 `409 MCP_UPSTREAM_PACKAGE_MANAGED`
-（`data.fields` 列出被改的字段）。`name`、`group`、`enabled`、`timeout_ms` 仍可改，
+（`data.fields` 列出被改的字段）。`name`、`enabled`、`timeout_ms` 仍可改，
 启停按钮照常可用；要改配置请走 §3.2 的 PATCH。`PUT` 保留 `catalog_id`/`catalog_version`
 （UPDATE 语句不含这两列），`DELETE /admin/upstreams/{id}` 也能删。
 
@@ -382,22 +338,20 @@ JSON-RPC 响应）。`initialize` 响应头里的 `Mcp-Session-Id` 会被记住�
 
 ## 6. 可见性、预算与调用解析
 
-- 上游工具默认只对 `group ∈ scope.groups` 的请求可见/可调；组不在 scope 内时与"不存在"同构。
-  例外是逐工具加入 `basic` 的成员：它们对所有 scope 可见/可调（见 §2.1），组门在**工具级**
-  生效而不是整台上游级——上游组不在 scope 时，只有 `basic` 覆盖且 `eligible` 的工具出现。
-- `tools/call` 的前缀回退同样受工具级组门约束：上游组不在 scope 且该 suffix 没有 `basic`
-  覆盖时，回退不会命中（`-32602`），不能借旧缓存绕过组门。
+- `tools/list` 与 `search_capabilities` 的可见集合 = 注册表可见能力 ∪ 组内暴露的上游工具。
+- 上游工具的可见性由组暴露矩阵决定（第一层整台授予 + 第二层逐工具 `inherit` / `include` / `exclude`），
+  `scope.groups` 中**至少一个**组判定可见时才出现在 `tools/list` 并可被调用；没有组放行时与"不存在"同构。
+  `UpstreamManager::projection` 逐工具按矩阵过滤，取消整台组命中即全放行的短路。
+- `tools/call` 的上游门禁在 `resolve`（会触网）之前完成，拒绝写 `policy_decision`
+  （`detail.surface="mcp/upstream-groups"`），不会产生任何上游连接或 `tools/list` 拉取；
+  前缀回退同样受工具级组门约束，未命中返回 `-32602`，不能借旧缓存绕过组门。
+  内置工具门禁的审计 `detail.surface="mcp/builtin-groups"`。
 - 上游工具**始终**出现在 `tools/list`（不受平铺阈值影响），并计入常驻预算；上游工具全部
   视为常驻项，`truncate` 溢出时保留它们、只裁 managed 平铺项。
-- 授权是"组 ∧ 工具名 allowlist"两道：`group` 决定该上游对谁可用，token 的
-  `builtin_tools` 决定该身份能看见/调用哪些**名字**（内置 id、上游暴露名、`<server_id>__*`
-  或 `*`，见上文 allowlist 语义）。
-  `tools/call` 的 allowlist 判定先于上游解析（只查 SQLite 前缀），被拒绝的名字不会产生
-  任何上游连接或 `tools/list` 拉取；不在任何上游前缀上的名字仍返回 `-32602`。
-- 上游没有"只读声明"：`enabled`、组、token allowlist 是唯一的准入条件；SQL/文件/接口前置
+- 上游没有"只读声明"：`enabled` 与组暴露矩阵是唯一的准入条件；SQL/文件/接口前置
   拦截仍按入参形状生效，但不承诺识别上游内部语义（见 `docs/preflight.md` 的边界说明）。
-- `search_capabilities` / `describe_capability` / `list_groups` / `tools/list` 都包含上游工具；
-  `list_groups` 按上游注册的组计数。
+- `search_capabilities` / `describe_capability` / `list_groups` / `tools/list` 都包含组内暴露的上游工具；
+  `list_groups` 按组暴露矩阵统计各组计数。
 - `tools/call` 名字解析：当前投影精确匹配 → 按 `<server_id>__` 前缀回退（吃住客户端缓存的
   旧 `tools/list`）→ 未命中 `-32602`。
 - 上游自身的 JSON-RPC error、连接失败、超时都整形为 MCP `isError` 结果，错误码
@@ -450,14 +404,9 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
   `template_run`，`outcome="error"`（执行结果未知时 `"unknown"`），`payload` 顶层带
   `error_code`/`error_message`。模板调用**不再**同时写 `tool_call`，两类事件不会对同一次
   失败各计一遍。
-- 管理面写操作写 `admin_change`：`object_type="upstream"`，`action` ∈
-  `create|update|delete|refresh|update_tool_groups`；`changes` 只含真实变化的字段（env/headers 只输出键与
-  脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`group`/`category`/
-  `enabled`（refresh 另含 `tool_count`/`status`；`update_tool_groups` 另含
-  `basic_total`；由内置包安装的上游另含 `catalog_id`/`catalog_version`）。
-- 逐工具加入 `basic` 的 `changes` 每条是 `{field:"tool_group", tool:<原始工具名>,
-  before:<原组或 null>, after:<"basic" 或 null>}`（`after=null` 表示移出 `basic` 回到继承）；
-  无真实变化不写审计。
+- 管理面写操作写 `admin_change`：
+  - 上游操作：`object_type="upstream"`，`action` ∈ `create|update|delete|refresh`；`changes` 只含真实变化的字段（env/headers 只输出键与脱敏值，`changed_keys` 指出真正变了的键）；`data` 只含 `transport`/`category`/`enabled`（refresh 另含 `tool_count`/`status`；由内置包安装的上游另含 `catalog_id`/`catalog_version`）。
+  - 组暴露矩阵：`object_type="group"`，`action` ∈ `group_upstreams|group_tool_rules`（逐工具规则变更的 `changes` 字段为 `field:"tool_rule"`）；无真实变化不写审计。
 - `definition_hash` 是对完整配置（含 env/headers 值）的 sha256，用于连接池失效与审计回溯；
   只输出哈希。
 - `/admin/audit-events` 的 `surface` 过滤为 `admin|mcp|all`，**缺省 `all`**：MCP 面的
@@ -526,34 +475,26 @@ TTL 的"假探测"；失败时保留旧工具、只把状态降为 `degraded`。
 | `DELETE /admin/upstreams/{id}` | `200 {deleted:true}` |
 | `POST /admin/upstreams/{id}/refresh` | `200 UpstreamItem`（失败也是 200 + `status=error`） |
 | `GET /admin/upstreams/{id}/tools` | `200 UpstreamTools`；只读缓存、不触网 |
-| `PUT /admin/upstreams/{id}/tools/basic` | `200 {changed:[…], basic_total, tools:[UpstreamToolItem]}` |
+| `GET /admin/groups/{code}/exposure` | `200 GroupExposure`；只读缓存、不触网 |
+| `PUT /admin/groups/{code}/exposure` | `200 {exposure:GroupExposure, changes:{upstreams:int, tools:int}}` |
+| `PATCH /admin/tokens/{id}` | `200 TokenItem`；改 `name`/`groups`/`expires_at`，不换密钥、不改 `role` |
+| `GET /admin/tokens/options` | `200 {roles, groups}`（`groups` 含 `basic`） |
 | `GET /admin/mcp/catalog` | `200 {items:[CatalogItem]}`；目录 + 主机状态 + `installations`，见 §3 |
 | `POST /admin/mcp/catalog/{id}/install` | `200 {upstream:UpstreamItem}`；错误码见 §3.4 |
 | `PATCH /admin/mcp/catalog/{id}/install/{upstream_id}/config` | `200 {installation:InstallationItem}`；见 §3.2 |
 | `DELETE /admin/mcp/catalog/{id}/install/{upstream_id}` | `200 {deleted:true}`；非本包安装 `404 MCP_UPSTREAM_NOT_FOUND` |
 | `GET /admin/transport-key` | `200 {algorithm:"AES-256-GCM", key:"<64 位 hex>"}`，`Cache-Control: no-store`；未配置 `503 MCP_TRANSPORT_KEY_MISSING`，见 §3.5 |
 
-`GET .../tools` 响应：`{status, status_message, last_checked_at, total, basic_total,
-orphaned_total, tools:[UpstreamToolItem]}`；`UpstreamToolItem` = `name`（原始工具名）、
-`exposed_name`（`<server_id>__<tool>`）、`group`（生效组）、`group_source`
-（`basic|upstream`）、`basic`（覆盖且当前 `eligible` 的生效状态）、`overridden`（**存在**
-basic 覆盖行，不论当前是否 `eligible`）、`eligible`（是否**可以**加入 `basic`）、
-`orphaned`（有覆盖行但当前缓存无此工具）、`description`。
+`GET /admin/upstreams/{id}/tools` 响应：`{groups:[string], tools:[{name, exposed_name, description, admin_only}], total, status, status_message, last_checked_at}`；其中 `groups` 为第一层授予整台上游的组 code 列表，只读缓存不触网。
 
-`overridden=true, basic=false` 表示上游配置漂移导致旧覆盖失效（上游改成写、`category=admin`
-或工具名变成 `admin_` 前缀）：管理面据此展示该行并用 `null` 清理，服务端不会静默删除用户配置。
+`GET /admin/groups/{code}/exposure` 响应：`{group, upstreams:[{id, name, category, admin_only, enabled, granted, tool_count}], tools:[{upstream_id, tool, exposed, state, visible, admin_only, orphaned}]}`（只读缓存、不触网；停用的上游同样列出，否则其残留规则没有清理入口）。
 
-`PUT .../tools/basic` 的 body 是 `{tools:{"<原始工具名>": true|false|null}}`（`true` 加入、
-`false`/`null` 移出），合并语义、幂等；`changed` 每条 `{name, before, after}`（组名或
-`null`）。校验整请求粒度：`409 MCP_UPSTREAM_TOOL_UNKNOWN`（`data.unknown`）、
-`409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`
-（`data.reason`）、超过 64 键 `400 MCP_VALIDATION_ERROR`。
-
+`PUT /admin/groups/{code}/exposure` 的 body 是 `{upstreams:{id: bool}, tools:{upstream_id: {tool: "include"|"exclude"|null}}}`，合并语义、幂等，整请求先校验后落库（不做部分写入）；`orphaned` 工具只允许提交 `null`。错误码：`409 MCP_UPSTREAM_TOOL_UNKNOWN`（`data.unknown`）、`409 MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`（`data.reason` 为 `upstream_category_admin` 或 `admin_prefix`）、`400 MCP_VALIDATION_ERROR`（非法规则状态或单次变更超过 512 / 单组规则超过 `GROUP_TOOL_RULE_MAX=128`）、`404 MCP_UPSTREAM_NOT_FOUND`。
 `UpstreamInput` = `UpstreamItem` 去掉 `status`/`status_message`/`tool_count`/`last_checked_at`/
 `updated_at`。`PUT` 省略字段表示保留现有值。
 
 `UpstreamItem` 字段（snake_case）：`id`、`name`、`transport`、`url`（http 才有值，否则
-`null`）、`command`（stdio 才有值，否则 `null`）、`args`、`env`、`headers`、`group`、
+`null`）、`command`（stdio 才有值，否则 `null`）、`args`、`env`、`headers`、
 `category`、`enabled`、`timeout_ms`、`status`、`status_message`、`tool_count`、
 `last_checked_at`、`updated_at`、`catalog_id`、`catalog_version`（后两者由内置包安装写入，手工创建为 `null`）。
 
@@ -573,7 +514,6 @@ basic 覆盖行，不论当前是否 `eligible`）、`eligible`（是否**可以
 |---|---|
 | `id` 非法/保留/与内置 id 冲突 | `400 MCP_UPSTREAM_INVALID` / `409 MCP_UPSTREAM_CONFLICT` |
 | `name` 空或超长、`category` 越界、`timeout_ms` 越界、args/env/headers 超限 | `400 MCP_UPSTREAM_INVALID` |
-| `group` 不在 effective policy | `400 MCP_UPSTREAM_INVALID` |
 | `http` 缺 url / 非 http(s) / 带 userinfo；`stdio` 缺 command 或带 url | `400 MCP_UPSTREAM_INVALID` |
 | `transport=stdio` 但 `JUMCP_MCP_UPSTREAM_STDIO!=1` | `400 MCP_UPSTREAM_STDIO_DISABLED` |
 | 切换 transport 时另一侧字段（http 的 `command`、stdio 的 `url`） | 归一化为空后落库，不报错 |

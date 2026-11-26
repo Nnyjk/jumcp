@@ -4,7 +4,7 @@ use crate::audit::IntoAuditOrigin;
 use crate::canonical::sha256_hex;
 use crate::config::{AgentPrincipal, TenantPolicy, is_principal_id};
 use crate::errors::McpError;
-use crate::registry::{ADMIN_CAPABILITY_IDS, AdminChange, BUILTIN_CAPABILITY_IDS, CapabilityStore};
+use crate::registry::{AdminChange, CapabilityStore};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 use serde_json::{Value, json};
@@ -31,7 +31,6 @@ pub struct AccessTokenRecord {
     pub tenant: String,
     pub role: String,
     pub groups: Vec<String>,
-    pub builtin_tools: Vec<String>,
     pub source: String,
     pub caller: String,
     pub enabled: bool,
@@ -90,7 +89,6 @@ impl AccessTokenRecord {
             "tenant": self.tenant,
             "role": self.role,
             "groups": self.groups,
-            "builtin_tools": self.builtin_tools,
             "source": self.source,
             "caller": self.caller,
             "status": self.status(),
@@ -123,7 +121,6 @@ pub struct NewAccessToken {
     pub name: String,
     pub role: String,
     pub groups: Vec<String>,
-    pub builtin_tools: Vec<String>,
     pub source: String,
     pub caller: String,
     pub expires_at: Option<String>,
@@ -164,44 +161,6 @@ impl NewAccessToken {
             return Err(McpError::new(
                 "MCP_VALIDATION_ERROR",
                 json!({"field": "groups", "hint": "groups 不能为空"}),
-            ));
-        }
-        // allowlist 同时约束内置与上游工具：内置 id、上游暴露名 `<server_id>__<tool>`，
-        // 或两种通配（`*` 全部工具、`<server_id>__*` 某个上游的全部工具）。
-        // 上游名不要求此刻已注册（令牌可以先于上游创建，也可以先授权再安装），
-        // 但形状必须能反解，否则 `tools/list` 永远匹配不上。
-        let unknown: Vec<&str> = self
-            .builtin_tools
-            .iter()
-            .map(String::as_str)
-            .filter(|entry| !crate::registry::is_tool_allowlist_entry(entry))
-            .collect();
-        if !unknown.is_empty() {
-            return Err(McpError::new(
-                "MCP_VALIDATION_ERROR",
-                json!({
-                    "field": "builtin_tools",
-                    "unknown": unknown,
-                    "allowed": BUILTIN_CAPABILITY_IDS,
-                    "upstream_rule": "<server_id>__<tool>（两侧 [A-Za-z0-9_-]，整名 ≤64）",
-                    "wildcards": ["*", "<server_id>__*"]
-                }),
-            ));
-        }
-        let admin_ids: Vec<&str> = self
-            .builtin_tools
-            .iter()
-            .map(String::as_str)
-            .filter(|id| ADMIN_CAPABILITY_IDS.contains(id))
-            .collect();
-        if !admin_ids.is_empty() && !self.groups.iter().any(|g| g == "admin") {
-            return Err(McpError::new(
-                "MCP_VALIDATION_ERROR",
-                json!({
-                    "field": "builtin_tools",
-                    "offending": admin_ids,
-                    "hint": "admin_* 内置工具要求 groups 含 admin（双重判定）"
-                }),
             ));
         }
         if let Some(expires_at) = &self.expires_at {
@@ -250,7 +209,7 @@ CREATE TABLE IF NOT EXISTS access_tokens (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
     token_prefix TEXT NOT NULL DEFAULT '', tenant TEXT NOT NULL DEFAULT 'default',
     role TEXT NOT NULL, groups_json TEXT NOT NULL DEFAULT '[]',
-    builtin_tools_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
     caller TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
     expires_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '',
@@ -264,7 +223,6 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), McpError> {
     conn.execute_batch(SCHEMA)
         .map_err(|e| McpError::store(e.to_string()))?;
     for column in [
-        "builtin_tools_json",
         "token_prefix",
         "tenant",
         "source",
@@ -290,15 +248,14 @@ fn row_to_token(row: &Row) -> rusqlite::Result<AccessTokenRecord> {
         tenant: row.get(4)?,
         role: row.get(5)?,
         groups: decode_list(row.get(6)?, 6)?,
-        builtin_tools: decode_list(row.get(7)?, 7)?,
-        source: row.get(8)?,
-        caller: row.get(9)?,
-        enabled: row.get::<_, i64>(10)? != 0,
-        created_at: row.get(11)?,
-        created_by: row.get(12)?,
-        expires_at: row.get(13)?,
-        revoked_at: row.get(14)?,
-        last_used_at: row.get(15)?,
+        source: row.get(7)?,
+        caller: row.get(8)?,
+        enabled: row.get::<_, i64>(9)? != 0,
+        created_at: row.get(10)?,
+        created_by: row.get(11)?,
+        expires_at: row.get(12)?,
+        revoked_at: row.get(13)?,
+        last_used_at: row.get(14)?,
     })
 }
 
@@ -319,7 +276,7 @@ fn decode_list(raw: String, column: usize) -> rusqlite::Result<Vec<String>> {
     })
 }
 
-const COLUMNS: &str = "id, name, token_hash, token_prefix, tenant, role, groups_json, builtin_tools_json, source, caller, enabled, created_at, created_by, expires_at, revoked_at, last_used_at";
+const COLUMNS: &str = "id, name, token_hash, token_prefix, tenant, role, groups_json, source, caller, enabled, created_at, created_by, expires_at, revoked_at, last_used_at";
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339()
@@ -384,7 +341,6 @@ impl CapabilityStore {
         let prefix = display_prefix(&token);
         let created_at = now_iso();
         let groups_json = encode_list(&new.groups)?;
-        let tools_json = encode_list(&new.builtin_tools)?;
         let expires_at = new.expires_at.clone().unwrap_or_default();
         let mut id = new_token_id();
         {
@@ -393,7 +349,7 @@ impl CapabilityStore {
             for _ in 0..5 {
                 let result = conn.execute(
                     &format!(
-                        "INSERT INTO access_tokens ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?12,?13,'','')"
+                        "INSERT INTO access_tokens ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11,?12,'','')"
                     ),
                     rusqlite::params![
                         id,
@@ -403,7 +359,6 @@ impl CapabilityStore {
                         new.tenant,
                         new.role,
                         groups_json,
-                        tools_json,
                         new.source,
                         new.caller,
                         created_at,
@@ -452,7 +407,6 @@ impl CapabilityStore {
                     "name": record.name,
                     "role": record.role,
                     "groups": record.groups,
-                    "builtin_tools": record.builtin_tools,
                     "source": record.source,
                     "caller": record.caller,
                     "expires_at": null_if_empty(&record.expires_at),
@@ -520,7 +474,6 @@ impl CapabilityStore {
                     "name": updated.name,
                     "role": updated.role,
                     "groups": updated.groups,
-                    "builtin_tools": updated.builtin_tools,
                     "source": updated.source,
                     "caller": updated.caller,
                     "expires_at": null_if_empty(&updated.expires_at),
@@ -531,6 +484,138 @@ impl CapabilityStore {
             token,
             record: updated,
         })
+    }
+
+    /// 修改令牌的非凭据字段：`name` / `groups` / `expires_at`，只改明确给出的项。
+    ///
+    /// 组是唯一授权面，所以这是"改授权"的正规入口——不必重签换发新明文（旧明文继续可用）。
+    /// 明文与哈希一律不动，`created_by` 保留原值；仅 active 可改，撤销/过期返回 409。
+    /// 无真实变化时不写审计。
+    pub fn update_access_token(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        groups: Option<&[String]>,
+        expires_at: Option<Option<String>>,
+        actor: &crate::entry::Actor,
+    ) -> Result<AccessTokenRecord, McpError> {
+        self.audit_required("审计未启用，令牌修改拒绝")?;
+        let before = self
+            .get_access_token(id)?
+            .ok_or_else(|| McpError::new("MCP_TOKEN_NOT_FOUND", json!({"token_id": id})))?;
+        let status = before.status();
+        if status != TOKEN_STATUS_ACTIVE {
+            return Err(McpError::new(
+                "MCP_STATE_TRANSITION_INVALID",
+                json!({
+                    "token_id": id,
+                    "status": status,
+                    "hint": "只有未撤销且未过期的令牌可以修改"
+                }),
+            ));
+        }
+        let name = match name {
+            Some(name) => {
+                let name = name.trim();
+                let len = name.chars().count();
+                if len == 0 || len > TOKEN_FIELD_MAX {
+                    return Err(McpError::new(
+                        "MCP_VALIDATION_ERROR",
+                        json!({"field": "name", "min": 1, "max": TOKEN_FIELD_MAX, "len": len}),
+                    ));
+                }
+                name.to_string()
+            }
+            None => before.name.clone(),
+        };
+        let groups = match groups {
+            Some(groups) => {
+                if groups.is_empty() {
+                    return Err(McpError::new(
+                        "MCP_VALIDATION_ERROR",
+                        json!({"field": "groups", "hint": "groups 不能为空"}),
+                    ));
+                }
+                groups.to_vec()
+            }
+            None => before.groups.clone(),
+        };
+        let expires_at = match expires_at {
+            None => before.expires_at.clone(),
+            Some(None) => String::new(),
+            Some(Some(raw)) => {
+                let raw = raw.trim().to_string();
+                if raw.is_empty() {
+                    String::new()
+                } else {
+                    let Some(at) = parse_rfc3339(&raw) else {
+                        return Err(McpError::new(
+                            "MCP_VALIDATION_ERROR",
+                            json!({"field": "expires_at", "hint": "必须是 RFC3339 时间", "value": raw}),
+                        ));
+                    };
+                    if at <= Utc::now() {
+                        return Err(McpError::new(
+                            "MCP_VALIDATION_ERROR",
+                            json!({"field": "expires_at", "hint": "过期时间必须晚于当前时间", "value": raw}),
+                        ));
+                    }
+                    raw
+                }
+            }
+        };
+        let before_value = json!({
+            "name": before.name,
+            "groups": before.groups,
+            "expires_at": null_if_empty(&before.expires_at)
+        });
+        let after_value = json!({
+            "name": name,
+            "groups": groups,
+            "expires_at": null_if_empty(&expires_at)
+        });
+        let changes = crate::registry::field_changes(
+            &before_value,
+            &after_value,
+            &["name", "groups", "expires_at"],
+        );
+        let encoded = encode_list(&groups)?;
+        {
+            let conn = self.db().lock().map_err(|_| McpError::lock())?;
+            let changed = conn
+                .execute(
+                    "UPDATE access_tokens SET name=?1, groups_json=?2, expires_at=?3 WHERE id=?4 AND revoked_at=''",
+                    rusqlite::params![name, encoded, expires_at, id],
+                )
+                .map_err(|e| McpError::store(e.to_string()))?;
+            if changed == 0 {
+                return Err(McpError::new(
+                    "MCP_STATE_TRANSITION_INVALID",
+                    json!({"token_id": id, "hint": "令牌状态已变化，请刷新后重试"}),
+                ));
+            }
+        }
+        let updated = self
+            .get_access_token(id)?
+            .ok_or_else(|| McpError::store("update_access_token 后记录缺失".to_string()))?;
+        if changes.is_empty() {
+            return Ok(updated);
+        }
+        self.write_admin_audit(
+            AdminChange::new("token", id, "token_update")
+                .with_origin(actor.into_audit_origin())
+                .with_changes(changes)
+                .with_data(json!({
+                    "name": updated.name,
+                    "role": updated.role,
+                    "groups": updated.groups,
+                    "source": updated.source,
+                    "caller": updated.caller,
+                    "token_prefix": updated.token_prefix,
+                    "expires_at": null_if_empty(&updated.expires_at)
+                })),
+        )?;
+        Ok(updated)
     }
 
     pub fn get_access_token(&self, id: &str) -> Result<Option<AccessTokenRecord>, McpError> {
@@ -707,7 +792,6 @@ impl CapabilityStore {
                     "name": record.name,
                     "role": record.role,
                     "groups": record.groups,
-                    "builtin_tools": record.builtin_tools,
                     "source": record.source,
                     "caller": record.caller,
                     "token_prefix": record.token_prefix,
@@ -765,17 +849,14 @@ impl CapabilityStore {
 
     /// 启动引导：`access_tokens` 为空时把 `JUMCP_AGENT_TOKENS` 的静态 token 一次性导入。
     ///
-    /// 导入的是同一明文的 sha256，因此原静态 token 仍可继续使用；`builtin_tools` 写 `*`
-    /// （全部工具）：环境令牌是部署方自备的身份，工具范围交给授权组与上游开关约束。
-    /// 写死内置 id 会让"之后安装的上游"永远进不了这个身份的可见集——令牌创建后不可改
-    /// （只能重签），运维无法事后补名。
+    /// 导入的是同一明文的 sha256，因此原静态 token 仍可继续使用。组取角色默认组并补上
+    /// 内置 `basic`（常驻元工具所在组）：引导令牌看不到检索/模板执行这两个入口就等于不可用。
     pub fn import_bootstrap_tokens(
         &self,
         principals: &[AgentPrincipal],
         policy: &TenantPolicy,
     ) -> Result<usize, McpError> {
         let mut imported = 0usize;
-        let all_tools: Vec<String> = vec![crate::registry::TOOL_WILDCARD_ALL.to_string()];
         for principal in principals {
             let hash = sha256_hex(&principal.token);
             {
@@ -795,12 +876,6 @@ impl CapabilityStore {
                 .role(&principal.role)
                 .map(|def| def.default_groups.clone())
                 .unwrap_or_default();
-            if groups.is_empty() {
-                return Err(McpError::new(
-                    "MCP_VALIDATION_ERROR",
-                    json!({"field": "groups", "agent": principal.id, "hint": "角色没有默认组，无法导入引导令牌"}),
-                ));
-            }
             let mut stored = false;
             {
                 let conn = self.db().lock().map_err(|_| McpError::lock())?;
@@ -808,7 +883,7 @@ impl CapabilityStore {
                     let id = new_token_id();
                     let result = conn.execute(
                         &format!(
-                            "INSERT INTO access_tokens ({COLUMNS}) VALUES (?1,?2,?3,?4,'default',?5,?6,?7,'bootstrap',?8,1,?9,'env','','','')"
+                            "INSERT INTO access_tokens ({COLUMNS}) VALUES (?1,?2,?3,?4,'default',?5,?6,'bootstrap',?7,1,?8,'env','','','')"
                         ),
                         rusqlite::params![
                             id,
@@ -817,7 +892,6 @@ impl CapabilityStore {
                             display_prefix(&principal.token),
                             principal.role,
                             encode_list(&groups)?,
-                            encode_list(&all_tools)?,
                             principal.id,
                             now_iso()
                         ],

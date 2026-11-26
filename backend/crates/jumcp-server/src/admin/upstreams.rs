@@ -13,7 +13,6 @@ pub(super) struct UpstreamInput {
     args: Option<Vec<String>>,
     env: Option<BTreeMap<String, String>>,
     headers: Option<BTreeMap<String, String>>,
-    group: Option<String>,
     category: Option<String>,
     enabled: Option<bool>,
     timeout_ms: Option<i64>,
@@ -122,7 +121,6 @@ pub(super) fn build_upstream(
     let old_headers = existing.map(|e| e.headers.clone()).unwrap_or_default();
     let env = restore_masked("env", &old_env, body.env)?;
     let headers = restore_masked("headers", &old_headers, body.headers)?;
-    let group = fallback(body.group, existing.map(|e| e.group.clone()));
     let category = fallback(body.category, existing.map(|e| e.category.clone()));
     let category = if category.is_empty() {
         crate::catalog::CATEGORY_CUSTOM.to_string()
@@ -146,7 +144,6 @@ pub(super) fn build_upstream(
         args,
         env,
         headers,
-        group,
         category,
         enabled,
         timeout_ms,
@@ -156,9 +153,8 @@ pub(super) fn build_upstream(
         created_at: existing.map(|e| e.created_at.clone()).unwrap_or_default(),
         updated_at: String::new(),
     };
-    // `basic` 是代码内置的逐工具通道：整台上游注册到 basic 会让它的全部工具（含写工具）
-    // 对所有人可见，因此只允许逐工具加入。
-    ensure_upstream_group(state, actor, surface, &upstream.group, &upstream.id)?;
+    // 上游本体不携带授权组：可见性完全由 `mcp_group_upstreams` / `mcp_group_tool_rules`
+    // 决定，接入一台上游不产生任何暴露。
     // http 上游的地址在写边界就完整解析：只允许 http(s)、禁止 userinfo（与建连时同一约束）。
     if upstream.transport == "http" {
         let parsed = reqwest::Url::parse(&upstream.url).map_err(|_| {
@@ -210,51 +206,6 @@ pub(super) fn build_upstream(
         )
     })?;
     Ok(upstream)
-}
-
-/// 授权组门禁（上游写入与包安装共用）：`basic` 不可整台注册，组必须存在于有效策略。
-///
-/// 上游工具的可见性完全由该组决定，悬空组等于永远不可见；因此两处写入口必须同一判定。
-pub(super) fn ensure_upstream_group(
-    state: &AdminState,
-    actor: &Actor,
-    surface: &str,
-    group: &str,
-    id: &str,
-) -> Result<(), ApiError> {
-    if group == crate::discovery::BASIC_GROUP {
-        return Err(reject(
-            state,
-            actor,
-            McpError::new(
-                "MCP_UPSTREAM_INVALID",
-                json!({
-                    "field": "group",
-                    "group": group,
-                    "hint": "basic 是内置组，只能通过逐工具配置把个别工具加入",
-                }),
-            ),
-            json!({"surface": surface, "id": id}),
-        ));
-    }
-    let policy = state
-        .service
-        .effective_policy()
-        .map_err(|e| reject(state, actor, e, json!({"surface": surface, "id": id})))?;
-    if !policy.groups.iter().any(|g| g.code == group) {
-        let mut known: Vec<&str> = policy.groups.iter().map(|g| g.code.as_str()).collect();
-        known.sort();
-        return Err(reject(
-            state,
-            actor,
-            McpError::new(
-                "MCP_UPSTREAM_INVALID",
-                json!({"field": "group", "group": group, "known_groups": known}),
-            ),
-            json!({"surface": surface, "id": id}),
-        ));
-    }
-    Ok(())
 }
 
 /// 管理面条目：脱敏配置 + 运行态（status 取缓存，不触发探测）。
@@ -375,7 +326,7 @@ pub(super) async fn update_upstream(
         })?;
     let upstream = build_upstream(&state, &actor, SURFACE, Some(&id), body, Some(&existing))?;
     // 包安装行的传输/地址/命令/环境变量/请求头由包管理：手改会与安装时生成的 URL、
-    // 加密字段脱节，因此只允许改名称/组/启停/只读/超时。
+    // 加密字段脱节，因此只允许改名称/启停/超时。
     if existing.catalog_id.is_some() {
         let mut changed: Vec<&str> = Vec::new();
         if upstream.transport != existing.transport {
@@ -494,7 +445,6 @@ pub(super) async fn refresh_upstream(
         "data".into(),
         json!({
             "transport": def.transport,
-            "group": def.group,
             "category": def.category,
             "tool_count": runtime.tool_count,
             "status": runtime.status
@@ -514,68 +464,30 @@ pub(super) async fn refresh_upstream(
     Ok(Json(upstream_item(&def, &runtime)))
 }
 
-/// `GET /admin/upstreams/{id}/tools` 与 `PUT .../tools/basic` 的共享视图。
+/// 上游工具清单（上游视角）：缓存里的工具、每个工具的维护通道标记、授予这台上游的组。
 ///
-/// 一行一个工具：`group` 是生效组（有 basic 覆盖且仍可加入时为 `basic`，否则继承上游组）；
-/// `group_source` 说明这个组是逐工具覆盖来的还是继承上游的；`eligible=false` 表示该工具
-/// 不能加入 basic（上游类别是 admin、或工具名以 `admin_` 开头——这些是维护通道，
-/// 不能借 basic 变成对所有 agent 可见）；`orphaned=true` 表示有覆盖行但当前缓存里
-/// 已没有这个工具（上游改名/刷新失败），留给管理面清理，不静默删用户配置。
+/// 组与工具的暴露关系在组视角（`GET /admin/groups/{code}/exposure`）维护；这里只回答
+/// "这台上游现在有哪些工具、整台被哪些组授予"，因此不触网、不写库。
 pub(super) fn upstream_tools_view(
     def: &McpUpstream,
     cached: &[jumcp_core::registry::UpstreamTool],
-    overrides: &[UpstreamToolGroup],
+    exposure: &jumcp_core::registry::GroupExposure,
 ) -> Value {
-    let mut tools: Vec<Value> = Vec::with_capacity(cached.len() + overrides.len());
-    for tool in cached {
-        let overridden = overrides.iter().any(|row| {
-            row.tool_name == tool.name && row.group_code == crate::discovery::BASIC_GROUP
-        });
-        // 与 `/admin/tokens/options`、`tools/list` 共用同一份生效组判定；`None` 表示覆盖行
-        // 已因上游改成 admin 类别/名字非法而失效，此时按上游组展示，`eligible=false` 提示清理。
-        let group = crate::upstream::effective_tool_group(def, tool, overridden);
-        let basic = group == Some(crate::discovery::BASIC_GROUP);
-        tools.push(json!({
-            "name": tool.name,
-            "exposed_name": crate::upstream::exposed_tool_name(&def.id, &tool.name),
-            "group": group.unwrap_or(def.group.as_str()),
-            "group_source": if basic { "basic" } else { "upstream" },
-            "basic": basic,
-            "overridden": overridden,
-            "eligible": crate::upstream::basic_eligible(def, tool),
-            "orphaned": false,
-            "description": tool.description,
-        }));
-    }
-    for row in overrides {
-        if cached.iter().any(|tool| tool.name == row.tool_name) {
-            continue;
-        }
-        tools.push(json!({
-            "name": row.tool_name,
-            "exposed_name": crate::upstream::exposed_tool_name(&def.id, &row.tool_name),
-            "group": crate::discovery::BASIC_GROUP,
-            "group_source": "basic",
-            "basic": true,
-            "overridden": true,
-            "eligible": false,
-            "orphaned": true,
-            "description": "",
-        }));
-    }
-    let basic_total = tools
+    let tools: Vec<Value> = cached
         .iter()
-        .filter(|tool| tool["basic"].as_bool() == Some(true))
-        .count();
-    let orphaned_total = tools
-        .iter()
-        .filter(|tool| tool["orphaned"].as_bool() == Some(true))
-        .count();
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "exposed_name": crate::upstream::exposed_tool_name(&def.id, &tool.name),
+                "description": tool.description,
+                "admin_only": crate::upstream::admin_only(def, Some(&tool.name)),
+            })
+        })
+        .collect();
     json!({
+        "groups": exposure.groups_granting(&def.id),
         "tools": tools,
-        "total": tools.len(),
-        "basic_total": basic_total,
-        "orphaned_total": orphaned_total
+        "total": tools.len()
     })
 }
 
@@ -583,9 +495,9 @@ pub(super) fn upstream_tools_payload(
     def: &McpUpstream,
     runtime: &crate::upstream::UpstreamRuntime,
     cached: &[jumcp_core::registry::UpstreamTool],
-    overrides: &[UpstreamToolGroup],
+    exposure: &jumcp_core::registry::GroupExposure,
 ) -> Value {
-    let mut payload = upstream_tools_view(def, cached, overrides);
+    let mut payload = upstream_tools_view(def, cached, exposure);
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("status".into(), json!(runtime.status));
         obj.insert("status_message".into(), json!(runtime.status_message));
@@ -635,120 +547,11 @@ pub(super) async fn upstream_tools(
     let def = upstream_def(&state, &actor, router, SURFACE, &id)?;
     let runtime = router.runtime(&def);
     let cached = router.cached_tools(&id);
-    let overrides = router
+    let exposure = router
         .store()
-        .upstream_tool_groups_of(&id)
+        .group_exposure()
         .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE, "id": id})))?;
     Ok(Json(upstream_tools_payload(
-        &def, &runtime, &cached, &overrides,
+        &def, &runtime, &cached, &exposure,
     )))
-}
-
-/// `PUT /admin/upstreams/{id}/tools/basic`：把个别工具加入/移出 `basic` 组。
-///
-/// body 是 `{"tools": {"<raw_tool_name>": true|false|null}}` 的**合并**语义：
-/// `true` 写入 basic，`false`/`null` 删除覆盖（回到继承上游组）。幂等：无真实变化时不写
-/// 审计、`changed` 为空。校验是整请求粒度——未知工具/写工具/admin 类别命中任一条都整体
-/// 拒绝，不做部分写入。
-#[derive(Debug, Default, Deserialize)]
-pub(super) struct BasicToolsInput {
-    #[serde(default)]
-    tools: BTreeMap<String, Option<bool>>,
-}
-
-pub(super) async fn set_upstream_basic_tools(
-    State(state): State<AdminState>,
-    Extension(auth): Extension<AuthenticatedAdmin>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(body): Json<BasicToolsInput>,
-) -> Result<Json<Value>, ApiError> {
-    const SURFACE: &str = "admin/upstreams/tools/basic";
-    let actor = actor_of(&auth, &headers)
-        .map_err(|e| reject(&state, &admin_actor(""), e, json!({"surface": SURFACE})))?;
-    require_audit(&state, &actor, SURFACE)?;
-    let router = require_router(&state, &actor, SURFACE)?;
-    let def = upstream_def(&state, &actor, router, SURFACE, &id)?;
-    if body.tools.len() > UPSTREAM_TOOL_GROUP_MAX {
-        return Err(reject(
-            &state,
-            &actor,
-            McpError::validation(format!(
-                "单次最多提交 {UPSTREAM_TOOL_GROUP_MAX} 个工具的组覆盖（收到 {}）",
-                body.tools.len()
-            )),
-            json!({
-                "surface": SURFACE,
-                "id": id,
-                "field": "tools",
-                "tool_count": body.tools.len(),
-                "limit": UPSTREAM_TOOL_GROUP_MAX
-            }),
-        ));
-    }
-    let cached = router.cached_tools(&id);
-    let add = body
-        .tools
-        .iter()
-        .filter(|(_, basic)| **basic == Some(true))
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    // `false` 与 `null` 都是"删除覆盖、回到继承上游组"。
-    let clear = body
-        .tools
-        .iter()
-        .filter(|(_, basic)| **basic != Some(true))
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    let unknown: Vec<String> = add
-        .iter()
-        .filter(|name| !cached.iter().any(|tool| &tool.name == *name))
-        .cloned()
-        .collect();
-    if !unknown.is_empty() {
-        return Err(reject(
-            &state,
-            &actor,
-            McpError::new("MCP_UPSTREAM_TOOL_UNKNOWN", json!({"unknown": unknown})),
-            json!({"surface": SURFACE, "id": id}),
-        ));
-    }
-    for name in &add {
-        if def.category == crate::catalog::CATEGORY_ADMIN || name.starts_with("admin_") {
-            return Err(reject(
-                &state,
-                &actor,
-                McpError::new(
-                    "MCP_UPSTREAM_TOOL_NOT_ELIGIBLE",
-                    json!({
-                        "tool": name,
-                        "reason": if def.category == crate::catalog::CATEGORY_ADMIN {
-                            "upstream_category_admin"
-                        } else {
-                            "admin_prefix"
-                        }
-                    }),
-                ),
-                json!({"surface": SURFACE, "id": id}),
-            ));
-        }
-    }
-    let set = add
-        .iter()
-        .map(|name| (name.clone(), crate::discovery::BASIC_GROUP.to_string()))
-        .collect::<Vec<_>>();
-    let changed = router
-        .store()
-        .apply_upstream_tool_groups(&id, &set, &clear, &actor)
-        .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE, "id": id})))?;
-    let overrides = router
-        .store()
-        .upstream_tool_groups_of(&id)
-        .map_err(|e| reject(&state, &actor, e, json!({"surface": SURFACE, "id": id})))?;
-    let runtime = router.runtime(&def);
-    let mut payload = upstream_tools_payload(&def, &runtime, &cached, &overrides);
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert("changed".into(), json!(changed));
-    }
-    Ok(Json(payload))
 }

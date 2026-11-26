@@ -8,7 +8,7 @@
 //! 字段值落库进 `env`（字段声明里的 `env` 键名），secret 字段加密后存
 //! `enc:v1:...`；目录只回显非密字段与 `secrets_set`。
 
-use super::upstreams::{ensure_upstream_group, require_router, upstream_item};
+use super::upstreams::{require_router, upstream_item};
 use super::*;
 use crate::builtin::{BuiltinEndpoint, plugin};
 use jumcp_core::builtin::{BuiltinField, BuiltinMcp, BuiltinPackage};
@@ -22,7 +22,6 @@ use jumcp_core::secret::{SecretKey, is_encrypted};
 pub(super) struct InstallInput {
     upstream_id: Option<String>,
     name: Option<String>,
-    group: Option<String>,
     enabled: Option<bool>,
     #[serde(default)]
     config: BTreeMap<String, String>,
@@ -87,7 +86,6 @@ fn installation_payload(pkg: &BuiltinPackage, def: &McpUpstream) -> Value {
     json!({
         "upstream_id": def.id,
         "name": def.name,
-        "group": def.group,
         "enabled": def.enabled,
         "transport": def.transport,
         "url": def.url,
@@ -394,19 +392,6 @@ pub(super) async fn install_package(
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| pkg.name.to_string());
     let enabled = body.enabled.unwrap_or(true);
-    let group = body.group.unwrap_or_default().trim().to_string();
-    if group.is_empty() {
-        return Err(reject(
-            &state,
-            &actor,
-            McpError::with_message(
-                "MCP_VALIDATION_ERROR",
-                "缺少必填字段：group（授权组）".into(),
-                json!({"field": "group", "label": "group（授权组）"}),
-            ),
-            json!({"surface": SURFACE, "id": id}),
-        ));
-    }
 
     let mut values = resolve_values(pkg, &body.config).map_err(|e| {
         reject(
@@ -442,7 +427,6 @@ pub(super) async fn install_package(
         args: Vec::new(),
         env,
         headers: BTreeMap::new(),
-        group: group.clone(),
         category: crate::catalog::CATEGORY_CUSTOM.to_string(),
         enabled,
         timeout_ms: 30_000,
@@ -451,7 +435,6 @@ pub(super) async fn install_package(
         created_at: String::new(),
         updated_at: String::new(),
     };
-    ensure_upstream_group(&state, &actor, SURFACE, &group, &upstream.id)?;
     upstream.validate().map_err(|e| {
         reject(
             &state,

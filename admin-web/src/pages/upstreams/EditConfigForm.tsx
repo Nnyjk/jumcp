@@ -8,7 +8,7 @@ import { CatalogField } from './CatalogField'
 import { isSecretField } from './upstreamTools'
 
 /**
- * 编辑已安装实例的配置：只覆盖包声明的安装字段，名称/授权组/启停仍走上游编辑。
+ * 编辑已安装实例的配置：只覆盖包声明的安装字段，名称/启停仍走上游编辑。
  * 密文字段每次打开都从空开始，保存时只有真正输入过的键才提交，留空即保持原值。
  */
 export function EditConfigForm({
@@ -86,7 +86,7 @@ export function EditConfigForm({
         submit()
       }}
     >
-      <p className="hint">只修改安装字段；名称、授权组与启停状态请在上游编辑里调整。</p>
+      <p className="hint">只修改安装字段；名称与启停状态请在上游编辑里调整。</p>
 
       {entry.fields.length === 0 && <p className="hint">该包没有安装字段，无需配置。</p>}
 

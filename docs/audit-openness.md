@@ -72,13 +72,15 @@
 | `deprecate` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `reject` | `definition_hash_before`、`definition_hash_after`、`version` |
 | `group_create` / `group_update` / `group_delete` | `group{name,priority,min_budget,roles}` |
-| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`group`、`category`、`enabled`；由内置包安装时另含 `catalog_id`、`catalog_version` |
-| `refresh`（`object_type="upstream"`） | `transport`、`group`、`category`、`tool_count`、`status`；失败时事件顶层另有 `error_code`/`error_message` |
-| `update_tool_groups`（`object_type="upstream"`） | `basic_total` |
-| `token_create` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`；**绝不含明文 token 或 hash** |
+| `group_upstreams`（`object_type="group"`） | `group`、`upstream_count`；`changes` 每项 `{field:"upstream", upstream, before, after}`（`null` = 没有该授予） |
+| `group_tool_rules`（`object_type="group"`） | `group`、`upstream_id`、`tool_count`；`changes` 每项 `{field:"tool_rule", tool, before, after}`（`null` = 继承） |
+| `create` / `update` / `delete`（`object_type="upstream"`） | `transport`、`category`、`enabled`；由内置包安装时另含 `catalog_id`、`catalog_version` |
+| `refresh`（`object_type="upstream"`） | `transport`、`category`、`tool_count`、`status`；失败时事件顶层另有 `error_code`/`error_message` |
+| `token_create` | `name`、`role`、`groups`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`；**绝不含明文 token 或 hash** |
+| `token_update` | `name`、`role`、`groups`、`source`、`caller`、`expires_at`(null\|string)、`token_prefix`、`changes`；**绝不含明文 token 或 hash** |
 | `token_revoke` | `name`、`role`、`groups`、`source`、`caller`、`token_prefix`、`revoked_at` |
-| `token_reissue` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`token_prefix`（新前缀）；**绝不含明文 token 或 hash** |
-| `token_delete` | `name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`token_prefix`、`status`、`created_at`、`expires_at`(null\|string)、`revoked_at`(null\|string)；**绝不含明文 token 或 hash** |
+| `token_reissue` | `name`、`role`、`groups`、`source`、`caller`、`token_prefix`（新前缀）；**绝不含明文 token 或 hash** |
+| `token_delete` | `name`、`role`、`groups`、`source`、`caller`、`token_prefix`、`status`、`created_at`、`expires_at`(null\|string)、`revoked_at`(null\|string)；**绝不含明文 token 或 hash** |
 | `invoke`（tool_call / template_run） | `arguments`、`tokens`、`cache`、`elapsed_ms`、`version`、`row_count`、`truncated`、`summary`、`executed_script`、`sql`、`params`/`bound_params`、`sql_hash`、`sql_bytes`、`params_hash`、错误上下文等，按工具实际返回 |
 | `describe` | `schema_tokens` |
 | `search` / `list_tools` | 检索词与下发工具列表、常驻预算等 |
@@ -305,7 +307,7 @@ HTTP 端点始终实时计算，两边共用 `candidates_report`，同一窗口�
 { items: [AccessTokenItem], total }
 AccessTokenItem = {
   id, name, token_prefix, tenant, role, groups: string[],
-  builtin_tools: string[], source, caller,
+  source, caller,
   status: "active" | "revoked" | "expired",
   created_at, created_by, expires_at: string|null,
   last_used_at: string|null, revoked_at: string|null
@@ -319,7 +321,7 @@ AccessTokenItem = {
 ### 7.8 `POST /admin/tokens`
 
 ```
-body: { name, role, groups: string[], builtin_tools: string[],
+body: { name, role, groups: string[],
         source, caller, expires_at?: string|null }
 201: { token: string, item: AccessTokenItem }   // token 只在这里返回一次
 ```
@@ -328,9 +330,10 @@ body: { name, role, groups: string[], builtin_tools: string[],
 
 - `name` 1..64 字符；`caller` 符合 `^[a-z0-9._-]{2,32}$`；`source` 1..64 且 `^[a-z0-9._-]+$`；
 - `role` 必须是 `policy.roles` 已定义角色；
-- `groups` 去重后非空，且每个组都来自 `effective_policy`（配置组 + 管理组，**允许包含 `admin`**）；
-- `builtin_tools` 去重后每项必须是合法 allowlist 条目：内置 id、上游暴露名 `<server_id>__<tool>`、`*` 或 `<server_id>__*`（空数组合法，表示没有任何工具；`**`、`a__b__*`、`*__x`、`__*`、空串一律 400）；`admin_*` 还要求 `groups` 含 `admin`，否则 400；
+- `groups` 去重后非空，且每个组都来自 `effective_policy.group_codes()`（配置组 + 管理组 + 代码内置的 `basic`，**允许包含 `admin`**）；未知组在 `error.data.unknown` 列出，`error.data.available` 给出可选值；
 - `expires_at` 可空；非 RFC3339 或早于当前时间一律拒绝。
+
+`PATCH /admin/tokens/{id}` 改 `name` / `groups` / `expires_at`，其余字段不变：显式 `null` 表示清空过期时间；只有 `active` 记录可改；换组不换钥匙（token 明文、hash、前缀不变）；写 `token_update`，`changes` 只列真实变化的字段。
 
 写 `admin_change`：`object_type="token"`、`object_id=id`、`action="token_create"`、`source="admin-api"`，`data` 只放上述配置与 `token_prefix`。审计未启用时拒绝写入（`MCP_AUDIT_ERROR`）。
 
@@ -363,7 +366,7 @@ body: { name, role, groups: string[], builtin_tools: string[],
 200: { "token": "jumcp_<64 hex>", "item": AccessTokenItem }   // 与创建同形，明文只出现一次
 ```
 
-- 同一记录原地换钥匙：`id`、`name`、`role`、`groups`、`builtin_tools`、`source`、`caller`、`expires_at` 不变，`token` / hash / 前缀更新、`last_used_at` 清空；**旧 token 立即失效**。
+- 同一记录原地换钥匙：`id`、`name`、`role`、`groups`、`source`、`caller`、`expires_at` 不变，`token` / hash / 前缀更新、`last_used_at` 清空；**旧 token 立即失效**。
 - 明文只在本响应出现一次（库里只存 `sha256` 与前缀），管理台据此复制 MCP 接入配置。
 - 只有 `active` 可重签；`revoked` / `expired` 返回 409 `MCP_STATE_TRANSITION_INVALID`（`error.data` 含 `token_id`、`status`、`hint`），不改行、不写审计；不存在返回 404 `MCP_TOKEN_NOT_FOUND`。
 - 写 `admin_change`：`action="token_reissue"`，`data` 只放配置与新 `token_prefix`，**绝不写明文或 hash**。
@@ -372,20 +375,13 @@ body: { name, role, groups: string[], builtin_tools: string[],
 
 ```
 { roles: [{ code, name, default_groups: string[], default_budget }],
-  groups: [{ code, name, source: "policy"|"managed", priority, min_budget, token_count }],
-  builtin_tools: [{ name, label, group: "builtin"|"admin" }],
-  tool_wildcards: [{ value: "*", label }],
-  upstreams: [{ id, name, group, enabled, tool_count, wildcard }],
-  upstream_tools: [{ name, upstream_id, tool, group, label }] }
+  groups: [{ code, name, source: "builtin"|"policy"|"managed", priority, min_budget, token_count }] }
 ```
 
 - 角色与组都返回 `code` + `name`：`code` 是权限标识（token.role、token.groups、审计 actor.role 一律用它），`name` 只是中文展示名，**不参与**任何权限判定；
 - `roles` 按 code 稳定排序，`name` 非空且 1..64 字符；
-- `groups` 是配置组 + 管理组合并（`Service::effective_policy`）后的结果，`token_count` 是该组被多少个**未撤销** token 引用；
-- `builtin_tools` 的顺序与 `BUILTIN_CAPABILITY_IDS` 一致，`label` 为中文（检索能力/描述能力/组索引/模板执行/登记模板草案/审核队列/审计查询/定制化候选评分/改可见性/发布能力）；
-- `tool_wildcards` 是 allowlist 的两档通配（`*`），`upstreams[].wildcard` 是 `<id>__*` 形态，管理台据此提供"整台上游"授权；
-- `upstreams` 列出全部已注册上游（未 refresh 的也在，`tool_count=0`），`upstream_tools` 的 `name` 是暴露名、`tool` 是上游原始名、`group` 是生效组（`basic` 覆盖优先），`label` 形如 `<上游名> / <原始工具名>`；
-- 三个上游字段只读 registry 里的缓存视图，**不触网**：授予面不因管理面打开而探测上游；未配置上游管理器时三个字段都是空数组。
+- `groups` 首条固定是 `basic`（`source="builtin"`、`name="基础工具"`、`min_budget=800`），其后是配置组 + 管理组；`token_count` 是该组被多少个**未撤销** token 引用；
+- 工具粒度不挂在令牌上：某组能看到哪些工具由 `PUT /admin/groups/{code}/exposure` 决定，管理台据此跳转。
 
 ### 7.11 角色与组的 code / name 双轨
 
@@ -458,7 +454,9 @@ agent 侧推荐在 `admin_publish_capability` 里一并传 `discoverable` / `cal
 - `capability_versions` 主键 `(capability_id, version)`；`BEFORE UPDATE OF definition_json, definition_hash, capability_id, version` 禁止定义改写，但允许审批元数据（`status`/`submitted_*`/`approved_*`/`approval_id`）在版本行上盖章；`BEFORE DELETE` 全表禁止。
 - 哈希链校验结果通过 `/health` 的 `audit_chain`（`valid`/`tampered`/`error`）暴露；静态审计快照就绪后 `/health` 另带 `static_audit:{generated_at,candidates}`，刷新停摆时这里会停在旧时间。
 - registry 库新增 `access_tokens`（`CREATE TABLE IF NOT EXISTS` + `ensure_column` 补列，旧库不受影响）：
-  `id, name, token_hash(UNIQUE), token_prefix, tenant, role, groups_json, builtin_tools_json, source, caller, enabled, created_at, created_by, expires_at, revoked_at, last_used_at`。
+  `id, name, token_hash(UNIQUE), token_prefix, tenant, role, groups_json, source, caller, enabled, created_at, created_by, expires_at, revoked_at, last_used_at`。
+- 迁移一次到位（`CapabilityStore::open`，幂等）：`DROP COLUMN access_tokens.builtin_tools_json`、`DROP COLUMN mcp_upstreams.group_code`（含 `idx_upstream_group`）；旧 `mcp_upstream_tool_groups` 行转成 `mcp_group_tool_rules(state='include')` 后整表 DROP。
+- 组内两层暴露两张表：`mcp_group_upstreams(group_code, upstream_id, updated_at)`（第一层整台授予）与 `mcp_group_tool_rules(group_code, upstream_id, tool_name, state IN ('include','exclude'), updated_at)`（第二层逐工具，每组每台上限 128 条）。
 
 ## 11. MCP 接入令牌与 scope
 
@@ -479,13 +477,16 @@ agent 侧推荐在 `admin_publish_capability` 里一并传 `discoverable` / `cal
 ### 11.3 scope 规则
 
 - token 的 `groups` 同时是**默认组与硬上限**：未声明时使用它；header/`_meta` 只能在其中收窄。越界仍按租户模式判定（strict → `MCP_GROUP_FORBIDDEN`，intersect → 裁剪并标记 degraded），**永远不会扩展到角色默认组**。
-- token 的 `builtin_tools` 是**工具名 allowlist**（内置 id、上游暴露名 `<server_id>__<tool>`、`<server_id>__*` 整台上游、`*` 全部工具）：`tools/list` 只输出命中项，`tools/call` 再判一次（列表过滤不放行调用）。`admin_*` 还需 scope.groups 含 `admin`（双重判定）；两者都不是请求头可扩大的。
+- 工具粒度不挂在令牌上。工具对一次 scope 可见 ⇔ **任一** scope 组可见；某组内可见 = 整台授予且没有该组的 `exclude` 规则，或该组有显式 `include` 规则（无规则行 = 继承第一层）。
+- 常驻元工具（`search_capabilities` / `describe_capability` / `list_groups` / `db_run_template`）属于组 `basic`，`admin_*` 属于组 `admin`：没有这两个组就看不到、也调不通，不存在隐式公共通道。
+- `admin` 类别上游与 `admin_` 前缀工具只能进 `admin` 组：写入时 409 `MCP_UPSTREAM_TOOL_NOT_ELIGIBLE`，读取时（`projection` / `resolve` / 预检）再叠一次同样的判定。
+- 未授予或被规则排除的 `tools/call` 回包与"名字不存在"同构（`-32602`），审计照写 `policy_decision`（surface `mcp/upstream-groups`），调用台账照写 `tool_call`。
 - managed 能力仍按组过滤（`published ∧ discoverable/callable ∧ group ∈ scope`）；header/`_meta` 同样不能扩大 token 组。
-- stdio/管理面 actor 的 `allowed_groups`/`allowed_builtin_tools` 均为 `None`，行为保持不变。
+- stdio/管理面 actor 的 `allowed_groups` 为 `None`，但内置工具仍按组放行：默认 scope 需要包含 `basic` / `admin`。
 
 ### 11.4 引导导入（兼容旧 dev/e2e）
 
 启动时若 `access_tokens` 为空且 `JUMCP_AGENT_TOKENS` 非空，把每个静态 token 一次性导入为 active 记录：
-`name="环境引导令牌"`、`source="bootstrap"`、`caller=agent_id`、`role` 同配置、`groups=该角色 default_groups`、
-`builtin_tools=["*"]`（全部工具，含之后安装的上游；可见性仍由组与上游开关约束）、`created_by="env"`；日志输出「已导入 N 个引导令牌」。
+`name="环境引导令牌"`、`source="bootstrap"`、`caller=agent_id`、`role` 同配置、`groups=该角色 default_groups`、`created_by="env"`；日志输出「已导入 N 个引导令牌」。
+可见性完全由这些组决定：角色默认组没有 `basic` 就看不到常驻元工具，需要的话在配置里显式加上。
 导入的是同一明文的 sha256，原静态 token 仍可用；表非空时绝不重导。

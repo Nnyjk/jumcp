@@ -128,13 +128,14 @@ fn assemble(stdio: bool, guard: Option<Arc<jumcp_server::preflight::PreflightCon
 }
 
 pub(crate) fn scope(groups: &[&str]) -> EffectiveScope {
+    let mut all = vec!["basic".to_string()];
+    all.extend(groups.iter().map(|g| (*g).to_string()));
     EffectiveScope {
-        groups: groups.iter().map(|g| (*g).to_string()).collect(),
+        groups: all,
         budget: 2000,
         degraded: false,
         source: "default".into(),
         mode: "strict".into(),
-        allowed_builtin_tools: None,
     }
 }
 
@@ -164,14 +165,10 @@ pub(crate) async fn call(
     (status, value)
 }
 
-/// 现场签发一个 agent token：allowlist 显式列出内置 id 与上游暴露名。
-pub(crate) async fn issue_token(
-    h: &Harness,
-    caller: &str,
-    role: &str,
-    groups: &[&str],
-    tools: &[&str],
-) -> String {
+/// 现场签发一个 agent token：授权面只有组。`basic` 恒定带上，常驻元工具才可见。
+pub(crate) async fn issue_token(h: &Harness, caller: &str, role: &str, groups: &[&str]) -> String {
+    let mut all = vec!["basic"];
+    all.extend(groups.iter().copied().filter(|g| *g != "basic"));
     let (status, body) = call(
         &h.app,
         "POST",
@@ -180,8 +177,7 @@ pub(crate) async fn issue_token(
         Some(json!({
             "name": format!("token {caller}"),
             "role": role,
-            "groups": groups,
-            "builtin_tools": tools,
+            "groups": all,
             "source": "agent",
             "caller": caller
         })),
@@ -189,6 +185,24 @@ pub(crate) async fn issue_token(
     .await;
     assert_eq!(status, StatusCode::CREATED, "签发令牌失败: {body}");
     body["token"].as_str().expect("token").to_string()
+}
+
+/// 组内两层暴露的唯一写入口：第一层 `upstreams` 整台授权，第二层 `tools` 逐工具
+/// `include` / `exclude` / `null`（取消覆盖）。
+pub(crate) async fn set_exposure(
+    h: &Harness,
+    group: &str,
+    upstreams: Value,
+    tools: Value,
+) -> (StatusCode, Value) {
+    call(
+        &h.app,
+        "PUT",
+        &format!("/admin/groups/{group}/exposure"),
+        Some(ALICE_TOKEN),
+        Some(json!({"upstreams": upstreams, "tools": tools})),
+    )
+    .await
 }
 
 pub(crate) async fn mcp(app: &Router, token: &str, method: &str, params: Value) -> Value {
@@ -236,20 +250,35 @@ pub(crate) fn upstream_body(id: &str, url: &str) -> Value {
         "args": [],
         "env": {},
         "headers": {},
-        "group": "db.read.analytics",
         "category": "custom",
         "enabled": true,
         "timeout_ms": 5000
     })
 }
 
+/// 测试默认把新建上游整台授权给 `db.read.analytics`（原 `group` 字段的位置）。
+pub(crate) const DEFAULT_GROUP: &str = "db.read.analytics";
+
 pub(crate) async fn create_upstream(h: &Harness, body: Value) -> (StatusCode, Value) {
-    call(
+    let id = body.get("id").and_then(|v| v.as_str()).map(String::from);
+    // 维护通道上游只能进 admin 组，默认组授权对它不合法：用例自己显式授予。
+    let admin_only = body
+        .get("category")
+        .and_then(|v| v.as_str())
+        .is_some_and(|c| c == "admin");
+    let (status, item) = call(
         &h.app,
         "POST",
         "/admin/upstreams",
         Some(ALICE_TOKEN),
         Some(body),
     )
-    .await
+    .await;
+    if status.is_success()
+        && let Some(id) = id.filter(|_| !admin_only)
+    {
+        let (granted, error) = set_exposure(h, DEFAULT_GROUP, json!({id: true}), json!({})).await;
+        assert_eq!(granted, StatusCode::OK, "默认组授权失败: {error}");
+    }
+    (status, item)
 }
